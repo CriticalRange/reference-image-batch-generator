@@ -1,6 +1,8 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, JobState as GeminiJobState } from '@google/genai';
+import type { BatchJob } from '@google/genai';
 import Together from 'together-ai';
 import sharp from 'sharp';
+import { randomUUID } from 'crypto';
 import { modelSupportsImageSize, normalizeModelCode } from '@/lib/modelOptions';
 import { buildPromptVariants } from '@/lib/promptVariants';
 
@@ -38,6 +40,27 @@ export type BatchOutput = {
   failedCount: number;
   results: BatchResult[];
   failures: BatchFailure[];
+};
+
+export type JobState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'expired' | 'unknown';
+
+export type SubmitBatchResult = {
+  jobId: string;
+  provider: 'gemini' | 'together';
+};
+
+export type BatchStatusResult = {
+  jobId: string;
+  state: JobState;
+  stateLabel: string;
+  results?: BatchOutput;
+};
+
+type GeminiBatchMeta = {
+  resizeTo?: { width: number; height: number };
+  requestedCount: number;
+  prompts: string[];
+  model: string;
 };
 
 const DEFAULT_MODEL = 'gemini-2.5-flash-image';
@@ -86,6 +109,12 @@ const TOGETHER_DIMENSIONS_BY_ASPECT: Record<string, { width: number; height: num
 };
 
 type TogetherImageResponse = Awaited<ReturnType<Together['images']['generate']>>;
+
+// Module-level stores: persist across requests within the same server process.
+// Together AI: results are computed synchronously during submit and retrieved on first status check.
+// Gemini: stores job metadata (resize config, prompts) needed to process results after the async job completes.
+const togetherResultStore = new Map<string, BatchOutput | Error>();
+const geminiBatchMetaStore = new Map<string, GeminiBatchMeta>();
 
 function parseMaxBatch(): number {
   const value = Number.parseInt(process.env.MAX_BATCH_SIZE ?? '', 10);
@@ -338,97 +367,90 @@ function buildBatchOutput(
   };
 }
 
-export async function generateBatch(input: BatchInput): Promise<BatchOutput> {
-  const clampedCount = Math.max(1, Math.min(input.count, parseMaxBatch()));
+function mapGeminiJobState(state: GeminiJobState | undefined): JobState {
+  switch (state) {
+    case GeminiJobState.JOB_STATE_QUEUED:
+    case GeminiJobState.JOB_STATE_PENDING:
+    case GeminiJobState.JOB_STATE_UNSPECIFIED:
+    case GeminiJobState.JOB_STATE_PAUSED:
+      return 'pending';
+    case GeminiJobState.JOB_STATE_RUNNING:
+    case GeminiJobState.JOB_STATE_CANCELLING:
+    case GeminiJobState.JOB_STATE_UPDATING:
+      return 'running';
+    case GeminiJobState.JOB_STATE_SUCCEEDED:
+    case GeminiJobState.JOB_STATE_PARTIALLY_SUCCEEDED:
+      return 'succeeded';
+    case GeminiJobState.JOB_STATE_FAILED:
+      return 'failed';
+    case GeminiJobState.JOB_STATE_CANCELLED:
+      return 'cancelled';
+    case GeminiJobState.JOB_STATE_EXPIRED:
+      return 'expired';
+    default:
+      return 'unknown';
+  }
+}
+
+function getStateLabel(state: JobState): string {
+  switch (state) {
+    case 'pending': return 'Pending';
+    case 'running': return 'Processing';
+    case 'succeeded': return 'Completed';
+    case 'failed': return 'Failed';
+    case 'cancelled': return 'Cancelled';
+    case 'expired': return 'Expired';
+    default: return 'Unknown';
+  }
+}
+
+async function runTogetherBatch(
+  model: string,
+  requestedCount: number,
+  prompts: string[],
+  references: Array<{ base64: string; mimeType: string }>,
+  aspectRatio: string,
+  resizeTo: { width: number; height: number } | undefined
+): Promise<BatchOutput> {
+  const apiKey = process.env.TOGETHER_API_KEY;
+  if (!apiKey) {
+    throw new Error('Missing TOGETHER_API_KEY');
+  }
+
+  const together = new Together({ apiKey });
+  const referenceImageUrls = references.map(buildReferenceDataUrl);
+  const dimensions = resolveTogetherDimensions(aspectRatio);
   const maxParallel = parseMaxParallelRequests();
-  const maxReferenceImages = parseMaxReferenceImages();
-  const model = normalizeRequestedModel(input.model) ?? process.env.GEMINI_IMAGE_MODEL ?? DEFAULT_MODEL;
-  const prompts = buildPromptVariants(input.basePrompt, clampedCount);
-  const references = (input.referenceImages ?? []).slice(0, maxReferenceImages);
-  const aspectRatio = normalizeAspectRatio(input.aspectRatio);
-  const imageSize = normalizeImageSize(input.imageSize, model);
-  const resizeTo = normalizeResizeTo(input.resizeTo);
-  if (isTogetherImageModel(model)) {
-    const apiKey = process.env.TOGETHER_API_KEY;
-    if (!apiKey) {
-      throw new Error('Missing TOGETHER_API_KEY');
-    }
 
-    const together = new Together({ apiKey });
-    const referenceImageUrls = references.map(buildReferenceDataUrl);
-    const dimensions = resolveTogetherDimensions(aspectRatio);
+  const jobs = prompts.map((promptVariant) => {
+    return async () => {
+      const baseRequest = {
+        model,
+        prompt: promptVariant,
+        response_format: 'base64' as const,
+        output_format: 'jpeg' as const,
+        width: dimensions.width,
+        height: dimensions.height,
+        ...(referenceImageUrls.length > 0 ? { reference_images: referenceImageUrls } : {})
+      };
+      let response: TogetherImageResponse;
 
-    const jobs = prompts.map((promptVariant) => {
-      return async () => {
-        const baseRequest = {
+      try {
+        response = await together.images.generate(baseRequest);
+      } catch (error) {
+        if (!isTogetherUnsupportedStepsError(error)) {
+          throw error;
+        }
+
+        response = await together.images.generate({
           model,
           prompt: promptVariant,
           response_format: 'base64' as const,
-          output_format: 'jpeg' as const,
-          width: dimensions.width,
-          height: dimensions.height,
-          ...(referenceImageUrls.length > 0 ? { reference_images: referenceImageUrls } : {})
-        };
-        let response: TogetherImageResponse;
-
-        try {
-          response = await together.images.generate(baseRequest);
-        } catch (error) {
-          if (!isTogetherUnsupportedStepsError(error)) {
-            throw error;
-          }
-
-          response = await together.images.generate({
-            model,
-            prompt: promptVariant,
-            response_format: 'base64' as const,
-            output_format: 'jpeg' as const
-          });
-        }
-
-        const extracted = await extractTogetherImageFromResponse(response);
-        const processed = resizeTo ? await resizeGeneratedImage(extracted, resizeTo) : extracted;
-
-        return {
-          ...processed,
-          promptVariant
-        } satisfies BatchResult;
-      };
-    });
-
-    const settled = await runWithConcurrency(jobs, maxParallel);
-    return buildBatchOutput(model, clampedCount, prompts, settled);
-  }
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('Missing GEMINI_API_KEY');
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
-  const jobs = prompts.map((promptVariant) => {
-    return async () => {
-      const response = await ai.models.generateContent({
-        model,
-        contents: [{ text: promptVariant }, ...references.map((reference) => ({
-          inlineData: {
-            mimeType: reference.mimeType,
-            data: reference.base64
-          }
-        }))],
-        config: {
-          responseModalities: ['IMAGE', 'TEXT'],
-          imageConfig: {
-            aspectRatio,
-            ...(imageSize ? { imageSize } : {})
-          }
-        }
-      });
-
-      const extracted = extractImageFromGenerateContentResponse(response);
-      if (!extracted) {
-        throw getNoImageReturnedError(undefined);
+          output_format: 'jpeg' as const
+        });
       }
+
+      const extracted = await extractTogetherImageFromResponse(response);
       const processed = resizeTo ? await resizeGeneratedImage(extracted, resizeTo) : extracted;
 
       return {
@@ -439,5 +461,156 @@ export async function generateBatch(input: BatchInput): Promise<BatchOutput> {
   });
 
   const settled = await runWithConcurrency(jobs, maxParallel);
-  return buildBatchOutput(model, clampedCount, prompts, settled);
+  return buildBatchOutput(model, requestedCount, prompts, settled);
+}
+
+async function extractGeminiBatchResults(job: BatchJob, meta: GeminiBatchMeta): Promise<BatchOutput> {
+  const inlinedResponses = job.dest?.inlinedResponses ?? [];
+
+  if (inlinedResponses.length === 0) {
+    throw new Error('Batch job completed but returned no responses.');
+  }
+
+  const settled = await Promise.allSettled(
+    inlinedResponses.map(async (inlined, i) => {
+      if (inlined.error) {
+        throw new Error(inlined.error.message ?? 'Request failed');
+      }
+
+      const response = inlined.response;
+      if (!response) {
+        throw getNoImageReturnedError('No response in batch item');
+      }
+
+      const extracted = extractImageFromGenerateContentResponse(
+        response as Awaited<ReturnType<GoogleGenAI['models']['generateContent']>>
+      );
+      if (!extracted) {
+        throw getNoImageReturnedError(undefined);
+      }
+
+      const processed = meta.resizeTo ? await resizeGeneratedImage(extracted, meta.resizeTo) : extracted;
+      const promptVariant = (inlined.metadata?.['promptVariant'] ?? meta.prompts[i]) ?? '';
+
+      return { ...processed, promptVariant } satisfies BatchResult;
+    })
+  );
+
+  return buildBatchOutput(meta.model, meta.requestedCount, meta.prompts, settled);
+}
+
+export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult> {
+  const clampedCount = Math.max(1, Math.min(input.count, parseMaxBatch()));
+  const maxReferenceImages = parseMaxReferenceImages();
+  const model = normalizeRequestedModel(input.model) ?? process.env.GEMINI_IMAGE_MODEL ?? DEFAULT_MODEL;
+  const prompts = buildPromptVariants(input.basePrompt, clampedCount);
+  const references = (input.referenceImages ?? []).slice(0, maxReferenceImages);
+  const aspectRatio = normalizeAspectRatio(input.aspectRatio);
+  const imageSize = normalizeImageSize(input.imageSize, model);
+  const resizeTo = normalizeResizeTo(input.resizeTo);
+
+  if (isTogetherImageModel(model)) {
+    const jobId = randomUUID();
+    // Run synchronously; result is immediately retrievable via getBatchStatus.
+    try {
+      const result = await runTogetherBatch(model, clampedCount, prompts, references, aspectRatio, resizeTo);
+      togetherResultStore.set(jobId, result);
+    } catch (error) {
+      togetherResultStore.set(jobId, error instanceof Error ? error : new Error(String(error)));
+    }
+    return { jobId, provider: 'together' };
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('Missing GEMINI_API_KEY');
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  const inlinedRequests = prompts.map((promptVariant) => ({
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: promptVariant },
+          ...references.map((ref) => ({
+            inlineData: { mimeType: ref.mimeType, data: ref.base64 }
+          }))
+        ]
+      }
+    ],
+    config: {
+      responseModalities: ['IMAGE', 'TEXT'],
+      imageConfig: {
+        aspectRatio,
+        ...(imageSize ? { imageSize } : {})
+      }
+    },
+    // Carry prompt variant through so result extraction can label each image correctly.
+    metadata: { promptVariant }
+  }));
+
+  const batchJob = await ai.batches.create({
+    model,
+    src: inlinedRequests,
+    config: { displayName: `image-batch-${Date.now()}` }
+  });
+
+  const jobId = batchJob.name;
+  if (!jobId) {
+    throw new Error('Batch job was created but returned no job name.');
+  }
+
+  geminiBatchMetaStore.set(jobId, { resizeTo, requestedCount: clampedCount, prompts, model });
+
+  return { jobId, provider: 'gemini' };
+}
+
+export async function getBatchStatus(jobId: string, provider: 'gemini' | 'together'): Promise<BatchStatusResult> {
+  if (provider === 'together') {
+    const stored = togetherResultStore.get(jobId);
+    if (!stored) {
+      return { jobId, state: 'unknown', stateLabel: getStateLabel('unknown') };
+    }
+    togetherResultStore.delete(jobId);
+    if (stored instanceof Error) {
+      throw stored;
+    }
+    return { jobId, state: 'succeeded', stateLabel: getStateLabel('succeeded'), results: stored };
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('Missing GEMINI_API_KEY');
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+  const job = await ai.batches.get({ name: jobId });
+  const state = mapGeminiJobState(job.state);
+
+  if (state === 'failed') {
+    geminiBatchMetaStore.delete(jobId);
+    throw new Error('Batch job failed.');
+  }
+  if (state === 'cancelled') {
+    geminiBatchMetaStore.delete(jobId);
+    throw new Error('Batch job was cancelled.');
+  }
+  if (state === 'expired') {
+    geminiBatchMetaStore.delete(jobId);
+    throw new Error('Batch job has expired (48-hour limit reached).');
+  }
+
+  if (state === 'succeeded') {
+    const meta = geminiBatchMetaStore.get(jobId);
+    if (!meta) {
+      throw new Error('Batch metadata not found. The server may have restarted. Please submit a new batch.');
+    }
+    const results = await extractGeminiBatchResults(job, meta);
+    geminiBatchMetaStore.delete(jobId);
+    return { jobId, state, stateLabel: getStateLabel(state), results };
+  }
+
+  return { jobId, state, stateLabel: getStateLabel(state) };
 }
