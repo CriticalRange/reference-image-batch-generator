@@ -359,8 +359,25 @@ export default function HomePage() {
       return;
     }
 
+    markHistoryItemAsViewed(itemId);
     setHistoryViewerIndex(targetIndex);
     setIsHistoryViewerOpen(true);
+  }
+
+  function markHistoryItemAsViewed(itemId: string) {
+    setHistoryItems((previous) => {
+      let changed = false;
+      const next = previous.map((item) => {
+        if (item.id !== itemId || !item.isNew) {
+          return item;
+        }
+
+        changed = true;
+        return { ...item, isNew: false };
+      });
+
+      return changed ? next : previous;
+    });
   }
 
   function removeReferenceImage(id: string) {
@@ -1008,7 +1025,13 @@ export default function HomePage() {
           spacing: '22%'
         }}
         on={{
-          view: ({ index }) => setHistoryViewerIndex(index)
+          view: ({ index }) => {
+            setHistoryViewerIndex(index);
+            const viewedId = historyItems[index]?.id;
+            if (viewedId) {
+              markHistoryItemAsViewed(viewedId);
+            }
+          }
         }}
         render={{
           slideHeader: () => (
