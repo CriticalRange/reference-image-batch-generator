@@ -31,6 +31,25 @@ type GenerationFailure = {
   error: string;
 };
 
+type BatchSubmitResponse = {
+  jobId: string;
+  provider: 'gemini' | 'together';
+};
+
+type BatchStatusResponse = {
+  jobId: string;
+  state: string;
+  stateLabel: string;
+  results?: {
+    usedModel: string;
+    requestedCount: number;
+    succeededCount: number;
+    failedCount: number;
+    results: GenerationResult[];
+    failures: GenerationFailure[];
+  };
+};
+
 type ReferenceImage = {
   id: string;
   base64: string;
@@ -550,7 +569,8 @@ export default function HomePage() {
     };
 
     try {
-      const response = await fetch('/api/generate', {
+      // Phase 1: submit the batch job.
+      const submitResponse = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -568,17 +588,47 @@ export default function HomePage() {
         })
       });
 
-      const payload = await response.json();
+      const submitPayload = await submitResponse.json();
 
-      if (!response.ok) {
-        throw new Error(payload?.error ?? t('errorGenerationFailed'));
+      if (!submitResponse.ok) {
+        throw new Error(submitPayload?.error ?? t('errorGenerationFailed'));
       }
 
-      const outputResults = (payload.results ?? []) as GenerationResult[];
-      const outputFailures = (payload.failures ?? []) as GenerationFailure[];
-      const successCount = Number(payload.succeededCount ?? outputResults.length);
-      const failCount = Number(payload.failedCount ?? outputFailures.length);
-      const usedModel = String(payload.usedModel ?? 'unknown-model');
+      const { jobId, provider } = submitPayload as BatchSubmitResponse;
+      setStatusText(t('statusBatchSubmitted'));
+
+      // Phase 2: poll for status until the job completes.
+      const POLL_INTERVAL_MS = 5000;
+      let statusPayload: BatchStatusResponse;
+
+      while (true) {
+        const statusResponse = await fetch(
+          `/api/generate?job=${encodeURIComponent(jobId)}&provider=${encodeURIComponent(provider)}`
+        );
+
+        statusPayload = (await statusResponse.json()) as BatchStatusResponse;
+
+        if (!statusResponse.ok) {
+          throw new Error((statusPayload as unknown as { error?: string }).error ?? t('errorGenerationFailed'));
+        }
+
+        setStatusText(getBatchStatusText(statusPayload.state, statusPayload.stateLabel, t));
+
+        if (statusPayload.state === 'succeeded') {
+          break;
+        }
+
+        await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      }
+
+      // Phase 3: process results (identical handling to before).
+      const batchOutput = statusPayload.results;
+      const outputResults = (batchOutput?.results ?? []) as GenerationResult[];
+      const outputFailures = (batchOutput?.failures ?? []) as GenerationFailure[];
+      const successCount = Number(batchOutput?.succeededCount ?? outputResults.length);
+      const failCount = Number(batchOutput?.failedCount ?? outputFailures.length);
+      const usedModel = String(batchOutput?.usedModel ?? 'unknown-model');
+
       if (usedModel && usedModel !== 'unknown-model') {
         const normalizedUsedModel = normalizeModelCode(usedModel);
         setSelectedModel(normalizedUsedModel);
@@ -603,6 +653,7 @@ export default function HomePage() {
           fail: failCount
         })
       );
+
       if (outputResults.length > 0) {
         const createdAt = new Date().toISOString();
         const resolvedHistoryModel = usedModel && usedModel !== 'unknown-model' ? normalizeModelCode(usedModel) : submittedConfig.model;
@@ -624,6 +675,7 @@ export default function HomePage() {
           return [...latestItems, ...olderItems].slice(0, MAX_HISTORY_ITEMS);
         });
       }
+
       if (successCount > 0) {
         toast.success(t('toastGenerationCompleted'), {
           description: t('toastGenerationCompletedDesc', { count: successCount }),
@@ -1423,6 +1475,19 @@ function formatGenerationError(message: string, t: (key: string, options?: Recor
 
 function resolveDateLocale(language: 'tr' | 'en'): string {
   return language === 'tr' ? 'tr-TR' : 'en-US';
+}
+
+function getBatchStatusText(
+  state: string,
+  stateLabel: string,
+  t: (key: string, options?: Record<string, unknown>) => string
+): string {
+  switch (state) {
+    case 'pending': return t('statusBatchPending');
+    case 'running': return t('statusBatchRunning');
+    case 'succeeded': return t('statusBatchSucceeded');
+    default: return stateLabel;
+  }
 }
 
 function resolveResizePresetLabel(value: Exclude<ResizePresetOption, 'custom'>, t: (key: string, options?: Record<string, unknown>) => string): string {

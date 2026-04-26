@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateBatch } from '@/lib/gemini';
+import { submitBatch, getBatchStatus } from '@/lib/gemini';
 
 type RequestBody = {
   prompt?: string;
@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
           }
         : undefined;
 
-    const batch = await generateBatch({
+    const submission = await submitBatch({
       basePrompt: prompt,
       count,
       model,
@@ -69,7 +69,29 @@ export async function POST(req: NextRequest) {
       referenceImages: normalizedReferences
     });
 
-    return NextResponse.json(batch, { status: 200 });
+    return NextResponse.json(submission, { status: 200 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const jobId = searchParams.get('job');
+    const provider = searchParams.get('provider');
+
+    if (!jobId || !provider) {
+      return NextResponse.json({ error: 'Missing job or provider parameter.' }, { status: 400 });
+    }
+
+    if (provider !== 'gemini' && provider !== 'together') {
+      return NextResponse.json({ error: 'Invalid provider.' }, { status: 400 });
+    }
+
+    const status = await getBatchStatus(jobId, provider);
+    return NextResponse.json(status, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json({ error: message }, { status: 500 });
