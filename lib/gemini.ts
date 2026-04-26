@@ -85,6 +85,8 @@ const TOGETHER_DIMENSIONS_BY_ASPECT: Record<string, { width: number; height: num
   '21:9': { width: 1344, height: 576 }
 };
 
+type TogetherImageResponse = Awaited<ReturnType<Together['images']['generate']>>;
+
 function parseMaxBatch(): number {
   const value = Number.parseInt(process.env.MAX_BATCH_SIZE ?? '', 10);
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_MAX_BATCH;
@@ -113,6 +115,14 @@ function formatError(error: unknown): string {
   }
 
   return String(error);
+}
+
+function isTogetherUnsupportedStepsError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return /Unsupported use of 'steps' parameter/i.test(error.message);
 }
 
 function normalizeRequestedModel(value: string | undefined): string | undefined {
@@ -172,6 +182,37 @@ function buildReferenceDataUrl(reference: { base64: string; mimeType: string }):
 
 function resolveTogetherDimensions(aspectRatio: string): { width: number; height: number } {
   return TOGETHER_DIMENSIONS_BY_ASPECT[aspectRatio] ?? TOGETHER_DIMENSIONS_BY_ASPECT[DEFAULT_ASPECT_RATIO];
+}
+
+async function extractTogetherImageFromResponse(response: TogetherImageResponse): Promise<BatchResult> {
+  const generated = response.data?.[0];
+  if (!generated) {
+    throw getNoImageReturnedError('Together API returned no image entries.');
+  }
+
+  if ('b64_json' in generated && generated.b64_json) {
+    return {
+      promptVariant: '',
+      imageBase64: generated.b64_json,
+      mimeType: 'image/jpeg'
+    };
+  }
+
+  if ('url' in generated && generated.url) {
+    const file = await fetch(generated.url);
+    if (!file.ok) {
+      throw new Error(`Failed to download Together image URL (${file.status}).`);
+    }
+
+    const bytes = await file.arrayBuffer();
+    return {
+      promptVariant: '',
+      imageBase64: Buffer.from(bytes).toString('base64'),
+      mimeType: file.headers.get('content-type')?.split(';')[0] || 'image/jpeg'
+    };
+  }
+
+  throw getNoImageReturnedError('Together API returned image data in an unsupported format.');
 }
 
 function estimateBase64Bytes(base64: string): number {
@@ -319,26 +360,33 @@ export async function generateBatch(input: BatchInput): Promise<BatchOutput> {
 
     const jobs = prompts.map((promptVariant) => {
       return async () => {
-        const response = await together.images.generate({
+        const baseRequest = {
           model,
           prompt: promptVariant,
-          response_format: 'base64',
-          output_format: 'jpeg',
+          response_format: 'base64' as const,
+          output_format: 'jpeg' as const,
           width: dimensions.width,
           height: dimensions.height,
           ...(referenceImageUrls.length > 0 ? { reference_images: referenceImageUrls } : {})
-        });
+        };
+        let response: TogetherImageResponse;
 
-        const generated = response.data?.[0];
-        if (!generated || !('b64_json' in generated) || !generated.b64_json) {
-          throw getNoImageReturnedError('Together API did not return base64 image data.');
+        try {
+          response = await together.images.generate(baseRequest);
+        } catch (error) {
+          if (!isTogetherUnsupportedStepsError(error)) {
+            throw error;
+          }
+
+          response = await together.images.generate({
+            model,
+            prompt: promptVariant,
+            response_format: 'base64' as const,
+            output_format: 'jpeg' as const
+          });
         }
 
-        const extracted: BatchResult = {
-          promptVariant: '',
-          imageBase64: generated.b64_json,
-          mimeType: 'image/jpeg'
-        };
+        const extracted = await extractTogetherImageFromResponse(response);
         const processed = resizeTo ? await resizeGeneratedImage(extracted, resizeTo) : extracted;
 
         return {
