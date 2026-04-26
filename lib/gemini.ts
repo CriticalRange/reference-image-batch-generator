@@ -47,6 +47,8 @@ export type JobState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancell
 export type SubmitBatchResult = {
   jobId: string;
   provider: 'gemini' | 'together';
+  // Populated immediately for Together AI — no polling required.
+  results?: BatchOutput;
 };
 
 export type BatchStatusResult = {
@@ -110,10 +112,8 @@ const TOGETHER_DIMENSIONS_BY_ASPECT: Record<string, { width: number; height: num
 
 type TogetherImageResponse = Awaited<ReturnType<Together['images']['generate']>>;
 
-// Module-level stores: persist across requests within the same server process.
-// Together AI: results are computed synchronously during submit and retrieved on first status check.
+// Module-level store: persists across requests within the same server process.
 // Gemini: stores job metadata (resize config, prompts) needed to process results after the async job completes.
-const togetherResultStore = new Map<string, BatchOutput | Error>();
 const geminiBatchMetaStore = new Map<string, GeminiBatchMeta>();
 
 function parseMaxBatch(): number {
@@ -510,15 +510,11 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
   const resizeTo = normalizeResizeTo(input.resizeTo);
 
   if (isTogetherImageModel(model)) {
+    // Together AI has no async batch API — run synchronously and return results directly.
+    // This avoids any module-state dependency between the submit and status requests.
     const jobId = randomUUID();
-    // Run synchronously; result is immediately retrievable via getBatchStatus.
-    try {
-      const result = await runTogetherBatch(model, clampedCount, prompts, references, aspectRatio, resizeTo);
-      togetherResultStore.set(jobId, result);
-    } catch (error) {
-      togetherResultStore.set(jobId, error instanceof Error ? error : new Error(String(error)));
-    }
-    return { jobId, provider: 'together' };
+    const result = await runTogetherBatch(model, clampedCount, prompts, references, aspectRatio, resizeTo);
+    return { jobId, provider: 'together', results: result };
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -567,19 +563,7 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
   return { jobId, provider: 'gemini' };
 }
 
-export async function getBatchStatus(jobId: string, provider: 'gemini' | 'together'): Promise<BatchStatusResult> {
-  if (provider === 'together') {
-    const stored = togetherResultStore.get(jobId);
-    if (!stored) {
-      return { jobId, state: 'unknown', stateLabel: getStateLabel('unknown') };
-    }
-    togetherResultStore.delete(jobId);
-    if (stored instanceof Error) {
-      throw stored;
-    }
-    return { jobId, state: 'succeeded', stateLabel: getStateLabel('succeeded'), results: stored };
-  }
-
+export async function getBatchStatus(jobId: string): Promise<BatchStatusResult> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('Missing GEMINI_API_KEY');
@@ -607,6 +591,15 @@ export async function getBatchStatus(jobId: string, provider: 'gemini' | 'togeth
     if (!meta) {
       throw new Error('Batch metadata not found. The server may have restarted. Please submit a new batch.');
     }
+
+    // The Gemini API may mark the job succeeded before inline responses are fully
+    // populated in the get() response. Treat an empty response list as still running
+    // so the client keeps polling until results are available.
+    const inlinedResponses = job.dest?.inlinedResponses ?? [];
+    if (inlinedResponses.length === 0) {
+      return { jobId, state: 'running', stateLabel: 'Waiting for results...' };
+    }
+
     const results = await extractGeminiBatchResults(job, meta);
     geminiBatchMetaStore.delete(jobId);
     return { jobId, state, stateLabel: getStateLabel(state), results };

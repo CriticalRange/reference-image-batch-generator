@@ -34,6 +34,15 @@ type GenerationFailure = {
 type BatchSubmitResponse = {
   jobId: string;
   provider: 'gemini' | 'together';
+  // Present for Together AI — results are computed synchronously during submit.
+  results?: {
+    usedModel: string;
+    requestedCount: number;
+    succeededCount: number;
+    failedCount: number;
+    results: GenerationResult[];
+    failures: GenerationFailure[];
+  };
 };
 
 type BatchStatusResponse = {
@@ -594,35 +603,48 @@ export default function HomePage() {
         throw new Error(submitPayload?.error ?? t('errorGenerationFailed'));
       }
 
-      const { jobId, provider } = submitPayload as BatchSubmitResponse;
-      setStatusText(t('statusBatchSubmitted'));
+      const submitResult = submitPayload as BatchSubmitResponse;
+      const { jobId, provider } = submitResult;
 
-      // Phase 2: poll for status until the job completes.
-      const POLL_INTERVAL_MS = 5000;
-      let statusPayload: BatchStatusResponse;
+      // Phase 2: get the final BatchOutput — either immediately (Together AI, which
+      // runs synchronously and includes results in the submit response) or by polling
+      // the Gemini async batch job until it completes.
+      type BatchOutputShape = NonNullable<BatchSubmitResponse['results']>;
+      let batchOutput: BatchOutputShape;
 
-      while (true) {
-        const statusResponse = await fetch(
-          `/api/generate?job=${encodeURIComponent(jobId)}&provider=${encodeURIComponent(provider)}`
-        );
+      if (submitResult.results) {
+        // Together AI: results are already in the submit response — no polling needed.
+        batchOutput = submitResult.results;
+      } else {
+        // Gemini: poll until the async batch job reaches a terminal state.
+        setStatusText(t('statusBatchSubmitted'));
+        const POLL_INTERVAL_MS = 5000;
+        let statusPayload: BatchStatusResponse;
 
-        statusPayload = (await statusResponse.json()) as BatchStatusResponse;
+        while (true) {
+          const statusResponse = await fetch(
+            `/api/generate?job=${encodeURIComponent(jobId)}`
+          );
 
-        if (!statusResponse.ok) {
-          throw new Error((statusPayload as unknown as { error?: string }).error ?? t('errorGenerationFailed'));
+          statusPayload = (await statusResponse.json()) as BatchStatusResponse;
+
+          if (!statusResponse.ok) {
+            throw new Error((statusPayload as unknown as { error?: string }).error ?? t('errorGenerationFailed'));
+          }
+
+          setStatusText(getBatchStatusText(statusPayload.state, statusPayload.stateLabel, t));
+
+          if (statusPayload.state === 'succeeded') {
+            break;
+          }
+
+          await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         }
 
-        setStatusText(getBatchStatusText(statusPayload.state, statusPayload.stateLabel, t));
-
-        if (statusPayload.state === 'succeeded') {
-          break;
-        }
-
-        await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        batchOutput = statusPayload.results as BatchOutputShape;
       }
 
-      // Phase 3: process results (identical handling to before).
-      const batchOutput = statusPayload.results;
+      // Phase 3: process results.
       const outputResults = (batchOutput?.results ?? []) as GenerationResult[];
       const outputFailures = (batchOutput?.failures ?? []) as GenerationFailure[];
       const successCount = Number(batchOutput?.succeededCount ?? outputResults.length);
