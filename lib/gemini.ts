@@ -1,14 +1,19 @@
 import { GoogleGenAI, JobState as GeminiJobState } from '@google/genai';
-import type { BatchJob } from '@google/genai';
+import type { BatchJob, InlinedResponse } from '@google/genai';
 import Together from 'together-ai';
 import sharp from 'sharp';
 import { randomUUID } from 'crypto';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
 import { modelSupportsImageSize, normalizeModelCode } from '@/lib/modelOptions';
 import { buildPromptVariants } from '@/lib/promptVariants';
 
 export type BatchInput = {
   basePrompt: string;
+  negativePrompt?: string;
   model?: string;
+  steps?: number;
   referenceImages?: Array<{
     base64: string;
     mimeType: string;
@@ -55,14 +60,9 @@ export type BatchStatusResult = {
   jobId: string;
   state: JobState;
   stateLabel: string;
+  stateDetail?: string;
+  error?: string;
   results?: BatchOutput;
-};
-
-type GeminiBatchMeta = {
-  resizeTo?: { width: number; height: number };
-  requestedCount: number;
-  prompts: string[];
-  model: string;
 };
 
 const DEFAULT_MODEL = 'gemini-2.5-flash-image';
@@ -76,6 +76,13 @@ const DEFAULT_MAX_RESPONSE_BYTES = 48 * 1024 * 1024;
 const MODEL_CODE_PATTERN = /^[a-z0-9][a-z0-9./-]*$/i;
 const QWEN_TOGETHER_MODEL_PATTERN = /^qwen\/qwen-image/i;
 const FLUX_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/flux/i;
+const GOOGLE_IMAGEN_TOGETHER_MODEL_PATTERN = /^google\/imagen-/i;
+const GOOGLE_FLASH_IMAGE_TOGETHER_MODEL_PATTERN = /^google\/flash-image-/i;
+const GPT_IMAGE_TOGETHER_MODEL_PATTERN = /^openai\/gpt-image-/i;
+const IDEOGRAM_TOGETHER_MODEL_PATTERN = /^ideogram\//i;
+const FLUX_KONTEXT_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/FLUX\.1-kontext-(pro|max)$/i;
+const FLUX2_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/FLUX\.2-/i;
+const GOOGLE_GEMINI_PRO_IMAGE_TOGETHER_MODEL_PATTERN = /^google\/gemini-3-pro-image$/i;
 const ALLOWED_ASPECT_RATIOS = new Set([
   '1:1',
   '1:4',
@@ -111,10 +118,10 @@ const TOGETHER_DIMENSIONS_BY_ASPECT: Record<string, { width: number; height: num
 };
 
 type TogetherImageResponse = Awaited<ReturnType<Together['images']['generate']>>;
-
-// Module-level store: persists across requests within the same server process.
-// Gemini: stores job metadata (resize config, prompts) needed to process results after the async job completes.
-const geminiBatchMetaStore = new Map<string, GeminiBatchMeta>();
+type GeminiResultExtractionContext = {
+  jobId: string;
+  model: string;
+};
 
 function parseMaxBatch(): number {
   const value = Number.parseInt(process.env.MAX_BATCH_SIZE ?? '', 10);
@@ -164,7 +171,14 @@ function normalizeRequestedModel(value: string | undefined): string | undefined 
 }
 
 function isTogetherImageModel(model: string): boolean {
-  return QWEN_TOGETHER_MODEL_PATTERN.test(model) || FLUX_TOGETHER_MODEL_PATTERN.test(model);
+  return (
+    QWEN_TOGETHER_MODEL_PATTERN.test(model) ||
+    FLUX_TOGETHER_MODEL_PATTERN.test(model) ||
+    GOOGLE_IMAGEN_TOGETHER_MODEL_PATTERN.test(model) ||
+    GOOGLE_FLASH_IMAGE_TOGETHER_MODEL_PATTERN.test(model) ||
+    GPT_IMAGE_TOGETHER_MODEL_PATTERN.test(model) ||
+    IDEOGRAM_TOGETHER_MODEL_PATTERN.test(model)
+  );
 }
 
 function normalizeAspectRatio(value: string | undefined): string {
@@ -197,6 +211,14 @@ function normalizeResizeTo(value: BatchInput['resizeTo']): { width: number; heig
   return { width, height };
 }
 
+function normalizeSteps(value: number | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  return Math.max(1, Math.min(Math.round(value), 50));
+}
+
 function clampResizeDimension(value: number): number {
   return Math.max(DEFAULT_MIN_RESIZE_DIMENSION, Math.min(Math.round(value), DEFAULT_MAX_RESIZE_DIMENSION));
 }
@@ -211,6 +233,44 @@ function buildReferenceDataUrl(reference: { base64: string; mimeType: string }):
 
 function resolveTogetherDimensions(aspectRatio: string): { width: number; height: number } {
   return TOGETHER_DIMENSIONS_BY_ASPECT[aspectRatio] ?? TOGETHER_DIMENSIONS_BY_ASPECT[DEFAULT_ASPECT_RATIO];
+}
+
+type TogetherReferenceMode = 'none' | 'image_url' | 'reference_images';
+
+function resolveTogetherReferenceMode(model: string): TogetherReferenceMode {
+  if (FLUX_KONTEXT_TOGETHER_MODEL_PATTERN.test(model)) {
+    return 'image_url';
+  }
+
+  if (
+    FLUX2_TOGETHER_MODEL_PATTERN.test(model) ||
+    GOOGLE_IMAGEN_TOGETHER_MODEL_PATTERN.test(model) ||
+    GOOGLE_FLASH_IMAGE_TOGETHER_MODEL_PATTERN.test(model) ||
+    GOOGLE_GEMINI_PRO_IMAGE_TOGETHER_MODEL_PATTERN.test(model)
+  ) {
+    return 'reference_images';
+  }
+
+  return 'none';
+}
+
+function parseTogetherRequestedDimensions(value: string | undefined): { width: number; height: number } | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const match = /^(\d{3,5})x(\d{3,5})$/.exec(value.trim());
+  if (!match) {
+    return undefined;
+  }
+
+  const width = Number.parseInt(match[1], 10);
+  const height = Number.parseInt(match[2], 10);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    return undefined;
+  }
+
+  return { width, height };
 }
 
 async function extractTogetherImageFromResponse(response: TogetherImageResponse): Promise<BatchResult> {
@@ -404,12 +464,185 @@ function getStateLabel(state: JobState): string {
   }
 }
 
+function parseTimestamp(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) ? millis : undefined;
+}
+
+function formatDuration(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.round(totalSeconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  if (minutes <= 0) {
+    return `${seconds}s`;
+  }
+
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+function buildGeminiStateDetail(state: JobState, job: BatchJob): string | undefined {
+  const now = Date.now();
+  const createdAt = parseTimestamp(job.createTime);
+  const startedAt = parseTimestamp(job.startTime);
+  const updatedAt = parseTimestamp(job.updateTime);
+  const activeStart = startedAt ?? createdAt;
+
+  if (state === 'pending') {
+    if (createdAt) {
+      return `Queued for ${formatDuration((now - createdAt) / 1000)}`;
+    }
+
+    return undefined;
+  }
+
+  if (state === 'running') {
+    if (activeStart) {
+      return `Running for ${formatDuration((now - activeStart) / 1000)}`;
+    }
+
+    return undefined;
+  }
+
+  if (state === 'succeeded') {
+    if (createdAt && updatedAt) {
+      return `Finished in ${formatDuration((updatedAt - createdAt) / 1000)}`;
+    }
+  }
+
+  return undefined;
+}
+
+function parsePositiveInt(value: unknown): number | undefined {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function parseResizeFromMetadata(metadata: Record<string, string> | undefined): { width: number; height: number } | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+
+  const width = parsePositiveInt(metadata.resizeWidth);
+  const height = parsePositiveInt(metadata.resizeHeight);
+  if (typeof width !== 'number' || typeof height !== 'number') {
+    return undefined;
+  }
+
+  return {
+    width: clampResizeDimension(width),
+    height: clampResizeDimension(height)
+  };
+}
+
+function findRequestedCountFromMetadata(inlinedResponses: InlinedResponse[]): number | undefined {
+  for (const response of inlinedResponses) {
+    const count = parsePositiveInt(response.metadata?.requestedCount);
+    if (typeof count === 'number') {
+      return count;
+    }
+  }
+
+  return undefined;
+}
+
+function findResizeFromMetadata(inlinedResponses: InlinedResponse[]): { width: number; height: number } | undefined {
+  for (const response of inlinedResponses) {
+    const resizeTo = parseResizeFromMetadata(response.metadata);
+    if (resizeTo) {
+      return resizeTo;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizePromptVariant(metadata: Record<string, string> | undefined, fallbackIndex: number): string {
+  const variant = metadata?.promptVariant?.trim();
+  if (variant) {
+    return variant;
+  }
+
+  return `Variant ${fallbackIndex + 1}`;
+}
+
+async function downloadBatchResponsesFile(ai: GoogleGenAI, fileName: string, jobId: string): Promise<InlinedResponse[]> {
+  const safeJobId = jobId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const downloadPath = path.join(tmpdir(), `gemini-batch-${safeJobId}-${Date.now()}.jsonl`);
+
+  try {
+    await ai.files.download({
+      file: fileName,
+      downloadPath
+    });
+
+    const contents = await fs.readFile(downloadPath, 'utf8');
+    const lines = contents
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    const parsedResponses: InlinedResponse[] = [];
+
+    for (const line of lines) {
+      let parsedLine: unknown;
+      try {
+        parsedLine = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      if (!parsedLine || typeof parsedLine !== 'object') {
+        continue;
+      }
+
+      const parsedObject = parsedLine as Record<string, unknown>;
+      const response = parsedObject.response as InlinedResponse['response'];
+      const error = parsedObject.error as InlinedResponse['error'];
+      const metadataValue = parsedObject.metadata;
+      const metadata =
+        metadataValue && typeof metadataValue === 'object'
+          ? Object.fromEntries(
+              Object.entries(metadataValue as Record<string, unknown>).map(([key, value]) => [key, String(value)])
+            )
+          : undefined;
+
+      const entry: InlinedResponse = {};
+      if (typeof response !== 'undefined') {
+        entry.response = response;
+      }
+      if (typeof error !== 'undefined') {
+        entry.error = error;
+      }
+      if (metadata) {
+        entry.metadata = metadata;
+      }
+
+      parsedResponses.push(entry);
+    }
+
+    return parsedResponses;
+  } finally {
+    await fs.unlink(downloadPath).catch(() => undefined);
+  }
+}
+
 async function runTogetherBatch(
   model: string,
   requestedCount: number,
   prompts: string[],
+  negativePrompt: string | undefined,
   references: Array<{ base64: string; mimeType: string }>,
   aspectRatio: string,
+  requestedDimensions: { width: number; height: number } | undefined,
+  steps: number | undefined,
   resizeTo: { width: number; height: number } | undefined
 ): Promise<BatchOutput> {
   const apiKey = process.env.TOGETHER_API_KEY;
@@ -419,19 +652,32 @@ async function runTogetherBatch(
 
   const together = new Together({ apiKey });
   const referenceImageUrls = references.map(buildReferenceDataUrl);
-  const dimensions = resolveTogetherDimensions(aspectRatio);
+  const dimensions = requestedDimensions ?? resolveTogetherDimensions(aspectRatio);
   const maxParallel = parseMaxParallelRequests();
+  const referenceMode = resolveTogetherReferenceMode(model);
+  const referencePayload =
+    referenceMode === 'image_url'
+      ? referenceImageUrls[0]
+        ? { image_url: referenceImageUrls[0] }
+        : {}
+      : referenceMode === 'reference_images'
+        ? referenceImageUrls.length > 0
+          ? { reference_images: referenceImageUrls }
+          : {}
+        : {};
 
   const jobs = prompts.map((promptVariant) => {
     return async () => {
       const baseRequest = {
         model,
         prompt: promptVariant,
+        ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
         response_format: 'base64' as const,
         output_format: 'jpeg' as const,
         width: dimensions.width,
         height: dimensions.height,
-        ...(referenceImageUrls.length > 0 ? { reference_images: referenceImageUrls } : {})
+        ...(typeof steps === 'number' ? { steps } : {}),
+        ...referencePayload
       };
       let response: TogetherImageResponse;
 
@@ -464,12 +710,18 @@ async function runTogetherBatch(
   return buildBatchOutput(model, requestedCount, prompts, settled);
 }
 
-async function extractGeminiBatchResults(job: BatchJob, meta: GeminiBatchMeta): Promise<BatchOutput> {
-  const inlinedResponses = job.dest?.inlinedResponses ?? [];
-
+async function extractGeminiBatchResults(ai: GoogleGenAI, job: BatchJob, context: GeminiResultExtractionContext): Promise<BatchOutput> {
+  let inlinedResponses = job.dest?.inlinedResponses ?? [];
+  if (inlinedResponses.length === 0 && job.dest?.fileName) {
+    inlinedResponses = await downloadBatchResponsesFile(ai, job.dest.fileName, context.jobId);
+  }
   if (inlinedResponses.length === 0) {
     throw new Error('Batch job completed but returned no responses.');
   }
+
+  const requestedCount = findRequestedCountFromMetadata(inlinedResponses) ?? inlinedResponses.length;
+  const resizeTo = findResizeFromMetadata(inlinedResponses);
+  const prompts = inlinedResponses.map((response, index) => normalizePromptVariant(response.metadata, index));
 
   const settled = await Promise.allSettled(
     inlinedResponses.map(async (inlined, i) => {
@@ -489,14 +741,14 @@ async function extractGeminiBatchResults(job: BatchJob, meta: GeminiBatchMeta): 
         throw getNoImageReturnedError(undefined);
       }
 
-      const processed = meta.resizeTo ? await resizeGeneratedImage(extracted, meta.resizeTo) : extracted;
-      const promptVariant = (inlined.metadata?.['promptVariant'] ?? meta.prompts[i]) ?? '';
+      const processed = resizeTo ? await resizeGeneratedImage(extracted, resizeTo) : extracted;
+      const promptVariant = normalizePromptVariant(inlined.metadata, i);
 
       return { ...processed, promptVariant } satisfies BatchResult;
     })
   );
 
-  return buildBatchOutput(meta.model, meta.requestedCount, meta.prompts, settled);
+  return buildBatchOutput(context.model, requestedCount, prompts, settled);
 }
 
 export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult> {
@@ -507,13 +759,25 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
   const references = (input.referenceImages ?? []).slice(0, maxReferenceImages);
   const aspectRatio = normalizeAspectRatio(input.aspectRatio);
   const imageSize = normalizeImageSize(input.imageSize, model);
+  const togetherRequestedDimensions = parseTogetherRequestedDimensions(input.imageSize);
+  const steps = normalizeSteps(input.steps);
   const resizeTo = normalizeResizeTo(input.resizeTo);
 
   if (isTogetherImageModel(model)) {
     // Together AI has no async batch API — run synchronously and return results directly.
     // This avoids any module-state dependency between the submit and status requests.
     const jobId = randomUUID();
-    const result = await runTogetherBatch(model, clampedCount, prompts, references, aspectRatio, resizeTo);
+    const result = await runTogetherBatch(
+      model,
+      clampedCount,
+      prompts,
+      input.negativePrompt?.trim() || undefined,
+      references,
+      aspectRatio,
+      togetherRequestedDimensions,
+      steps,
+      resizeTo
+    );
     return { jobId, provider: 'together', results: result };
   }
 
@@ -544,7 +808,16 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       }
     },
     // Carry prompt variant through so result extraction can label each image correctly.
-    metadata: { promptVariant }
+    metadata: {
+      promptVariant,
+      requestedCount: String(clampedCount),
+      ...(resizeTo
+        ? {
+            resizeWidth: String(resizeTo.width),
+            resizeHeight: String(resizeTo.height)
+          }
+        : {})
+    }
   }));
 
   const batchJob = await ai.batches.create({
@@ -557,8 +830,6 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
   if (!jobId) {
     throw new Error('Batch job was created but returned no job name.');
   }
-
-  geminiBatchMetaStore.set(jobId, { resizeTo, requestedCount: clampedCount, prompts, model });
 
   return { jobId, provider: 'gemini' };
 }
@@ -574,36 +845,46 @@ export async function getBatchStatus(jobId: string): Promise<BatchStatusResult> 
   const state = mapGeminiJobState(job.state);
 
   if (state === 'failed') {
-    geminiBatchMetaStore.delete(jobId);
-    throw new Error('Batch job failed.');
+    return {
+      jobId,
+      state,
+      stateLabel: getStateLabel(state),
+      stateDetail: buildGeminiStateDetail(state, job),
+      error: job.error?.message?.trim() || 'Batch job failed.'
+    };
   }
   if (state === 'cancelled') {
-    geminiBatchMetaStore.delete(jobId);
-    throw new Error('Batch job was cancelled.');
+    return {
+      jobId,
+      state,
+      stateLabel: getStateLabel(state),
+      stateDetail: buildGeminiStateDetail(state, job),
+      error: 'Batch job was cancelled.'
+    };
   }
   if (state === 'expired') {
-    geminiBatchMetaStore.delete(jobId);
-    throw new Error('Batch job has expired (48-hour limit reached).');
+    return {
+      jobId,
+      state,
+      stateLabel: getStateLabel(state),
+      stateDetail: buildGeminiStateDetail(state, job),
+      error: 'Batch job has expired (48-hour limit reached).'
+    };
   }
 
   if (state === 'succeeded') {
-    const meta = geminiBatchMetaStore.get(jobId);
-    if (!meta) {
-      throw new Error('Batch metadata not found. The server may have restarted. Please submit a new batch.');
-    }
-
-    // The Gemini API may mark the job succeeded before inline responses are fully
-    // populated in the get() response. Treat an empty response list as still running
-    // so the client keeps polling until results are available.
-    const inlinedResponses = job.dest?.inlinedResponses ?? [];
-    if (inlinedResponses.length === 0) {
+    const hasInlineResponses = (job.dest?.inlinedResponses?.length ?? 0) > 0;
+    const hasFileOutput = Boolean(job.dest?.fileName);
+    if (!hasInlineResponses && !hasFileOutput) {
       return { jobId, state: 'running', stateLabel: 'Waiting for results...' };
     }
 
-    const results = await extractGeminiBatchResults(job, meta);
-    geminiBatchMetaStore.delete(jobId);
-    return { jobId, state, stateLabel: getStateLabel(state), results };
+    const results = await extractGeminiBatchResults(ai, job, {
+      jobId,
+      model: normalizeModelCode(job.model ?? DEFAULT_MODEL)
+    });
+    return { jobId, state, stateLabel: getStateLabel(state), stateDetail: buildGeminiStateDetail(state, job), results };
   }
 
-  return { jobId, state, stateLabel: getStateLabel(state) };
+  return { jobId, state, stateLabel: getStateLabel(state), stateDetail: buildGeminiStateDetail(state, job) };
 }

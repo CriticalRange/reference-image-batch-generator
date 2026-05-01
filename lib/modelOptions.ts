@@ -13,6 +13,15 @@ export const CURATED_MODEL_OPTIONS: UiModelOption[] = [
   { name: 'Gemini 2.0 Flash Image Preview', code: 'gemini-2.0-flash-preview-image-generation', group: 'Gemini Image' },
   { name: 'Qwen Image 2.0 Pro', code: 'Qwen/Qwen-Image-2.0-Pro', group: 'Together AI' },
   { name: 'FLUX.2 Dev', code: 'black-forest-labs/FLUX.2-dev', group: 'Together AI' },
+  { name: 'FLUX.1 Schnell', code: 'black-forest-labs/FLUX.1-schnell', group: 'Together AI' },
+  { name: 'FLUX.1 Kontext Pro', code: 'black-forest-labs/FLUX.1-kontext-pro', group: 'Together AI' },
+  { name: 'FLUX.1 Kontext Max', code: 'black-forest-labs/FLUX.1-kontext-max', group: 'Together AI' },
+  { name: 'FLUX.1 Krea Dev', code: 'black-forest-labs/FLUX.1-krea-dev', group: 'Together AI' },
+  { name: 'Imagen 4 Fast (Together)', code: 'google/imagen-4.0-fast', group: 'Together AI' },
+  { name: 'GPT Image 1.5', code: 'openai/gpt-image-1.5', group: 'Together AI' },
+  { name: 'Nano Banana', code: 'google/flash-image-2.5', group: 'Together AI' },
+  { name: 'Nano Banana 2', code: 'google/flash-image-3.1', group: 'Together AI' },
+  { name: 'Ideogram 3.0', code: 'ideogram/ideogram-v3.0', group: 'Together AI' },
   { name: 'Imagen 4 Ultra', code: 'imagen-4.0-ultra-generate-001', group: 'Imagen' },
   { name: 'Imagen 4', code: 'imagen-4.0-generate-001', group: 'Imagen' },
   { name: 'Imagen 4 Fast', code: 'imagen-4.0-fast-generate-001', group: 'Imagen' },
@@ -89,7 +98,15 @@ export function sortModelOptions(options: UiModelOption[]): UiModelOption[] {
 }
 
 export function inferModelGroup(code: string): string {
-  if (/^qwen\/qwen-image/i.test(code) || /qwen-image/i.test(code) || /^black-forest-labs\/flux/i.test(code)) {
+  if (
+    /^qwen\/qwen-image/i.test(code) ||
+    /qwen-image/i.test(code) ||
+    /^black-forest-labs\/flux/i.test(code) ||
+    /^google\/imagen-/i.test(code) ||
+    /^google\/flash-image-/i.test(code) ||
+    /^openai\/gpt-image-/i.test(code) ||
+    /^ideogram\//i.test(code)
+  ) {
     return 'Together AI';
   }
 
@@ -135,6 +152,20 @@ export function humanizeModelCode(code: string): string {
 
 export function modelSupportsImageSize(model: string): boolean {
   return /^gemini-3/i.test(model);
+}
+
+export function isTogetherImageModelCode(model: string): boolean {
+  const code = normalizeModelCode(model);
+  return inferModelGroup(code) === 'Together AI';
+}
+
+export function modelSupportsTogetherSteps(model: string): boolean {
+  const code = normalizeModelCode(model);
+  return (
+    /^black-forest-labs\/FLUX\.1-schnell$/i.test(code) ||
+    /^black-forest-labs\/FLUX\.1-kontext-(pro|max)$/i.test(code) ||
+    /^black-forest-labs\/FLUX\.1-krea-dev$/i.test(code)
+  );
 }
 
 export function modelLooksImageCapable(model: string): boolean {

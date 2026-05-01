@@ -15,6 +15,8 @@ import {
   mergeModelOptions,
   modelLooksImageCapable,
   modelSupportsImageSize,
+  modelSupportsTogetherSteps,
+  isTogetherImageModelCode,
   normalizeModelCode,
   sortModelOptions,
   type UiModelOption
@@ -49,6 +51,8 @@ type BatchStatusResponse = {
   jobId: string;
   state: string;
   stateLabel: string;
+  stateDetail?: string;
+  error?: string;
   results?: {
     usedModel: string;
     requestedCount: number;
@@ -68,8 +72,10 @@ type ReferenceImage = {
 
 type GenerationConfigSnapshot = {
   basePrompt: string;
+  negativePrompt?: string;
   model: string;
   aspectRatio: string;
+  steps?: number;
   imageSize?: string;
   resizePreset?: ResizePresetOption;
   resizeWidth?: number;
@@ -96,7 +102,21 @@ type HistoryStorageItem = Omit<HistoryItem, 'imageUrl'>;
 
 type ThemeMode = 'light' | 'dark';
 type AspectRatioOption = '1:1' | '2:3' | '3:2' | '3:4' | '4:3' | '4:5' | '5:4' | '9:16' | '16:9' | '21:9';
-type ResolutionOption = '512' | '1K' | '2K' | '4K';
+type ResolutionOption =
+  | '512'
+  | '1K'
+  | '2K'
+  | '4K'
+  | '1024x1024'
+  | '1248x832'
+  | '832x1248'
+  | '1184x864'
+  | '864x1184'
+  | '896x1152'
+  | '1152x896'
+  | '768x1344'
+  | '1344x768'
+  | '1536x672';
 type ResizePresetOption = 'none' | '2000x3000' | '1536x2048' | '1696x2528' | '2048x2048' | 'custom';
 
 const DEFAULT_COUNT = 1;
@@ -106,12 +126,26 @@ const MIN_RESIZE_DIMENSION = 64;
 const MAX_RESIZE_DIMENSION = 8192;
 const DEFAULT_CUSTOM_RESIZE_WIDTH = 2000;
 const DEFAULT_CUSTOM_RESIZE_HEIGHT = 3000;
+const DEFAULT_TOGETHER_STEPS = 28;
 const HISTORY_STORAGE_KEY = 'reference-batch-history-v1';
 const THEME_STORAGE_KEY = 'reference-batch-theme-v1';
 const LANGUAGE_STORAGE_KEY = 'reference-batch-language-v1';
 const DEFAULT_MODEL = process.env.NEXT_PUBLIC_GEMINI_IMAGE_MODEL ?? 'gemini-2.5-flash-image';
 const ASPECT_RATIO_OPTIONS: AspectRatioOption[] = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
 const RESOLUTION_OPTIONS: ResolutionOption[] = ['512', '1K', '2K', '4K'];
+const TOGETHER_RESOLUTION_OPTIONS: ResolutionOption[] = [
+  '1024x1024',
+  '1248x832',
+  '832x1248',
+  '1184x864',
+  '864x1184',
+  '896x1152',
+  '1152x896',
+  '768x1344',
+  '1344x768',
+  '1536x672'
+];
+const ALL_RESOLUTION_OPTIONS: ResolutionOption[] = [...RESOLUTION_OPTIONS, ...TOGETHER_RESOLUTION_OPTIONS];
 const RESIZE_PRESET_OPTIONS: Array<Exclude<ResizePresetOption, 'custom'>> = ['none', '2000x3000', '1536x2048', '1696x2528', '2048x2048'];
 const INITIAL_MODEL_OPTIONS = sortModelOptions(
   mergeModelOptions(CURATED_MODEL_OPTIONS, [
@@ -126,6 +160,7 @@ const INITIAL_MODEL_OPTIONS = sortModelOptions(
 export default function HomePage() {
   const { t, i18n } = useTranslation();
   const [prompt, setPrompt] = useState('');
+  const [negativePrompt, setNegativePrompt] = useState('');
   const [count, setCount] = useState(DEFAULT_COUNT);
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
   const [failures, setFailures] = useState<GenerationFailure[]>([]);
@@ -139,6 +174,7 @@ export default function HomePage() {
   const [language, setLanguage] = useState<'tr' | 'en'>('tr');
   const [isReferenceDragOver, setIsReferenceDragOver] = useState(false);
   const [aspectRatio, setAspectRatio] = useState<AspectRatioOption>('1:1');
+  const [steps, setSteps] = useState(DEFAULT_TOGETHER_STEPS);
   const [imageSize, setImageSize] = useState<ResolutionOption>('1K');
   const [resizePreset, setResizePreset] = useState<ResizePresetOption>('none');
   const [customResizeWidth, setCustomResizeWidth] = useState(DEFAULT_CUSTOM_RESIZE_WIDTH);
@@ -151,7 +187,16 @@ export default function HomePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const historyGroups = useMemo(() => groupHistoryByDate(historyItems, language), [historyItems, language]);
   const modelGroups = useMemo(() => groupModelOptions(modelOptions), [modelOptions]);
-  const supportsResolutionSelector = useMemo(() => modelSupportsImageSize(selectedModel), [selectedModel]);
+  const selectedModelIsTogether = useMemo(() => isTogetherImageModelCode(selectedModel), [selectedModel]);
+  const supportsTogetherSteps = useMemo(() => modelSupportsTogetherSteps(selectedModel), [selectedModel]);
+  const supportsResolutionSelector = useMemo(
+    () => modelSupportsImageSize(selectedModel) || selectedModelIsTogether,
+    [selectedModel, selectedModelIsTogether]
+  );
+  const availableResolutionOptions = useMemo<ResolutionOption[]>(
+    () => (selectedModelIsTogether ? TOGETHER_RESOLUTION_OPTIONS : RESOLUTION_OPTIONS),
+    [selectedModelIsTogether]
+  );
   const selectedModelLooksImageCapable = useMemo(() => modelLooksImageCapable(selectedModel), [selectedModel]);
   const resolvedResize = useMemo(() => {
     if (resizePreset === 'none') {
@@ -180,6 +225,12 @@ export default function HomePage() {
   const canSubmit = useMemo(() => {
     return prompt.trim().length > 0 && !isLoading;
   }, [prompt, isLoading]);
+
+  useEffect(() => {
+    if (!availableResolutionOptions.includes(imageSize)) {
+      setImageSize(availableResolutionOptions[0] ?? '1K');
+    }
+  }, [availableResolutionOptions, imageSize]);
 
   useEffect(() => {
     let cancelled = false;
@@ -452,7 +503,13 @@ export default function HomePage() {
     );
     setSelectedModel(normalizedModel);
     setPrompt(config.basePrompt);
+    setNegativePrompt(config.negativePrompt?.trim() ?? '');
     setAspectRatio(toAspectRatioOption(config.aspectRatio));
+    if (typeof config.steps === 'number' && Number.isFinite(config.steps)) {
+      setSteps(Math.max(1, Math.min(Math.round(config.steps), 50)));
+    } else {
+      setSteps(DEFAULT_TOGETHER_STEPS);
+    }
     setImageSize(toResolutionOption(config.imageSize));
     const restoredResizePreset = toResizePresetOption(config.resizePreset, config.resizeWidth, config.resizeHeight);
     setResizePreset(restoredResizePreset);
@@ -565,8 +622,10 @@ export default function HomePage() {
     setPendingHistoryIds(Array.from({ length: submittedCount }, () => makeId()));
     const submittedConfig: GenerationConfigSnapshot = {
       basePrompt: prompt.trim(),
+      ...(negativePrompt.trim() ? { negativePrompt: negativePrompt.trim() } : {}),
       model: selectedModel,
       aspectRatio,
+      ...(supportsTogetherSteps ? { steps } : {}),
       ...(supportsResolutionSelector ? { imageSize } : {}),
       resizePreset,
       ...(resolvedResize ? { resizeWidth: resolvedResize.width, resizeHeight: resolvedResize.height } : {}),
@@ -584,9 +643,11 @@ export default function HomePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt,
+          negativePrompt: negativePrompt.trim() || undefined,
           count: submittedCount,
           model: selectedModel,
           aspectRatio,
+          steps: supportsTogetherSteps ? steps : undefined,
           imageSize: supportsResolutionSelector ? imageSize : undefined,
           resizeWidth: resolvedResize?.width,
           resizeHeight: resolvedResize?.height,
@@ -597,10 +658,10 @@ export default function HomePage() {
         })
       });
 
-      const submitPayload = await submitResponse.json();
+      const submitPayload = await parseApiJsonOrThrow(submitResponse, '/api/generate');
 
       if (!submitResponse.ok) {
-        throw new Error(submitPayload?.error ?? t('errorGenerationFailed'));
+        throw new Error((submitPayload as { error?: string } | null)?.error ?? t('errorGenerationFailed'));
       }
 
       const submitResult = submitPayload as BatchSubmitResponse;
@@ -626,19 +687,23 @@ export default function HomePage() {
             `/api/generate?job=${encodeURIComponent(jobId)}`
           );
 
-          statusPayload = (await statusResponse.json()) as BatchStatusResponse;
+          statusPayload = (await parseApiJsonOrThrow(statusResponse, '/api/generate')) as BatchStatusResponse;
 
           if (!statusResponse.ok) {
             throw new Error((statusPayload as unknown as { error?: string }).error ?? t('errorGenerationFailed'));
           }
 
-          setStatusText(getBatchStatusText(statusPayload.state, statusPayload.stateLabel, t));
+          setStatusText(getBatchStatusText(statusPayload.state, statusPayload.stateLabel, statusPayload.stateDetail, t));
 
-          if (statusPayload.state === 'succeeded') {
+          if (isTerminalBatchState(statusPayload.state)) {
             break;
           }
 
           await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        }
+
+        if (statusPayload.state !== 'succeeded') {
+          throw new Error(statusPayload.error?.trim() || `Batch job ${statusPayload.stateLabel.toLowerCase()}.`);
         }
 
         batchOutput = statusPayload.results as BatchOutputShape;
@@ -713,6 +778,12 @@ export default function HomePage() {
       }
     } catch (submitError) {
       const rawMessage = submitError instanceof Error ? submitError.message : t('unexpectedError');
+      console.error('[generate] request failed', {
+        error: submitError,
+        rawMessage,
+        selectedModel,
+        submittedCount
+      });
       const message = formatGenerationError(rawMessage, t);
       setStatusText(t('statusGenerationFailed'));
       setError(message);
@@ -746,6 +817,7 @@ export default function HomePage() {
             {pendingHistoryIds.length > 0 ? (
               <section className="history-group history-group-pending">
                 <h3 className="history-date">{t('generatingNow')}</h3>
+                {statusText ? <p className="history-pending-status">{statusText}</p> : null}
                 <div className="history-grid">
                   {pendingHistoryIds.map((pendingId, index) => (
                     <article className="history-item history-item-pending" key={pendingId} aria-hidden="true">
@@ -920,6 +992,19 @@ export default function HomePage() {
               />
             </label>
 
+            <label htmlFor="negative-prompt">
+              <span className="field-head">
+                <PromptIcon />
+                <span>{t('negativePrompt')}</span>
+              </span>
+              <textarea
+                id="negative-prompt"
+                value={negativePrompt}
+                onChange={(event) => setNegativePrompt(event.target.value)}
+                placeholder={t('negativePromptPlaceholder')}
+              />
+            </label>
+
             <label htmlFor="count">
               <span className="field-head">
                 <LayersIcon />
@@ -953,6 +1038,31 @@ export default function HomePage() {
               </select>
             </label>
 
+            {supportsTogetherSteps ? (
+              <label htmlFor="steps">
+                <span className="field-head">
+                  <LayersIcon />
+                  <span>{t('steps')}</span>
+                </span>
+                <input
+                  id="steps"
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={steps}
+                  onChange={(event) => {
+                    const next = Number.parseInt(event.target.value, 10);
+                    if (!Number.isFinite(next)) {
+                      setSteps(DEFAULT_TOGETHER_STEPS);
+                      return;
+                    }
+
+                    setSteps(Math.max(1, Math.min(next, 50)));
+                  }}
+                />
+              </label>
+            ) : null}
+
             {supportsResolutionSelector ? (
               <label htmlFor="image-size">
                 <span className="field-head">
@@ -964,7 +1074,7 @@ export default function HomePage() {
                   value={imageSize}
                   onChange={(event) => setImageSize(event.target.value as ResolutionOption)}
                 >
-                  {RESOLUTION_OPTIONS.map((option) => (
+                  {availableResolutionOptions.map((option) => (
                     <option key={option} value={option}>
                       {option}
                     </option>
@@ -1305,6 +1415,7 @@ function isGenerationConfigSnapshot(value: unknown): value is GenerationConfigSn
     typeof record.basePrompt === 'string' &&
     typeof record.model === 'string' &&
     typeof record.aspectRatio === 'string' &&
+    (typeof record.steps === 'undefined' || typeof record.steps === 'number') &&
     (typeof record.imageSize === 'undefined' || typeof record.imageSize === 'string') &&
     typeof record.requestedCount === 'number' &&
     hasValidResizePreset &&
@@ -1428,7 +1539,7 @@ function toResolutionOption(value: string | undefined): ResolutionOption {
     return '1K';
   }
 
-  const match = RESOLUTION_OPTIONS.find((option) => option === value);
+  const match = ALL_RESOLUTION_OPTIONS.find((option) => option === value);
   return match ?? '1K';
 }
 
@@ -1484,15 +1595,54 @@ function formatGenerationError(message: string, t: (key: string, options?: Recor
     return t('modelReturnedNoImage');
   }
 
-  if (trimmed.includes('Generation failed for all variants.')) {
-    return t('allVariantsFailed');
-  }
-
   if (trimmed.includes('Generated payload too large')) {
     return t('payloadTooLarge');
   }
 
+  const providerError = extractProviderError(trimmed);
+  const providerErrorCode = providerError?.code;
+  if (providerErrorCode === 'model_not_available') {
+    return 'This model is not available on Together AI.';
+  }
+
+  if (!providerErrorCode && providerError?.message) {
+    return providerError.message;
+  }
+
   return trimmed;
+}
+
+function extractProviderError(message: string): { code?: string; message?: string } | undefined {
+  const jsonMatch = message.match(/(\{"id":.+\})$/);
+  if (!jsonMatch) {
+    return undefined;
+  }
+
+  const jsonCandidate = jsonMatch[1];
+  try {
+    const parsed = JSON.parse(jsonCandidate) as {
+      error?: {
+        code?: unknown;
+        message?: unknown;
+      };
+    };
+
+    const code = parsed.error?.code;
+    const messageValue = parsed.error?.message;
+    const normalizedCode = typeof code === 'string' ? code.trim() : '';
+    const normalizedMessage = typeof messageValue === 'string' ? messageValue.trim() : '';
+
+    if (!normalizedCode && !normalizedMessage) {
+      return undefined;
+    }
+
+    return {
+      ...(normalizedCode ? { code: normalizedCode } : {}),
+      ...(normalizedMessage ? { message: normalizedMessage } : {})
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveDateLocale(language: 'tr' | 'en'): string {
@@ -1502,14 +1652,38 @@ function resolveDateLocale(language: 'tr' | 'en'): string {
 function getBatchStatusText(
   state: string,
   stateLabel: string,
+  stateDetail: string | undefined,
   t: (key: string, options?: Record<string, unknown>) => string
 ): string {
+  const detailSuffix = stateDetail ? ` • ${stateDetail}` : '';
+
   switch (state) {
-    case 'pending': return t('statusBatchPending');
-    case 'running': return t('statusBatchRunning');
-    case 'succeeded': return t('statusBatchSucceeded');
+    case 'pending': return `${t('statusBatchPending')}${detailSuffix}`;
+    case 'running': return `${t('statusBatchRunning')}${detailSuffix}`;
+    case 'succeeded': return `${t('statusBatchSucceeded')}${detailSuffix}`;
     default: return stateLabel;
   }
+}
+
+function isTerminalBatchState(state: string): boolean {
+  return state === 'succeeded' || state === 'failed' || state === 'cancelled' || state === 'expired';
+}
+
+async function parseApiJsonOrThrow(response: Response, routeLabel: string): Promise<unknown> {
+  const contentType = response.headers.get('content-type') || '';
+  const isJson = contentType.toLowerCase().includes('application/json');
+
+  if (isJson) {
+    return response.json();
+  }
+
+  const bodyText = await response.text();
+  const compactBody = bodyText.replace(/\s+/g, ' ').trim();
+  const snippet = compactBody.slice(0, 220);
+  const suffix = compactBody.length > 220 ? '...' : '';
+  throw new Error(
+    `Non-JSON response from ${routeLabel} (HTTP ${response.status} ${response.statusText}). ${snippet}${suffix}`
+  );
 }
 
 function resolveResizePresetLabel(value: Exclude<ResizePresetOption, 'custom'>, t: (key: string, options?: Record<string, unknown>) => string): string {
