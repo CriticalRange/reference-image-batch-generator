@@ -1,4 +1,4 @@
-# Reference Batch Image Generator
+# Batch Image Generator
 
 Author: Ceneyra Software
 

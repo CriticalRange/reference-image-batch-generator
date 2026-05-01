@@ -4,8 +4,8 @@ import { initReactI18next } from 'react-i18next';
 const resources = {
   en: {
     translation: {
-      appTitle: 'Reference Batch Image Generator',
-      appSubtitle: 'Generate multiple variants in parallel from one prompt, with optional reference images for style guidance.',
+      appTitle: 'Batch Image Generator',
+      appSubtitle: 'Generate multiple variants of images in parallel from predefined prompts, with reference images for style guidance.',
       history: 'History',
       historyImageCount: '{{count}} image(s)',
       historyGeneratingMeta: 'generating {{count}}',
@@ -30,10 +30,24 @@ const resources = {
       referenceAlt: 'Reference {{index}}',
       referenceSelectedCount: '{{selected}}/{{max}} selected. Click + or drop images here.',
       basePrompt: 'Base Prompt',
+      productTypePlaceholder: 'Select product type',
+      productColorPlaceholder: 'Select color',
+      productTypeOptions: {
+        console: 'Console',
+        'dressing-table': 'Dressing Table',
+        'tv-dressing-table': 'TV Dressing Table',
+        'tv-shelf': 'TV Shelf'
+      },
+      productColorOptions: {
+        travertine: 'Travertine',
+        anthracite: 'Anthracite',
+        white: 'White',
+        'sapphire-oak': 'Sapphire Oak'
+      },
       negativePrompt: 'Negative Prompt',
       promptPlaceholder: 'Describe the image you want while keeping the reference identity/style...',
       negativePromptPlaceholder: 'Describe what to avoid (e.g. blurry, distorted, extra objects, text overlay)...',
-      numberOfVariants: 'Number of Variants',
+      numberOfVariants: 'Image Amount',
       aspectRatio: 'Aspect Ratio',
       steps: 'Steps',
       resolution: 'Resolution',
@@ -94,23 +108,38 @@ const resources = {
       allVariantsFailed: 'All variants failed. The selected model likely returned text/refusal instead of image output.',
       payloadTooLarge:
         'Generated images are too large for one response. Reduce variant count, choose a smaller aspect/output size, or turn on resize.',
+      providerInvalidApiKey: 'API key is invalid. Please update your provider API key and try again.',
+      providerRateLimitExceeded: 'Rate limit exceeded. Please wait a moment and try again.',
+      providerModelNotAvailable: 'This model is not available on Together AI.',
       modelGroups: {
         Recommended: 'Recommended',
         'Gemini Image': 'Gemini Image',
         'Together AI': 'Together AI',
         Imagen: 'Imagen',
+        'Gemini Preview': 'Gemini Preview',
         'Gemini Pro Preview': 'Gemini Pro Preview',
         'Gemini Flash Preview': 'Gemini Flash Preview',
         'Gemini Flash Lite Preview': 'Gemini Flash Lite Preview',
         Gemini: 'Gemini',
         Other: 'Other'
+      },
+      fieldInfo: {
+        model: 'Select the image model provider/engine used for generation.',
+        referenceImages: 'Upload one or more reference images to preserve identity/composition.',
+        basePrompt: 'Main instruction used to generate all variants.',
+        negativePrompt: 'Describe what the model should avoid in outputs.',
+        variants: 'Number of images to generate in one run.',
+        aspectRatio: 'Controls output image shape (portrait, square, landscape). A 2:3 aspect ratio is required for 2000x3000 output.',
+        steps: 'Higher steps can improve detail but may be slower.',
+        resolution: 'Controls pixel dimensions/output quality preset.',
+        resizeOutput: 'Optionally resize generated images to export-friendly dimensions. For marketplaces like Trendyol and Hepsiburada, 2000x3000 is recommended.'
       }
     }
   },
   tr: {
     translation: {
-      appTitle: 'Referans Toplu Görsel Oluşturucu',
-      appSubtitle: 'Tek bir prompt ile, isteğe bağlı referans görsellerle paralel olarak birden fazla varyant üretin.',
+      appTitle: 'Toplu Görsel Oluşturucu',
+      appSubtitle: 'Önceden hazırlanmış istemlerle ve referans görsellerle paralel olarak birden fazla varyant resim üretin.',
       history: 'Geçmiş',
       historyImageCount: '{{count}} görsel',
       historyGeneratingMeta: '{{count}} adet üretiliyor',
@@ -134,11 +163,25 @@ const resources = {
       removeReferenceImage: '{{index}}. referansı kaldır',
       referenceAlt: 'Referans {{index}}',
       referenceSelectedCount: '{{selected}}/{{max}} seçili. + ile ekleyin veya görselleri buraya bırakın.',
-      basePrompt: 'Ana Prompt',
-      negativePrompt: 'Negatif Prompt',
+      basePrompt: 'Ana İstem',
+      productTypePlaceholder: 'Ürün tipini seçin',
+      productColorPlaceholder: 'Renk seçin',
+      productTypeOptions: {
+        console: 'Konsol',
+        'dressing-table': 'Dresuar',
+        'tv-dressing-table': 'TV Dresuar',
+        'tv-shelf': 'TV Raf'
+      },
+      productColorOptions: {
+        travertine: 'Traverten',
+        anthracite: 'Antrasit',
+        white: 'Beyaz',
+        'sapphire-oak': 'Safir Meşe'
+      },
+      negativePrompt: 'Negatif İstem',
       promptPlaceholder: 'Referans kimliğini/stilini koruyarak istediğiniz görseli tanımlayın...',
       negativePromptPlaceholder: 'Kaçınılacak şeyleri yazın (ör. bulanık, bozuk oran, ekstra nesneler, yazı)...',
-      numberOfVariants: 'Varyant Sayısı',
+      numberOfVariants: 'Görsel Sayısı',
       aspectRatio: 'En-Boy Oranı',
       steps: 'Adım Sayısı',
       resolution: 'Çözünürlük',
@@ -193,21 +236,36 @@ const resources = {
       regenerate: 'Yeniden Üret',
       resizeOff: 'kapalı',
       modelReturnedText:
-        'Model görsel yerine metin döndürdü: "{{modelText}}". Başka bir görsel model deneyin, promptu sadeleştirin veya referansları ayarlayın.',
-      modelReturnedNoImage: 'Model görsel döndürmedi. Başka bir görsel model deneyin, promptu sadeleştirin veya referansları ayarlayın.',
+        'Model görsel yerine metin döndürdü: "{{modelText}}". Başka bir görsel model deneyin, istemi sadeleştirin veya referansları ayarlayın.',
+      modelReturnedNoImage: 'Model görsel döndürmedi. Başka bir görsel model deneyin, istemi sadeleştirin veya referansları ayarlayın.',
       allVariantsFailed: 'Tüm varyantlar başarısız oldu. Seçili model büyük olasılıkla görsel yerine metin/red yanıtı döndürdü.',
       payloadTooLarge:
         'Üretilen görseller tek bir yanıt için çok büyük. Varyant sayısını azaltın, daha küçük bir oran/çıktı boyutu seçin veya yeniden boyutlandırmayı açın.',
+      providerInvalidApiKey: 'API anahtarı geçersiz. Sağlayıcı API anahtarınızı güncelleyip tekrar deneyin.',
+      providerRateLimitExceeded: 'İstek limiti aşıldı. Lütfen kısa bir süre bekleyip tekrar deneyin.',
+      providerModelNotAvailable: 'Bu model Together AI üzerinde kullanılamıyor.',
       modelGroups: {
         Recommended: 'Önerilen',
         'Gemini Image': 'Gemini Görsel',
         'Together AI': 'Together AI',
         Imagen: 'Imagen',
+        'Gemini Preview': 'Gemini Önizleme',
         'Gemini Pro Preview': 'Gemini Pro Önizleme',
         'Gemini Flash Preview': 'Gemini Flash Önizleme',
         'Gemini Flash Lite Preview': 'Gemini Flash Lite Önizleme',
         Gemini: 'Gemini',
         Other: 'Diğer'
+      },
+      fieldInfo: {
+        model: 'Görsel üretiminde kullanılacak model sağlayıcısını/motorunu seçin.',
+        referenceImages: 'Kimlik/kompozisyonu korumak için bir veya daha fazla referans görsel yükleyin.',
+        basePrompt: 'Tüm varyantların üretiminde kullanılan ana istem.',
+        negativePrompt: 'Çıktılarda modelin kaçınması gereken öğeleri yazın.',
+        variants: 'Tek seferde üretilecek görsel sayısı.',
+        aspectRatio: 'Çıktı görsel oranını belirler (dikey, kare, yatay). 2000x3000 çıktı için 2:3 en-boy oranı gerekir.',
+        steps: 'Adım sayısı arttıkça detay artabilir, ancak süre uzayabilir.',
+        resolution: 'Piksel boyutunu/çıktı kalite önayarını belirler.',
+        resizeOutput: 'Üretilen görselleri dışa aktarıma uygun boyutlara yeniden ölçekler. Özellikle Trendyol, Hepsiburada gibi sitelere 2000x3000 boyutlandırması önerilir.'
       }
     }
   }
@@ -217,7 +275,7 @@ if (!i18n.isInitialized) {
   void i18n.use(initReactI18next).init({
     resources,
     lng: 'tr',
-    fallbackLng: 'en',
+    fallbackLng: 'tr',
     interpolation: {
       escapeValue: false
     },

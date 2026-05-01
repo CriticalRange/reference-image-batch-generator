@@ -26,21 +26,19 @@ export const CURATED_MODEL_OPTIONS: UiModelOption[] = [
   { name: 'Imagen 4', code: 'imagen-4.0-generate-001', group: 'Imagen' },
   { name: 'Imagen 4 Fast', code: 'imagen-4.0-fast-generate-001', group: 'Imagen' },
   { name: 'Imagen 3 Capability', code: 'imagen-3.0-capability-001', group: 'Imagen' },
-  { name: 'Gemini 3.1 Pro Preview', code: 'gemini-3.1-pro-preview', group: 'Gemini Pro Preview' },
-  { name: 'Gemini 3 Pro Preview', code: 'gemini-3-pro-preview', group: 'Gemini Pro Preview' },
-  { name: 'Gemini 3 Flash Preview', code: 'gemini-3-flash-preview', group: 'Gemini Flash Preview' },
-  { name: 'Gemini 3.1 Flash Lite Preview', code: 'gemini-3.1-flash-lite-preview', group: 'Gemini Flash Lite Preview' },
-  { name: 'Gemini 2.5 Flash Lite Preview', code: 'gemini-2.5-flash-lite-preview-09-2025', group: 'Gemini Flash Lite Preview' },
-  { name: 'Gemini 2.5 Flash Preview', code: 'gemini-2.5-flash-preview-09-2025', group: 'Gemini Flash Preview' }
+  { name: 'Gemini 3.1 Pro Preview', code: 'gemini-3.1-pro-preview', group: 'Gemini Preview' },
+  { name: 'Gemini 3 Pro Preview', code: 'gemini-3-pro-preview', group: 'Gemini Preview' },
+  { name: 'Gemini 3 Flash Preview', code: 'gemini-3-flash-preview', group: 'Gemini Preview' },
+  { name: 'Gemini 3.1 Flash Lite Preview', code: 'gemini-3.1-flash-lite-preview', group: 'Gemini Preview' },
+  { name: 'Gemini 2.5 Flash Lite Preview', code: 'gemini-2.5-flash-lite-preview-09-2025', group: 'Gemini Preview' },
+  { name: 'Gemini 2.5 Flash Preview', code: 'gemini-2.5-flash-preview-09-2025', group: 'Gemini Preview' }
 ];
 
 const GROUP_ORDER = [
   'Gemini Image',
   'Together AI',
   'Imagen',
-  'Gemini Pro Preview',
-  'Gemini Flash Preview',
-  'Gemini Flash Lite Preview',
+  'Gemini Preview',
   'Gemini',
   'Other'
 ];
@@ -119,15 +117,15 @@ export function inferModelGroup(code: string): string {
   }
 
   if (/flash-lite/i.test(code)) {
-    return 'Gemini Flash Lite Preview';
+    return 'Gemini Preview';
   }
 
   if (/flash-preview|flash/i.test(code)) {
-    return 'Gemini Flash Preview';
+    return 'Gemini Preview';
   }
 
   if (/pro-preview|pro/i.test(code)) {
-    return 'Gemini Pro Preview';
+    return 'Gemini Preview';
   }
 
   if (/^gemini-/i.test(code)) {

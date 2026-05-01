@@ -10,7 +10,7 @@ import {
   type UiModelOption
 } from '@/lib/modelOptions';
 
-const DEFAULT_MODEL = 'gemini-2.5-flash-image';
+const DEFAULT_MODEL = 'google/flash-image-2.5';
 const MAX_DISCOVERED_MODELS = 300;
 
 function isSelectableModel(code: string): boolean {

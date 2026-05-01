@@ -118,6 +118,8 @@ type ResolutionOption =
   | '1344x768'
   | '1536x672';
 type ResizePresetOption = 'none' | '2000x3000' | '1536x2048' | '1696x2528' | '2048x2048' | 'custom';
+type ProductTypeOption = 'console' | 'dressing-table' | 'tv-dressing-table' | 'tv-shelf';
+type ProductColorOption = 'travertine' | 'anthracite' | 'white' | 'sapphire-oak';
 
 const DEFAULT_COUNT = 1;
 const MAX_HISTORY_ITEMS = 120;
@@ -130,7 +132,7 @@ const DEFAULT_TOGETHER_STEPS = 28;
 const HISTORY_STORAGE_KEY = 'reference-batch-history-v1';
 const THEME_STORAGE_KEY = 'reference-batch-theme-v1';
 const LANGUAGE_STORAGE_KEY = 'reference-batch-language-v1';
-const DEFAULT_MODEL = process.env.NEXT_PUBLIC_GEMINI_IMAGE_MODEL ?? 'gemini-2.5-flash-image';
+const DEFAULT_MODEL = 'google/flash-image-2.5';
 const ASPECT_RATIO_OPTIONS: AspectRatioOption[] = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
 const RESOLUTION_OPTIONS: ResolutionOption[] = ['512', '1K', '2K', '4K'];
 const TOGETHER_RESOLUTION_OPTIONS: ResolutionOption[] = [
@@ -147,6 +149,8 @@ const TOGETHER_RESOLUTION_OPTIONS: ResolutionOption[] = [
 ];
 const ALL_RESOLUTION_OPTIONS: ResolutionOption[] = [...RESOLUTION_OPTIONS, ...TOGETHER_RESOLUTION_OPTIONS];
 const RESIZE_PRESET_OPTIONS: Array<Exclude<ResizePresetOption, 'custom'>> = ['none', '2000x3000', '1536x2048', '1696x2528', '2048x2048'];
+const PRODUCT_TYPE_OPTIONS: ProductTypeOption[] = ['console', 'dressing-table', 'tv-dressing-table', 'tv-shelf'];
+const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = ['travertine', 'anthracite', 'white', 'sapphire-oak'];
 const INITIAL_MODEL_OPTIONS = sortModelOptions(
   mergeModelOptions(CURATED_MODEL_OPTIONS, [
     {
@@ -160,6 +164,8 @@ const INITIAL_MODEL_OPTIONS = sortModelOptions(
 export default function HomePage() {
   const { t, i18n } = useTranslation();
   const [prompt, setPrompt] = useState('');
+  const [selectedProductType, setSelectedProductType] = useState<ProductTypeOption | ''>('');
+  const [selectedProductColor, setSelectedProductColor] = useState<ProductColorOption | ''>('');
   const [negativePrompt, setNegativePrompt] = useState('');
   const [count, setCount] = useState(DEFAULT_COUNT);
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
@@ -173,10 +179,10 @@ export default function HomePage() {
   const [themeMode, setThemeMode] = useState<ThemeMode>('light');
   const [language, setLanguage] = useState<'tr' | 'en'>('tr');
   const [isReferenceDragOver, setIsReferenceDragOver] = useState(false);
-  const [aspectRatio, setAspectRatio] = useState<AspectRatioOption>('1:1');
+  const [aspectRatio, setAspectRatio] = useState<AspectRatioOption>('2:3');
   const [steps, setSteps] = useState(DEFAULT_TOGETHER_STEPS);
   const [imageSize, setImageSize] = useState<ResolutionOption>('1K');
-  const [resizePreset, setResizePreset] = useState<ResizePresetOption>('none');
+  const [resizePreset, setResizePreset] = useState<ResizePresetOption>('2000x3000');
   const [customResizeWidth, setCustomResizeWidth] = useState(DEFAULT_CUSTOM_RESIZE_WIDTH);
   const [customResizeHeight, setCustomResizeHeight] = useState(DEFAULT_CUSTOM_RESIZE_HEIGHT);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
@@ -185,6 +191,8 @@ export default function HomePage() {
   const [historyViewerIndex, setHistoryViewerIndex] = useState(0);
   const historyObjectUrlsRef = useRef<Map<string, string>>(new Map());
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const negativePromptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const historyGroups = useMemo(() => groupHistoryByDate(historyItems, language), [historyItems, language]);
   const modelGroups = useMemo(() => groupModelOptions(modelOptions), [modelOptions]);
   const selectedModelIsTogether = useMemo(() => isTogetherImageModelCode(selectedModel), [selectedModel]);
@@ -225,6 +233,22 @@ export default function HomePage() {
   const canSubmit = useMemo(() => {
     return prompt.trim().length > 0 && !isLoading;
   }, [prompt, isLoading]);
+
+  useEffect(() => {
+    if (!selectedProductType || !selectedProductColor) {
+      return;
+    }
+
+    setPrompt(buildPresetPrompt(selectedProductType, selectedProductColor));
+  }, [selectedProductColor, selectedProductType]);
+
+  useEffect(() => {
+    autoResizeTextarea(promptTextareaRef.current);
+  }, [prompt]);
+
+  useEffect(() => {
+    autoResizeTextarea(negativePromptTextareaRef.current);
+  }, [negativePrompt]);
 
   useEffect(() => {
     if (!availableResolutionOptions.includes(imageSize)) {
@@ -732,7 +756,12 @@ export default function HomePage() {
         );
       }
 
-      setFailures(outputFailures);
+      setFailures(
+        outputFailures.map((failure) => ({
+          ...failure,
+          error: formatGenerationError(failure.error, t)
+        }))
+      );
       setStatusText(
         t('statusModelSummary', {
           model: usedModel,
@@ -801,11 +830,14 @@ export default function HomePage() {
     <main className="app-shell">
       <aside className="panel history-tab">
         <div className="history-head">
-          <h2 className="history-title">{t('history')}</h2>
-          <p className={`history-meta${isLoading ? ' is-busy' : ''}`}>
-            {t('historyImageCount', { count: historyItems.length })}
-            {isLoading ? ` • ${t('historyGeneratingMeta', { count: pendingHistoryIds.length || count })}` : ''}
-          </p>
+          <h2 className="history-title">
+            <span>{t('history')}</span>
+            <span className="history-count-badge" aria-label={t('historyImageCount', { count: historyItems.length })}>
+              <GalleryIcon />
+              <span>{historyItems.length}</span>
+            </span>
+          </h2>
+          {isLoading ? <p className="history-meta is-busy">{t('historyGeneratingMeta', { count: pendingHistoryIds.length || count })}</p> : null}
         </div>
 
         {!isHistoryHydrated ? (
@@ -856,27 +888,33 @@ export default function HomePage() {
       </aside>
 
       <section className="workspace">
-        <div className="workspace-top">
-          <button
-            type="button"
-            className="theme-toggle"
-            onClick={() => setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'))}
-            aria-label={themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
-          >
-            {themeMode === 'dark' ? <SunIcon /> : <MoonIcon />}
-            <span>{themeMode === 'dark' ? t('lightMode') : t('darkMode')}</span>
-          </button>
-          <button
-            type="button"
-            className="theme-toggle"
-            onClick={() => setLanguage((current) => (current === 'tr' ? 'en' : 'tr'))}
-            aria-label={t('switchLanguage')}
-          >
-            <span>{language.toUpperCase()}</span>
-          </button>
+        <div className="workspace-header">
+          <h1>{t('appTitle')}</h1>
+          <div className="workspace-top">
+            <button
+              type="button"
+              className="theme-toggle icon-only"
+              onClick={() => setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'))}
+              aria-label={themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
+              title={themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
+            >
+              {themeMode === 'dark' ? <SunIcon /> : <MoonIcon />}
+            </button>
+            <div className="language-dropdown-wrap">
+              <GlobeIcon />
+              <select
+                className="language-dropdown"
+                value={language}
+                onChange={(event) => setLanguage(event.target.value as 'tr' | 'en')}
+                aria-label={t('switchLanguage')}
+                title={t('switchLanguage')}
+              >
+                <option value="tr">🇹🇷 Türkçe</option>
+                <option value="en">🇺🇸 English</option>
+              </select>
+            </div>
+          </div>
         </div>
-
-        <h1>{t('appTitle')}</h1>
         <p className="subtitle">{t('appSubtitle')}</p>
 
         <section className="panel generator-panel">
@@ -897,6 +935,7 @@ export default function HomePage() {
               <span className="field-head">
                 <ModelIcon />
                 <span>{t('model')}</span>
+                <InfoHint text={t('fieldInfo.model')} />
               </span>
               <select id="model-selector" value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>
                 {modelGroups.map((group) => (
@@ -918,6 +957,7 @@ export default function HomePage() {
               <div className="field-head">
                 <GalleryIcon />
                 <span>{t('referenceImages')}</span>
+                <InfoHint text={t('fieldInfo.referenceImages')} />
               </div>
 
               <div
@@ -983,8 +1023,36 @@ export default function HomePage() {
               <span className="field-head">
                 <PromptIcon />
                 <span>{t('basePrompt')}</span>
+                <InfoHint text={t('fieldInfo.basePrompt')} />
               </span>
+              <div className="inline-select-grid">
+                <select
+                  id="product-type"
+                  value={selectedProductType}
+                  onChange={(event) => setSelectedProductType(event.target.value as ProductTypeOption | '')}
+                >
+                  <option value="">{t('productTypePlaceholder')}</option>
+                  {PRODUCT_TYPE_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {t(`productTypeOptions.${option}`)}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  id="product-color"
+                  value={selectedProductColor}
+                  onChange={(event) => setSelectedProductColor(event.target.value as ProductColorOption | '')}
+                >
+                  <option value="">{t('productColorPlaceholder')}</option>
+                  {PRODUCT_COLOR_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {t(`productColorOptions.${option}`)}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <textarea
+                ref={promptTextareaRef}
                 id="prompt"
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
@@ -996,8 +1064,10 @@ export default function HomePage() {
               <span className="field-head">
                 <PromptIcon />
                 <span>{t('negativePrompt')}</span>
+                <InfoHint text={t('fieldInfo.negativePrompt')} />
               </span>
               <textarea
+                ref={negativePromptTextareaRef}
                 id="negative-prompt"
                 value={negativePrompt}
                 onChange={(event) => setNegativePrompt(event.target.value)}
@@ -1009,6 +1079,7 @@ export default function HomePage() {
               <span className="field-head">
                 <LayersIcon />
                 <span>{t('numberOfVariants')}</span>
+                <InfoHint text={t('fieldInfo.variants')} />
               </span>
               <input
                 id="count"
@@ -1024,6 +1095,7 @@ export default function HomePage() {
               <span className="field-head">
                 <RatioIcon />
                 <span>{t('aspectRatio')}</span>
+                <InfoHint text={t('fieldInfo.aspectRatio')} />
               </span>
               <select
                 id="aspect-ratio"
@@ -1043,6 +1115,7 @@ export default function HomePage() {
                 <span className="field-head">
                   <LayersIcon />
                   <span>{t('steps')}</span>
+                  <InfoHint text={t('fieldInfo.steps')} />
                 </span>
                 <input
                   id="steps"
@@ -1068,6 +1141,7 @@ export default function HomePage() {
                 <span className="field-head">
                   <ResolutionIcon />
                   <span>{t('resolution')}</span>
+                  <InfoHint text={t('fieldInfo.resolution')} />
                 </span>
                 <select
                   id="image-size"
@@ -1089,6 +1163,7 @@ export default function HomePage() {
               <span className="field-head">
                 <ResizeIcon />
                 <span>{t('resizeOutput')}</span>
+                <InfoHint text={t('fieldInfo.resizeOutput')} />
               </span>
               <select
                 id="resize-preset"
@@ -1161,17 +1236,34 @@ export default function HomePage() {
               }
               transition={isLoading ? { duration: 1.1, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.18 }}
             >
-              {isLoading ? (
-                <>
-                  <span className="generate-btn-spinner" aria-hidden="true" />
-                  <span>{t('generating')}</span>
-                </>
-              ) : (
-                <>
-                  <span className="generate-btn-icon" aria-hidden="true">✨</span>
-                  <span>{t('generate')}</span>
-                </>
-              )}
+              <span className="generate-btn-drift generate-btn-drift-1" aria-hidden="true" />
+              <span className="generate-btn-drift generate-btn-drift-2" aria-hidden="true" />
+              <span className="generate-btn-drift generate-btn-drift-3" aria-hidden="true" />
+              <span className="generate-btn-drift generate-btn-drift-4" aria-hidden="true" />
+              <span className="generate-btn-drift generate-btn-drift-5" aria-hidden="true" />
+              <span className="generate-btn-drift generate-btn-drift-6" aria-hidden="true" />
+              <span className="generate-btn-drift generate-btn-drift-7" aria-hidden="true" />
+              <span className="generate-btn-drift generate-btn-drift-8" aria-hidden="true" />
+              <span className="generate-btn-drift generate-btn-drift-9" aria-hidden="true" />
+              <motion.span
+                className="generate-btn-content"
+                key={isLoading ? 'loading' : 'idle'}
+                initial={{ opacity: 0, y: 6, filter: 'blur(2px)' }}
+                animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+              >
+                {isLoading ? (
+                  <>
+                    <span className="generate-btn-spinner" aria-hidden="true" />
+                    <span>{t('generating')}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="generate-btn-icon" aria-hidden="true">✨</span>
+                    <span>{t('generate')}</span>
+                  </>
+                )}
+              </motion.span>
             </motion.button>
           </form>
         </section>
@@ -1435,21 +1527,24 @@ function isUiModelOption(value: unknown): value is UiModelOption {
 
 function groupModelOptions(options: UiModelOption[]): Array<{ group: string; options: UiModelOption[] }> {
   const recommendedCodes = [
-    'gemini-3.1-flash-image-preview',
-    'gemini-3-pro-image-preview',
-    'gemini-3.1-pro-preview',
-    'gemini-3-pro-preview',
-    'gemini-3-flash-preview',
-    'gemini-3.1-flash-lite-preview'
+    'google/flash-image-2.5',
+    'google/flash-image-3.1',
+    'qwen/qwen-image-2.0-pro',
+    'black-forest-labs/flux.1-kontext-pro',
+    'black-forest-labs/flux.1-kontext-max',
+    'black-forest-labs/flux.1-krea-dev',
+    'black-forest-labs/flux.1-schnell',
+    'ideogram/ideogram-v3.0',
+    'openai/gpt-image-1.5'
   ];
   const recommendedRank = new Map<string, number>(recommendedCodes.map((code, index) => [code, index]));
   const isRecommended = (option: UiModelOption): boolean => {
     const code = option.code.toLowerCase();
-    if (option.group.toLowerCase().includes('together') || code.startsWith('qwen/')) {
+    if (!option.group.toLowerCase().includes('together')) {
       return false;
     }
 
-    return code.startsWith('gemini-3') || recommendedRank.has(code);
+    return recommendedRank.has(code);
   };
 
   const recommended = options
@@ -1465,7 +1560,7 @@ function groupModelOptions(options: UiModelOption[]): Array<{ group: string; opt
     });
 
   const grouped = new Map<string, UiModelOption[]>();
-  for (const option of options.filter((entry) => !isRecommended(entry))) {
+  for (const option of options) {
     const bucket = grouped.get(option.group) ?? [];
     bucket.push(option);
     grouped.set(option.group, bucket);
@@ -1497,33 +1592,51 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHe
   }
 
   const config = item.generationConfig;
-  const imageSizePart = config?.imageSize ? t('historyViewerImageSizePart', { size: config.imageSize }) : '';
-  const configSummary = config
-    ? t('historyViewerConfigSummary', {
-        model: config.model,
-        aspect: config.aspectRatio,
-        imageSize: imageSizePart,
-        count: config.requestedCount,
-        refs: config.referenceImages?.length ?? 0,
-        resize: describeResize(config.resizeWidth, config.resizeHeight, t)
-      })
-    : t('historyViewerNoConfig');
+  const generatedDescription = item.promptVariant.trim() || config?.basePrompt?.trim() || t('historyViewer');
 
   return (
     <div className="history-viewer-header">
       <div className="history-viewer-meta">
-        <strong>{t('historyViewer')}</strong>
-        <span>{configSummary}</span>
-        {config?.basePrompt ? <em>{config.basePrompt}</em> : null}
+        <strong className="history-viewer-title">{generatedDescription}</strong>
       </div>
 
       <div className="history-viewer-actions">
-        <button type="button" className="history-viewer-download" onClick={onDownload}>
-          {t('download')}
-        </button>
-        <button type="button" className="history-viewer-regenerate" onClick={onRegenerate}>
-          {t('regenerate')}
-        </button>
+        <div className="history-viewer-config-icons">
+          {config ? (
+            <>
+              <span className="history-viewer-config-pill" title={config.model}>
+                <ModelIcon />
+                <span>{config.model}</span>
+              </span>
+              <span className="history-viewer-config-pill" title={config.aspectRatio}>
+                <RatioIcon />
+                <span>{config.aspectRatio}</span>
+              </span>
+              {config.imageSize ? (
+                <span className="history-viewer-config-pill" title={config.imageSize}>
+                  <ResolutionIcon />
+                  <span>{config.imageSize}</span>
+                </span>
+              ) : null}
+              <span className="history-viewer-config-pill" title={describeResize(config.resizeWidth, config.resizeHeight, t)}>
+                <ResizeIcon />
+                <span>{describeResize(config.resizeWidth, config.resizeHeight, t)}</span>
+              </span>
+            </>
+          ) : (
+            <span className="history-viewer-config">{t('historyViewerNoConfig')}</span>
+          )}
+        </div>
+        <div className="history-viewer-action-row">
+          <button type="button" className="history-viewer-download" onClick={onDownload}>
+            <DownloadIcon />
+            {t('download')}
+          </button>
+          <button type="button" className="history-viewer-regenerate" onClick={onRegenerate}>
+            <RegenerateIcon />
+            {t('regenerate')}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1531,7 +1644,22 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHe
 
 function toAspectRatioOption(value: string): AspectRatioOption {
   const match = ASPECT_RATIO_OPTIONS.find((option) => option === value);
-  return match ?? '1:1';
+  return match ?? '2:3';
+}
+
+function autoResizeTextarea(element: HTMLTextAreaElement | null) {
+  if (!element) {
+    return;
+  }
+
+  const currentHeight = element.offsetHeight;
+  element.style.height = 'auto';
+  const targetHeight = element.scrollHeight;
+  element.style.height = `${currentHeight}px`;
+
+  requestAnimationFrame(() => {
+    element.style.height = `${targetHeight}px`;
+  });
 }
 
 function toResolutionOption(value: string | undefined): ResolutionOption {
@@ -1571,7 +1699,7 @@ function toResizePresetOption(preset: unknown, width: unknown, height: unknown):
     return isResizePresetOption(candidate) ? candidate : 'custom';
   }
 
-  return 'none';
+  return '2000x3000';
 }
 
 function describeResize(width: number | undefined, height: number | undefined, t: (key: string, options?: Record<string, unknown>) => string): string {
@@ -1601,8 +1729,16 @@ function formatGenerationError(message: string, t: (key: string, options?: Recor
 
   const providerError = extractProviderError(trimmed);
   const providerErrorCode = providerError?.code;
+  if (providerErrorCode === 'invalid_api_key' || trimmed.toLowerCase().includes('invalid_api_key')) {
+    return t('providerInvalidApiKey');
+  }
+
+  if (providerErrorCode === 'rate_limit_exceeded') {
+    return t('providerRateLimitExceeded');
+  }
+
   if (providerErrorCode === 'model_not_available') {
-    return 'This model is not available on Together AI.';
+    return t('providerModelNotAvailable');
   }
 
   if (!providerErrorCode && providerError?.message) {
@@ -1613,12 +1749,12 @@ function formatGenerationError(message: string, t: (key: string, options?: Recor
 }
 
 function extractProviderError(message: string): { code?: string; message?: string } | undefined {
-  const jsonMatch = message.match(/(\{"id":.+\})$/);
-  if (!jsonMatch) {
+  const jsonStart = message.indexOf('{');
+  if (jsonStart < 0) {
     return undefined;
   }
 
-  const jsonCandidate = jsonMatch[1];
+  const jsonCandidate = message.slice(jsonStart).trim();
   try {
     const parsed = JSON.parse(jsonCandidate) as {
       error?: {
@@ -1641,7 +1777,19 @@ function extractProviderError(message: string): { code?: string; message?: strin
       ...(normalizedMessage ? { message: normalizedMessage } : {})
     };
   } catch {
-    return undefined;
+    const messageMatch = /"message"\s*:\s*"([^"]+)"/i.exec(jsonCandidate);
+    const codeMatch = /"code"\s*:\s*"([^"]+)"/i.exec(jsonCandidate);
+    const extractedMessage = messageMatch?.[1]?.trim();
+    const extractedCode = codeMatch?.[1]?.trim();
+
+    if (!extractedMessage && !extractedCode) {
+      return undefined;
+    }
+
+    return {
+      ...(extractedCode ? { code: extractedCode } : {}),
+      ...(extractedMessage ? { message: extractedMessage } : {})
+    };
   }
 }
 
@@ -1662,6 +1810,64 @@ function getBatchStatusText(
     case 'running': return `${t('statusBatchRunning')}${detailSuffix}`;
     case 'succeeded': return `${t('statusBatchSucceeded')}${detailSuffix}`;
     default: return stateLabel;
+  }
+}
+
+function buildPresetPrompt(type: ProductTypeOption, color: ProductColorOption): string {
+  const colorText = resolveProductColorText(color);
+  const productText = resolveProductTypeText(type);
+  const topElementText = resolveTopElementText(type);
+  const stylingText = resolveStylingText(type);
+
+  return `A professional e-commerce product photography of a wall-mounted ${colorText} ${productText} with ${topElementText}. The ${productText} is mounted on a clean, minimalist wall featuring plexiglass surfaces with precise laser-etched lines. Only the plexiglass must show realistic, crisp reflections of the surroundings. The ${productText} remains exactly as designed with its original hardware and laser-etched line details from the reference image. ${stylingText} The floor features a rug of any kind. The room has a minimalist interior design with soft, natural daylight coming from the side.`;
+}
+
+function resolveProductTypeText(type: ProductTypeOption): string {
+  switch (type) {
+    case 'console':
+      return 'console';
+    case 'dressing-table':
+      return 'dressing table';
+    case 'tv-dressing-table':
+      return 'TV dressing table';
+    case 'tv-shelf':
+      return 'TV shelf';
+  }
+}
+
+function resolveProductColorText(color: ProductColorOption): string {
+  switch (color) {
+    case 'travertine':
+      return 'travertine colored';
+    case 'anthracite':
+      return 'anthracite colored';
+    case 'white':
+      return 'white colored';
+    case 'sapphire-oak':
+      return 'sapphire oak colored';
+  }
+}
+
+function resolveTopElementText(type: ProductTypeOption): string {
+  switch (type) {
+    case 'console':
+    case 'dressing-table':
+      return 'a large circular mirror above it';
+    case 'tv-dressing-table':
+    case 'tv-shelf':
+      return 'a large flat-screen TV above it';
+  }
+}
+
+function resolveStylingText(type: ProductTypeOption): string {
+  switch (type) {
+    case 'console':
+    case 'dressing-table':
+      return 'Directly above the unit, there is a large, circular mirror with a thin, elegant gold frame. The surface is styled with a few modern books and a small minimalist sculpture.';
+    case 'tv-dressing-table':
+      return 'Directly above the unit, there is a large flat-screen TV mounted neatly on the wall. The surface is styled with a few modern books and a small minimalist sculpture.';
+    case 'tv-shelf':
+      return 'Directly above the shelf, there is a large flat-screen TV mounted neatly on the wall. The shelf is styled with a few modern books and a small minimalist sculpture.';
   }
 }
 
@@ -1707,6 +1913,7 @@ function translateModelGroup(group: string, t: (key: string, options?: Record<st
     'Gemini Image',
     'Together AI',
     'Imagen',
+    'Gemini Preview',
     'Gemini Pro Preview',
     'Gemini Flash Preview',
     'Gemini Flash Lite Preview',
@@ -1721,6 +1928,17 @@ function translateModelGroup(group: string, t: (key: string, options?: Record<st
   return group;
 }
 
+function InfoHint({ text }: { text: string }) {
+  return (
+    <span className="info-hint" tabIndex={0} aria-label={text}>
+      <InfoIcon />
+      <span className="info-hint-tooltip" role="tooltip">
+        {text}
+      </span>
+    </span>
+  );
+}
+
 function SunIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1732,6 +1950,25 @@ function SunIcon() {
         strokeWidth="1.7"
         strokeLinecap="round"
       />
+    </svg>
+  );
+}
+
+function InfoIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.3" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="12" cy="8" r="1.2" fill="currentColor" />
+      <path d="M12 11.3v5.6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function GlobeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.6" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M3.8 12h16.4M12 3.4c2.2 2.3 3.5 5.4 3.5 8.6S14.2 18.3 12 20.6M12 3.4C9.8 5.7 8.5 8.8 8.5 12s1.3 6.3 3.5 8.6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }
@@ -1815,6 +2052,29 @@ function RatioIcon() {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <rect x="3.5" y="6" width="17" height="12" rx="2.3" fill="none" stroke="currentColor" strokeWidth="1.8" />
       <path d="M9.2 9.7 14.8 14.3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function DownloadIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 4.8v9.4m0 0-3.6-3.6m3.6 3.6 3.6-3.6M5 16.9h14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function RegenerateIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M18.4 8.4A7 7 0 0 0 6.8 7.3M5.6 14.9a7 7 0 0 0 11.6 1.1M18.3 4.9v3.9h-3.9M5.7 19.1v-3.9h3.9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

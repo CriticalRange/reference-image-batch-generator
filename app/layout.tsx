@@ -21,7 +21,15 @@ const themeInitScript = `
 
 export const metadata: Metadata = {
   title: 'Referans Toplu Görsel Oluşturucu',
-  description: 'Tek bir prompt ve referans görselle birden fazla görsel varyantı üretin.'
+  description: 'Tek bir prompt ve referans görselle birden fazla görsel varyantı üretin.',
+  icons: {
+    icon: [
+      { url: '/favicon.ico' },
+      { url: '/icon.png', type: 'image/png' }
+    ],
+    shortcut: '/favicon.ico',
+    apple: '/apple-icon.png'
+  }
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

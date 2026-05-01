@@ -65,7 +65,7 @@ export type BatchStatusResult = {
   results?: BatchOutput;
 };
 
-const DEFAULT_MODEL = 'gemini-2.5-flash-image';
+const DEFAULT_MODEL = 'google/flash-image-2.5';
 const DEFAULT_MAX_BATCH = 8;
 const DEFAULT_MAX_PARALLEL_REQUESTS = 2;
 const DEFAULT_MAX_REFERENCE_IMAGES = 4;
