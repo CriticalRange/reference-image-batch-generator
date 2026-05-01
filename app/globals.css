@@ -1244,21 +1244,63 @@ button:disabled {
   --yarl__color_button_active: var(--mono-btn-ink);
   --yarl__color_button_disabled: color-mix(in oklab, var(--mono-btn-ink) 40%, transparent);
   --yarl__button_filter: none;
+  --yarl__icon_button_size: 44px;
+  --yarl__icon_size: 20px;
 }
 
 .yarl__container .yarl__button {
   background: var(--mono-btn-bg) !important;
   border: 1px solid var(--mono-btn-border) !important;
   color: var(--mono-btn-ink) !important;
-  border-radius: 999px;
-  backdrop-filter: blur(2px);
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 160ms ease,
+    box-shadow 180ms ease,
+    opacity 180ms ease;
+}
+
+.yarl__container .yarl__button svg {
+  width: 20px !important;
+  height: 20px !important;
+  display: block;
+  margin: 0;
 }
 
 @media (hover: hover) {
   .yarl__container .yarl__button:hover,
   .yarl__container .yarl__button:focus-visible:hover {
-    background: var(--mono-btn-bg-hover) !important;
+    background: color-mix(in oklab, var(--mono-btn-bg-hover) 88%, #ffffff 12%) !important;
+    border-color: color-mix(in oklab, var(--mono-btn-border) 60%, #9ad2ff 40%) !important;
+    transform: translateY(-1px);
+    box-shadow:
+      0 14px 30px rgba(0, 0, 0, 0.32),
+      0 0 16px rgba(94, 180, 255, 0.25),
+      inset 0 1px 0 rgba(255, 255, 255, 0.24);
   }
+}
+
+.yarl__container .yarl__button:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.yarl__container .yarl__button[disabled] {
+  opacity: 0.45 !important;
+  box-shadow: none;
 }
 
 @media (max-width: 700px) {
