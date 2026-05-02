@@ -38,8 +38,10 @@ cp .env.example .env.local
 ```
 
 3. Set `GEMINI_API_KEY` in `.env.local`.
+4. If you will use Together models, set `TOGETHER_API_KEY`.
+5. If you will use fal.ai models, set `FAL_AI_API_KEY`.
 
-4. Run in dev mode:
+6. Run in dev mode:
 
 ```bash
 npm run dev
@@ -63,3 +65,5 @@ If `POST /api/generate` returns `500`, check:
 2. `GEMINI_IMAGE_MODEL` is available for your account/region.
 3. Reduce pressure by lowering `MAX_PARALLEL_REQUESTS` to `1`.
 4. Check the UI "Failed Variants" section. It now shows per-variant API errors instead of a generic failure.
+5. If using a Together model, verify `TOGETHER_API_KEY`.
+6. If using a fal.ai model, verify `FAL_AI_API_KEY`.

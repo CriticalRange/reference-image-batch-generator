@@ -22,6 +22,10 @@ export const CURATED_MODEL_OPTIONS: UiModelOption[] = [
   { name: 'Nano Banana', code: 'google/flash-image-2.5', group: 'Together AI' },
   { name: 'Nano Banana 2', code: 'google/flash-image-3.1', group: 'Together AI' },
   { name: 'Ideogram 3.0', code: 'ideogram/ideogram-v3.0', group: 'Together AI' },
+  { name: 'FLUX Pro Kontext Max (fal)', code: 'fal-ai/flux-pro/kontext/max', group: 'Fal AI' },
+  { name: 'FLUX Pro Kontext (fal)', code: 'fal-ai/flux-pro/kontext', group: 'Fal AI' },
+  { name: 'FLUX.1 Dev (fal)', code: 'fal-ai/flux/dev', group: 'Fal AI' },
+  { name: 'GPT Image 1.5 Edit (fal)', code: 'fal-ai/gpt-image-1.5/edit', group: 'Fal AI' },
   { name: 'Imagen 4 Ultra', code: 'imagen-4.0-ultra-generate-001', group: 'Imagen' },
   { name: 'Imagen 4', code: 'imagen-4.0-generate-001', group: 'Imagen' },
   { name: 'Imagen 4 Fast', code: 'imagen-4.0-fast-generate-001', group: 'Imagen' },
@@ -37,6 +41,7 @@ export const CURATED_MODEL_OPTIONS: UiModelOption[] = [
 const GROUP_ORDER = [
   'Gemini Image',
   'Together AI',
+  'Fal AI',
   'Imagen',
   'Gemini Preview',
   'Gemini',
@@ -106,6 +111,10 @@ export function inferModelGroup(code: string): string {
     /^ideogram\//i.test(code)
   ) {
     return 'Together AI';
+  }
+
+  if (/^fal-ai\//i.test(code)) {
+    return 'Fal AI';
   }
 
   if (/^imagen-/i.test(code)) {

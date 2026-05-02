@@ -51,7 +51,7 @@ export type JobState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancell
 
 export type SubmitBatchResult = {
   jobId: string;
-  provider: 'gemini' | 'together';
+  provider: 'gemini' | 'together' | 'fal';
   // Populated immediately for Together AI — no polling required.
   results?: BatchOutput;
 };
@@ -80,6 +80,7 @@ const GOOGLE_IMAGEN_TOGETHER_MODEL_PATTERN = /^google\/imagen-/i;
 const GOOGLE_FLASH_IMAGE_TOGETHER_MODEL_PATTERN = /^google\/flash-image-/i;
 const GPT_IMAGE_TOGETHER_MODEL_PATTERN = /^openai\/gpt-image-/i;
 const IDEOGRAM_TOGETHER_MODEL_PATTERN = /^ideogram\//i;
+const FAL_MODEL_PATTERN = /^fal-ai\//i;
 const FLUX_KONTEXT_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/FLUX\.1-kontext-(pro|max)$/i;
 const FLUX2_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/FLUX\.2-/i;
 const GOOGLE_GEMINI_PRO_IMAGE_TOGETHER_MODEL_PATTERN = /^google\/gemini-3-pro-image$/i;
@@ -179,6 +180,10 @@ function isTogetherImageModel(model: string): boolean {
     GPT_IMAGE_TOGETHER_MODEL_PATTERN.test(model) ||
     IDEOGRAM_TOGETHER_MODEL_PATTERN.test(model)
   );
+}
+
+function isFalImageModel(model: string): boolean {
+  return FAL_MODEL_PATTERN.test(model);
 }
 
 function normalizeAspectRatio(value: string | undefined): string {
@@ -302,6 +307,133 @@ async function extractTogetherImageFromResponse(response: TogetherImageResponse)
   }
 
   throw getNoImageReturnedError('Together API returned image data in an unsupported format.');
+}
+
+async function downloadImageAsBase64(url: string): Promise<{ imageBase64: string; mimeType: string }> {
+  const file = await fetch(url);
+  if (!file.ok) {
+    throw new Error(`Failed to download image URL (${file.status}).`);
+  }
+
+  const bytes = await file.arrayBuffer();
+  return {
+    imageBase64: Buffer.from(bytes).toString('base64'),
+    mimeType: file.headers.get('content-type')?.split(';')[0] || 'image/jpeg'
+  };
+}
+
+function firstStringValue(values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function resolveFalImageUrl(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') {
+    return undefined;
+  }
+
+  const record = payload as Record<string, unknown>;
+  const images = Array.isArray(record.images) ? record.images : undefined;
+  if (images && images.length > 0) {
+    const firstImage = images[0];
+    if (typeof firstImage === 'string') {
+      return firstImage;
+    }
+    if (firstImage && typeof firstImage === 'object') {
+      const imageRecord = firstImage as Record<string, unknown>;
+      return firstStringValue([imageRecord.url, imageRecord.image_url, imageRecord.href]);
+    }
+  }
+
+  const image = record.image;
+  if (typeof image === 'string') {
+    return image;
+  }
+  if (image && typeof image === 'object') {
+    const imageRecord = image as Record<string, unknown>;
+    const imageUrl = firstStringValue([imageRecord.url, imageRecord.image_url, imageRecord.href]);
+    if (imageUrl) {
+      return imageUrl;
+    }
+  }
+
+  return firstStringValue([record.url, record.image_url, record.output_url]);
+}
+
+async function runFalBatch(
+  model: string,
+  requestedCount: number,
+  prompts: string[],
+  negativePrompt: string | undefined,
+  references: Array<{ base64: string; mimeType: string }>,
+  aspectRatio: string,
+  resizeTo: { width: number; height: number } | undefined
+): Promise<BatchOutput> {
+  const apiKey = process.env.FAL_AI_API_KEY;
+  if (!apiKey) {
+    throw new Error('Missing FAL_AI_API_KEY');
+  }
+
+  const endpoint = `https://fal.run/${model}`;
+  const maxParallel = parseMaxParallelRequests();
+  const referenceImageUrl = references[0] ? buildReferenceDataUrl(references[0]) : undefined;
+
+  const jobs = prompts.map((promptVariant) => {
+    return async () => {
+      const requestBody: Record<string, unknown> = {
+        prompt: promptVariant,
+        aspect_ratio: aspectRatio
+      };
+
+      if (negativePrompt) {
+        requestBody.negative_prompt = negativePrompt;
+      }
+      if (referenceImageUrl) {
+        requestBody.image_url = referenceImageUrl;
+      }
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Key ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+      });
+      const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+
+      if (!response.ok) {
+        const detail = firstStringValue([payload.detail, payload.error, payload.message]) || `fal.ai request failed (${response.status})`;
+        throw new Error(detail);
+      }
+
+      const imageUrl = resolveFalImageUrl(payload);
+      if (!imageUrl) {
+        throw getNoImageReturnedError('fal.ai response contained no image URL.');
+      }
+
+      const downloaded = await downloadImageAsBase64(imageUrl);
+      const extracted: BatchResult = {
+        promptVariant: '',
+        imageBase64: downloaded.imageBase64,
+        mimeType: downloaded.mimeType
+      };
+      const processed = resizeTo ? await resizeGeneratedImage(extracted, resizeTo) : extracted;
+
+      return {
+        ...processed,
+        promptVariant
+      } satisfies BatchResult;
+    };
+  });
+
+  const settled = await runWithConcurrency(jobs, maxParallel);
+  return buildBatchOutput(model, requestedCount, prompts, settled);
 }
 
 function estimateBase64Bytes(base64: string): number {
@@ -779,6 +911,20 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       resizeTo
     );
     return { jobId, provider: 'together', results: result };
+  }
+
+  if (isFalImageModel(model)) {
+    const jobId = randomUUID();
+    const result = await runFalBatch(
+      model,
+      clampedCount,
+      prompts,
+      input.negativePrompt?.trim() || undefined,
+      references,
+      aspectRatio,
+      resizeTo
+    );
+    return { jobId, provider: 'fal', results: result };
   }
 
   const apiKey = process.env.GEMINI_API_KEY;

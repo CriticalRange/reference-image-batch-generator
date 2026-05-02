@@ -3,7 +3,7 @@
 import '@/lib/i18n';
 import { get, set } from 'idb-keyval';
 import { AnimatePresence, motion } from 'framer-motion';
-import { DragEvent, FormEvent, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import Lightbox, { type Slide } from 'yet-another-react-lightbox';
@@ -35,8 +35,8 @@ type GenerationFailure = {
 
 type BatchSubmitResponse = {
   jobId: string;
-  provider: 'gemini' | 'together';
-  // Present for Together AI — results are computed synchronously during submit.
+  provider: 'gemini' | 'together' | 'fal';
+  // Present for synchronous providers (Together/fal.ai) — results are computed during submit.
   results?: {
     usedModel: string;
     requestedCount: number;
@@ -126,6 +126,7 @@ type ResizePresetOption = 'none' | '2000x3000' | '1536x2048' | '1696x2528' | '20
 type ProductTypeOption = 'console' | 'dressing-table' | 'tv-dressing-table' | 'tv-shelf';
 type ProductColorOption = 'travertine' | 'anthracite' | 'white' | 'sapphire-oak';
 type RoomStyleOption = 'minimalist' | 'modern' | 'classic' | 'industrial';
+type FalPricingMap = Record<string, string>;
 
 const DEFAULT_COUNT = 1;
 const MAX_HISTORY_ITEMS = 120;
@@ -140,6 +141,8 @@ const ARCHIVE_STORAGE_KEY = 'reference-batch-archive-v1';
 const ARCHIVE_TTL_DAYS = 15;
 const THEME_STORAGE_KEY = 'reference-batch-theme-v1';
 const LANGUAGE_STORAGE_KEY = 'reference-batch-language-v1';
+const FAL_PRICING_STORAGE_KEY = 'reference-batch-fal-pricing-v1';
+const FAL_PRICING_TTL_MS = 10 * 24 * 60 * 60 * 1000;
 const DEFAULT_MODEL = 'google/flash-image-2.5';
 const ASPECT_RATIO_OPTIONS: AspectRatioOption[] = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
 const RESOLUTION_OPTIONS: ResolutionOption[] = ['512', '1K', '2K', '4K'];
@@ -197,6 +200,7 @@ export default function HomePage() {
   const [customResizeHeight, setCustomResizeHeight] = useState(DEFAULT_CUSTOM_RESIZE_HEIGHT);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [modelOptions, setModelOptions] = useState<UiModelOption[]>(INITIAL_MODEL_OPTIONS);
+  const [falPricingByModel, setFalPricingByModel] = useState<FalPricingMap>({});
   const [activeTab, setActiveTab] = useState<'generator' | 'history'>('generator');
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
@@ -358,6 +362,70 @@ export default function HomePage() {
       historyObjectUrlsRef.current.clear();
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrateFalPricing() {
+      const falModelCodes = Array.from(
+        new Set(
+          modelOptions
+            .map((option) => normalizeModelCode(option.code))
+            .filter((code) => code.toLowerCase().startsWith('fal-ai/'))
+        )
+      );
+
+      if (falModelCodes.length === 0) {
+        return;
+      }
+
+      try {
+        const cachedRaw = await get<unknown>(FAL_PRICING_STORAGE_KEY);
+        const cached = normalizeFalPricingCache(cachedRaw);
+        if (cached && cached.expiresAt > Date.now() && falModelCodes.every((code) => typeof cached.prices[code] === 'string')) {
+          if (!cancelled) {
+            setFalPricingByModel(cached.prices);
+          }
+          return;
+        }
+      } catch {
+        // Ignore cache read failures.
+      }
+
+      try {
+        const query = falModelCodes.map((code) => `endpoint_id=${encodeURIComponent(code)}`).join('&');
+        const response = await fetch(`/api/fal-pricing?${query}`, { cache: 'no-store' });
+        const payload = (await response.json()) as { prices?: unknown };
+        if (!response.ok || !Array.isArray(payload.prices)) {
+          return;
+        }
+
+        const nextPrices: FalPricingMap = {};
+        for (const entry of payload.prices) {
+          const normalized = normalizeFalPriceResponseEntry(entry);
+          if (!normalized) {
+            continue;
+          }
+          nextPrices[normalized.endpointId] = normalized.label;
+        }
+
+        if (!cancelled) {
+          setFalPricingByModel(nextPrices);
+        }
+        await set(FAL_PRICING_STORAGE_KEY, {
+          expiresAt: Date.now() + FAL_PRICING_TTL_MS,
+          prices: nextPrices
+        });
+      } catch {
+        // Ignore pricing fetch failures; model selector still works without labels.
+      }
+    }
+
+    void hydrateFalPricing();
+    return () => {
+      cancelled = true;
+    };
+  }, [modelOptions]);
 
   // Archive: hydrate, purge expired, persist, and manage object URLs
   useEffect(() => {
@@ -1197,7 +1265,7 @@ export default function HomePage() {
                   <optgroup key={group.group} label={translateModelGroup(group.group, t)}>
                     {group.options.map((option) => (
                       <option key={option.code} value={option.code}>
-                        {option.name} ({option.code})
+                        {renderModelOptionLabel(option, falPricingByModel)}
                       </option>
                     ))}
                   </optgroup>
@@ -1888,12 +1956,6 @@ type HistoryViewerHeaderProps = {
 
 function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHeaderProps) {
   const { t } = useTranslation();
-  const [isExpanded, setIsExpanded] = useState(false);
-  const detailsId = useId();
-
-  useEffect(() => {
-    setIsExpanded(false);
-  }, [item?.id]);
 
   if (!item) {
     return null;
@@ -1908,21 +1970,8 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHe
         <strong className="history-viewer-title">{generatedDescription}</strong>
       </div>
 
-      <button
-        type="button"
-        className="history-viewer-toggle"
-        onClick={() => setIsExpanded((previous) => !previous)}
-        aria-expanded={isExpanded}
-        aria-controls={detailsId}
-        aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
-        title={isExpanded ? 'Collapse details' : 'Expand details'}
-      >
-        {isExpanded ? '−' : '+'}
-      </button>
-
-      {isExpanded ? (
-        <div className="history-viewer-actions" id={detailsId}>
-          <div className="history-viewer-config-icons">
+      <div className="history-viewer-actions">
+        <div className="history-viewer-config-icons">
           {config ? (
             <>
               <span className="history-viewer-config-pill" title={config.model}>
@@ -1957,9 +2006,8 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHe
             <RegenerateIcon />
             {t('regenerate')}
           </button>
-          </div>
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }
@@ -2142,7 +2190,7 @@ function buildPresetPrompt(type: ProductTypeOption, color: ProductColorOption, s
   const stylingText = resolveStylingText(type);
   const sceneText = resolveSceneText(scene);
 
-  return `A professional e-commerce product photography of a wall-mounted ${colorText} ${productText} with ${topElementText}. The ${productText} is mounted on a clean, minimalist wall featuring plexiglass surfaces with precise laser-etched lines. Only the plexiglass must show realistic, crisp reflections of the surroundings. The ${productText} remains exactly as designed with its original hardware and laser-etched line details from the reference image. ${stylingText} The floor features a rug of any kind. ${sceneText}`;
+  return `A professional e-commerce product photography of a wall-mounted ${colorText} ${productText} with ${topElementText}. The ${productText} is mounted on a clean, minimalist wall. Only the plexiglass must show realistic, crisp reflections of the surroundings. The ${productText} remains exactly as designed with its original hardware and laser-etched line details from the reference image. ${stylingText} The floor features a rug of any kind. ${sceneText}`;
 }
 
 function resolveSceneText(scene: RoomStyleOption): string {
@@ -2248,6 +2296,7 @@ function translateModelGroup(group: string, t: (key: string, options?: Record<st
     'Recommended',
     'Gemini Image',
     'Together AI',
+    'Fal AI',
     'Imagen',
     'Gemini Preview',
     'Gemini Pro Preview',
@@ -2262,6 +2311,75 @@ function translateModelGroup(group: string, t: (key: string, options?: Record<st
   }
 
   return group;
+}
+
+function renderModelOptionLabel(option: UiModelOption, falPricingByModel: FalPricingMap): string {
+  const code = normalizeModelCode(option.code);
+  const price = falPricingByModel[code];
+  if (price) {
+    return `${option.name} (${code}) • ${price}`;
+  }
+
+  return `${option.name} (${code})`;
+}
+
+function normalizeFalPricingCache(value: unknown): { expiresAt: number; prices: FalPricingMap } | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const expiresAtRaw = record.expiresAt;
+  const pricesRaw = record.prices;
+  const expiresAt = typeof expiresAtRaw === 'number' ? expiresAtRaw : Number.parseInt(String(expiresAtRaw), 10);
+  if (!Number.isFinite(expiresAt) || !pricesRaw || typeof pricesRaw !== 'object') {
+    return null;
+  }
+
+  const prices: FalPricingMap = {};
+  for (const [key, row] of Object.entries(pricesRaw as Record<string, unknown>)) {
+    if (typeof row !== 'string' || !row.trim()) {
+      continue;
+    }
+    prices[normalizeModelCode(key)] = row.trim();
+  }
+
+  return { expiresAt, prices };
+}
+
+function normalizeFalPriceResponseEntry(value: unknown): { endpointId: string; label: string } | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const row = value as Record<string, unknown>;
+  const endpointIdRaw = row.endpointId;
+  const unitPriceRaw = row.unitPrice;
+  if (typeof endpointIdRaw !== 'string' || !endpointIdRaw.trim()) {
+    return null;
+  }
+
+  const unitPrice = typeof unitPriceRaw === 'number' ? unitPriceRaw : Number.parseFloat(String(unitPriceRaw));
+  if (!Number.isFinite(unitPrice)) {
+    return null;
+  }
+
+  const unit = typeof row.unit === 'string' && row.unit.trim() ? row.unit.trim() : 'image';
+  const currency = typeof row.currency === 'string' && row.currency.trim() ? row.currency.trim().toUpperCase() : 'USD';
+  const endpointId = normalizeModelCode(endpointIdRaw);
+  const label = `${currency} ${formatUnitPrice(unitPrice)}/${unit}`;
+  return { endpointId, label };
+}
+
+function formatUnitPrice(value: number): string {
+  if (value >= 1) {
+    return value.toFixed(2);
+  }
+  if (value >= 0.01) {
+    return value.toFixed(3);
+  }
+
+  return value.toFixed(5);
 }
 
 function InfoHint({ text }: { text: string }) {
