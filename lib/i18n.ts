@@ -99,6 +99,8 @@ const resources = {
       historyViewerConfigSummary:
         'Model {{model}} | Aspect {{aspect}}{{imageSize}} | {{count}} variant(s) | Refs {{refs}} | Resize {{resize}}',
       historyViewerImageSizePart: ' | {{size}}',
+      tabGenerator: 'Generator',
+      tabHistory: 'History',
       download: 'Download',
       regenerate: 'Re-generate',
       resizeOff: 'off',
@@ -232,6 +234,8 @@ const resources = {
       historyViewerConfigSummary:
         'Model {{model}} | Oran {{aspect}}{{imageSize}} | {{count}} varyant | Ref {{refs}} | Yeniden boyutlandırma {{resize}}',
       historyViewerImageSizePart: ' | {{size}}',
+      tabGenerator: 'Üretim',
+      tabHistory: 'Geçmiş',
       download: 'İndir',
       regenerate: 'Yeniden Üret',
       resizeOff: 'kapalı',

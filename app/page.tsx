@@ -187,6 +187,7 @@ export default function HomePage() {
   const [customResizeHeight, setCustomResizeHeight] = useState(DEFAULT_CUSTOM_RESIZE_HEIGHT);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [modelOptions, setModelOptions] = useState<UiModelOption[]>(INITIAL_MODEL_OPTIONS);
+  const [activeTab, setActiveTab] = useState<'generator' | 'history'>('generator');
   const [isHistoryViewerOpen, setIsHistoryViewerOpen] = useState(false);
   const [historyViewerIndex, setHistoryViewerIndex] = useState(0);
   const historyObjectUrlsRef = useRef<Map<string, string>>(new Map());
@@ -229,6 +230,7 @@ export default function HomePage() {
     [historyItems, t]
   );
   const activeHistoryItem = historyItems[historyViewerIndex];
+  const newHistoryCount = useMemo(() => historyItems.filter((item) => item.isNew).length, [historyItems]);
 
   const canSubmit = useMemo(() => {
     return prompt.trim().length > 0 && !isLoading;
@@ -792,6 +794,10 @@ export default function HomePage() {
         });
       }
 
+      if (outputResults.length > 0 && typeof window !== 'undefined' && window.innerWidth <= 980) {
+        setActiveTab('history');
+      }
+
       if (successCount > 0) {
         toast.success(t('toastGenerationCompleted'), {
           description: t('toastGenerationCompletedDesc', { count: successCount }),
@@ -827,7 +833,7 @@ export default function HomePage() {
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" data-mobile-tab={activeTab}>
       <aside className="panel history-tab">
         <div className="history-head">
           <h2 className="history-title">
@@ -1284,6 +1290,28 @@ export default function HomePage() {
           </section>
         ) : null}
       </section>
+
+      <nav className="mobile-tabbar" aria-label="Ana sekme navigasyonu">
+        <button
+          type="button"
+          className={`mobile-tab${activeTab === 'generator' ? ' is-active' : ''}`}
+          onClick={() => setActiveTab('generator')}
+          aria-current={activeTab === 'generator' ? 'page' : undefined}
+        >
+          <PromptIcon />
+          <span>{t('tabGenerator')}</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-tab${activeTab === 'history' ? ' is-active' : ''}`}
+          onClick={() => setActiveTab('history')}
+          aria-current={activeTab === 'history' ? 'page' : undefined}
+        >
+          <GalleryIcon />
+          <span>{t('tabHistory')}</span>
+          {newHistoryCount > 0 ? <span className="mobile-tab-badge" aria-hidden="true">{newHistoryCount}</span> : null}
+        </button>
+      </nav>
 
       <Lightbox
         open={isHistoryViewerOpen}
