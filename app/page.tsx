@@ -100,6 +100,12 @@ type HistoryItem = {
 
 type HistoryStorageItem = Omit<HistoryItem, 'imageUrl'>;
 
+type ArchiveItem = HistoryItem & {
+  archivedAt: string;
+};
+
+type ArchiveStorageItem = Omit<ArchiveItem, 'imageUrl'>;
+
 type ThemeMode = 'light' | 'dark';
 type AspectRatioOption = '1:1' | '2:3' | '3:2' | '3:4' | '4:3' | '4:5' | '5:4' | '9:16' | '16:9' | '21:9';
 type ResolutionOption =
@@ -130,6 +136,8 @@ const DEFAULT_CUSTOM_RESIZE_WIDTH = 2000;
 const DEFAULT_CUSTOM_RESIZE_HEIGHT = 3000;
 const DEFAULT_TOGETHER_STEPS = 28;
 const HISTORY_STORAGE_KEY = 'reference-batch-history-v1';
+const ARCHIVE_STORAGE_KEY = 'reference-batch-archive-v1';
+const ARCHIVE_TTL_DAYS = 15;
 const THEME_STORAGE_KEY = 'reference-batch-theme-v1';
 const LANGUAGE_STORAGE_KEY = 'reference-batch-language-v1';
 const DEFAULT_MODEL = 'google/flash-image-2.5';
@@ -190,9 +198,13 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState<'generator' | 'history'>('generator');
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
+  const [archiveItems, setArchiveItems] = useState<ArchiveItem[]>([]);
+  const [isArchiveHydrated, setIsArchiveHydrated] = useState(false);
+  const [isArchiveSectionOpen, setIsArchiveSectionOpen] = useState(false);
   const [isHistoryViewerOpen, setIsHistoryViewerOpen] = useState(false);
   const [historyViewerIndex, setHistoryViewerIndex] = useState(0);
   const historyObjectUrlsRef = useRef<Map<string, string>>(new Map());
+  const archiveObjectUrlsRef = useRef<Map<string, string>>(new Map());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const negativePromptTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -345,6 +357,66 @@ export default function HomePage() {
     };
   }, []);
 
+  // Archive: hydrate, purge expired, persist, and manage object URLs
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrateArchiveFromIndexedDb() {
+      try {
+        const persisted = await get<unknown>(ARCHIVE_STORAGE_KEY);
+        if (cancelled) return;
+
+        if (Array.isArray(persisted)) {
+          const ttlMs = ARCHIVE_TTL_DAYS * 24 * 60 * 60 * 1000;
+          const now = Date.now();
+          const sanitized: ArchiveItem[] = [];
+          for (const entry of persisted) {
+            const normalized = normalizePersistedArchiveItem(entry);
+            if (!normalized) continue;
+            if (now - new Date(normalized.archivedAt).getTime() > ttlMs) continue;
+            sanitized.push(normalized);
+          }
+
+          if (cancelled) {
+            for (const entry of sanitized) URL.revokeObjectURL(entry.imageUrl);
+            return;
+          }
+
+          setArchiveItems(sanitized);
+        }
+      } catch {
+        // silently ignore archive load errors
+      } finally {
+        if (!cancelled) setIsArchiveHydrated(true);
+      }
+    }
+
+    void hydrateArchiveFromIndexedDb();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!isArchiveHydrated) return;
+    const payload: ArchiveStorageItem[] = archiveItems.map(toArchiveStorageItem);
+    void set(ARCHIVE_STORAGE_KEY, payload).catch(() => {});
+  }, [archiveItems, isArchiveHydrated]);
+
+  useEffect(() => {
+    const nextUrls = new Map(archiveItems.map((item) => [item.id, item.imageUrl]));
+    for (const [id, existingUrl] of archiveObjectUrlsRef.current.entries()) {
+      const nextUrl = nextUrls.get(id);
+      if (!nextUrl || nextUrl !== existingUrl) URL.revokeObjectURL(existingUrl);
+    }
+    archiveObjectUrlsRef.current = nextUrls;
+  }, [archiveItems]);
+
+  useEffect(() => {
+    return () => {
+      for (const url of archiveObjectUrlsRef.current.values()) URL.revokeObjectURL(url);
+      archiveObjectUrlsRef.current.clear();
+    };
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined') {
       return;
@@ -455,6 +527,34 @@ export default function HomePage() {
       setHistoryViewerIndex(historyItems.length - 1);
     }
   }, [historyItems.length, historyViewerIndex, isHistoryViewerOpen]);
+
+  function archiveSelected() {
+    const selectedIds = new Set(selectedHistoryIds);
+    const toArchive = historyItems.filter((item) => selectedIds.has(item.id));
+    if (toArchive.length === 0) return;
+
+    const archivedAt = new Date().toISOString();
+    const newArchiveItems: ArchiveItem[] = toArchive.map((item) => ({
+      ...item,
+      imageUrl: URL.createObjectURL(item.imageBlob),
+      archivedAt
+    }));
+
+    setArchiveItems((prev) => [...newArchiveItems, ...prev]);
+    setHistoryItems((prev) => prev.filter((item) => !selectedIds.has(item.id)));
+    setIsSelectionMode(false);
+    setSelectedHistoryIds(new Set());
+
+    toast.success(t('toastArchived'), {
+      description: t('toastArchivedDesc', { count: toArchive.length }),
+      duration: 3500
+    });
+  }
+
+  function getDaysRemaining(archivedAt: string): number {
+    const elapsed = Date.now() - new Date(archivedAt).getTime();
+    return Math.max(0, ARCHIVE_TTL_DAYS - Math.floor(elapsed / (24 * 60 * 60 * 1000)));
+  }
 
   function toggleSelectionMode() {
     setIsSelectionMode((prev) => !prev);
@@ -913,19 +1013,34 @@ export default function HomePage() {
               </button>
               <AnimatePresence>
                 {isSelectionMode && selectedHistoryIds.size > 0 ? (
-                  <motion.button
-                    key="download-selected"
-                    type="button"
-                    className="history-download-selected-btn"
-                    onClick={() => { void downloadSelected(); }}
-                    initial={{ scale: 0.5, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    exit={{ scale: 0.5, opacity: 0 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 26 }}
-                  >
-                    <DownloadIcon />
-                    <span>{t('downloadSelected', { count: selectedHistoryIds.size })}</span>
-                  </motion.button>
+                  <>
+                    <motion.button
+                      key="download-selected"
+                      type="button"
+                      className="history-download-selected-btn"
+                      onClick={() => { void downloadSelected(); }}
+                      initial={{ scale: 0.5, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      exit={{ scale: 0.5, opacity: 0 }}
+                      transition={{ type: 'spring', stiffness: 500, damping: 26 }}
+                    >
+                      <DownloadIcon />
+                      <span>{t('downloadSelected', { count: selectedHistoryIds.size })}</span>
+                    </motion.button>
+                    <motion.button
+                      key="archive-selected"
+                      type="button"
+                      className="history-archive-selected-btn"
+                      onClick={archiveSelected}
+                      initial={{ scale: 0.5, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      exit={{ scale: 0.5, opacity: 0 }}
+                      transition={{ type: 'spring', stiffness: 500, damping: 26, delay: 0.04 }}
+                    >
+                      <ArchiveBoxIcon />
+                      <span>{t('archiveBtn', { count: selectedHistoryIds.size })}</span>
+                    </motion.button>
+                  </>
                 ) : null}
               </AnimatePresence>
             </div>
@@ -987,6 +1102,42 @@ export default function HomePage() {
             ))}
           </div>
         )}
+
+        {isArchiveHydrated && archiveItems.length > 0 ? (
+          <section className="archive-section">
+            <button
+              type="button"
+              className={`archive-toggle${isArchiveSectionOpen ? ' is-open' : ''}`}
+              onClick={() => setIsArchiveSectionOpen((prev) => !prev)}
+            >
+              <ArchiveBoxIcon />
+              <span>{t('archiveSectionTitle')} ({archiveItems.length})</span>
+              <ChevronDownIcon />
+            </button>
+            {isArchiveSectionOpen ? (
+              <div className="archive-grid">
+                {archiveItems.map((item) => {
+                  const daysLeft = getDaysRemaining(item.archivedAt);
+                  return (
+                    <article className="history-item archive-item" key={item.id}>
+                      <button
+                        type="button"
+                        className="history-open-btn"
+                        onClick={() => { window.open(item.imageUrl, '_blank'); }}
+                        aria-label={t('openImageViewer')}
+                      >
+                        <img src={item.imageUrl} alt={t('historyResultAlt')} loading="lazy" />
+                      </button>
+                      <span className={`archive-ttl-badge${daysLeft <= 3 ? ' is-urgent' : ''}`}>
+                        {daysLeft}{t('archiveDaysLabel')}
+                      </span>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
       </aside>
 
       <section className="workspace">
@@ -1508,6 +1659,19 @@ function createHistoryItemFromGenerationResult(
 function toHistoryStorageItem(item: HistoryItem): HistoryStorageItem {
   const { imageUrl: _imageUrl, ...rest } = item;
   return rest;
+}
+
+function toArchiveStorageItem(item: ArchiveItem): ArchiveStorageItem {
+  const { imageUrl: _imageUrl, ...rest } = item;
+  return rest;
+}
+
+function normalizePersistedArchiveItem(value: unknown): ArchiveItem | null {
+  const base = normalizePersistedHistoryItem(value);
+  if (!base) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.archivedAt !== 'string' || !record.archivedAt) return null;
+  return { ...base, archivedAt: record.archivedAt };
 }
 
 function mimeTypeToFileExtension(mimeType: string): string {
@@ -2223,6 +2387,23 @@ function ResizeIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function ArchiveBoxIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v1H3V7z" fill="currentColor" opacity="0.4" />
+      <path d="M3 8h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8zm6 5h6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg className="archive-chevron" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
