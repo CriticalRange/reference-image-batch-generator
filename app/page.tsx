@@ -1326,7 +1326,8 @@ export default function HomePage() {
         }}
         carousel={{
           padding: '16px',
-          spacing: '22%'
+          spacing: '22%',
+          finite: true
         }}
         on={{
           view: ({ index }) => {
