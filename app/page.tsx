@@ -3,7 +3,7 @@
 import '@/lib/i18n';
 import { get, set } from 'idb-keyval';
 import { AnimatePresence, motion } from 'framer-motion';
-import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { DragEvent, FormEvent, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import Lightbox, { type Slide } from 'yet-another-react-lightbox';
