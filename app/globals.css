@@ -1276,10 +1276,8 @@ button:disabled {
   z-index: 10000;
   padding: 0.78rem 0.96rem;
   border-radius: 12px;
-  display: flex;
+  display: grid;
   gap: 0.45rem;
-  justify-content: flex-end;
-  align-items: center;
   color: var(--mono-panel-ink);
   border: 1px solid var(--mono-btn-border);
   background: color-mix(in oklab, var(--mono-panel-bg) 92%, #000 8%);
@@ -1287,12 +1285,45 @@ button:disabled {
   pointer-events: auto;
 }
 
+.history-viewer-summary {
+  display: grid;
+  gap: 0.4rem;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.history-viewer-grabber {
+  width: 44px;
+  height: 5px;
+  margin: 0 auto;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--mono-panel-muted) 62%, #fff 38%);
+}
+
+.history-viewer-toggle-icon {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--mono-btn-border);
+  background: var(--mono-btn-bg);
+  font-size: 1rem;
+  line-height: 1;
+}
+
 .history-viewer-meta {
   display: grid;
   gap: 0.18rem;
   min-width: 0;
-  flex: 1 1 auto;
-  margin-right: 0.25rem;
+  width: 100%;
 }
 
 .history-viewer-meta strong {
@@ -1317,6 +1348,7 @@ button:disabled {
   font-size: 0.76rem;
   color: var(--mono-panel-muted);
 }
+
 
 .history-viewer-actions {
   display: flex;
