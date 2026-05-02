@@ -1318,6 +1318,28 @@ button:disabled {
   color: var(--mono-panel-muted);
 }
 
+
+.history-viewer-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  border: 1px solid var(--mono-btn-border);
+  background: var(--mono-btn-bg);
+  color: var(--mono-btn-ink);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 180ms ease, transform 180ms ease;
+}
+
+.history-viewer-toggle:hover {
+  background: var(--mono-btn-bg-hover);
+  transform: translateY(-1px);
+}
+
 .history-viewer-actions {
   display: flex;
   flex-direction: column;

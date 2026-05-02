@@ -3,7 +3,7 @@
 import '@/lib/i18n';
 import { get, set } from 'idb-keyval';
 import { AnimatePresence, motion } from 'framer-motion';
-import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { DragEvent, FormEvent, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import Lightbox, { type Slide } from 'yet-another-react-lightbox';
@@ -1888,6 +1888,12 @@ type HistoryViewerHeaderProps = {
 
 function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHeaderProps) {
   const { t } = useTranslation();
+  const [isExpanded, setIsExpanded] = useState(false);
+  const detailsId = useId();
+
+  useEffect(() => {
+    setIsExpanded(false);
+  }, [item?.id]);
 
   if (!item) {
     return null;
@@ -1902,8 +1908,21 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHe
         <strong className="history-viewer-title">{generatedDescription}</strong>
       </div>
 
-      <div className="history-viewer-actions">
-        <div className="history-viewer-config-icons">
+      <button
+        type="button"
+        className="history-viewer-toggle"
+        onClick={() => setIsExpanded((previous) => !previous)}
+        aria-expanded={isExpanded}
+        aria-controls={detailsId}
+        aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
+        title={isExpanded ? 'Collapse details' : 'Expand details'}
+      >
+        {isExpanded ? '−' : '+'}
+      </button>
+
+      {isExpanded ? (
+        <div className="history-viewer-actions" id={detailsId}>
+          <div className="history-viewer-config-icons">
           {config ? (
             <>
               <span className="history-viewer-config-pill" title={config.model}>
@@ -1938,8 +1957,9 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHe
             <RegenerateIcon />
             {t('regenerate')}
           </button>
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }
