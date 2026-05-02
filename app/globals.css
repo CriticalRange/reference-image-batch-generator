@@ -965,6 +965,106 @@ button:disabled {
   color: #fff;
 }
 
+.history-archive-selected-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.28rem 0.72rem;
+  font-size: 0.76rem;
+  font-weight: 650;
+  color: #fff;
+  background: linear-gradient(135deg, #4a4e5c, #32353f);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+}
+
+.history-archive-selected-btn svg {
+  width: 0.78rem;
+  height: 0.78rem;
+}
+
+.archive-section {
+  margin-top: 0.9rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+}
+
+.archive-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 0.15rem 0;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 0;
+  transition: color 180ms ease;
+}
+
+.archive-toggle:hover {
+  color: var(--ink);
+}
+
+.archive-toggle svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex-shrink: 0;
+}
+
+.archive-chevron {
+  margin-left: auto;
+  transition: transform 220ms ease;
+}
+
+.archive-toggle.is-open .archive-chevron {
+  transform: rotate(180deg);
+}
+
+.archive-grid {
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.55rem;
+}
+
+.archive-item {
+  opacity: 0.78;
+  transition: opacity 180ms ease;
+}
+
+.archive-item:hover {
+  opacity: 1;
+}
+
+.archive-ttl-badge {
+  position: absolute;
+  bottom: 0.3rem;
+  left: 0.3rem;
+  background: rgba(0, 0, 0, 0.68);
+  color: rgba(255, 255, 255, 0.88);
+  border-radius: 6px;
+  padding: 0.1rem 0.32rem;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+
+.archive-ttl-badge.is-urgent {
+  background: rgba(180, 30, 30, 0.82);
+  color: #fff;
+}
+
 .history-title {
   display: flex;
   align-items: center;
@@ -1463,7 +1563,8 @@ button:disabled {
     max-height: none;
   }
 
-  .history-grid {
+  .history-grid,
+  .archive-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
@@ -1567,7 +1668,8 @@ button:disabled {
 }
 
 @media (max-width: 640px) {
-  .history-grid {
+  .history-grid,
+  .archive-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
