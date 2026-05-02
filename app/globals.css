@@ -878,6 +878,93 @@ button:disabled {
   margin-bottom: 0.8rem;
 }
 
+.history-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.history-select-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  border-radius: 999px;
+  padding: 0.28rem 0.72rem;
+  font-size: 0.76rem;
+  font-weight: 650;
+  color: var(--ink);
+  background: color-mix(in oklab, var(--surface) 90%, transparent);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
+}
+
+.history-select-btn.is-active {
+  color: var(--brand);
+  border-color: color-mix(in oklab, var(--brand) 55%, var(--line));
+  background: color-mix(in oklab, var(--brand) 8%, var(--surface));
+}
+
+.history-download-selected-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.28rem 0.72rem;
+  font-size: 0.76rem;
+  font-weight: 650;
+  color: #fff;
+  background: linear-gradient(135deg, var(--brand), var(--brand-2));
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 14px color-mix(in oklab, var(--brand) 38%, transparent);
+}
+
+.history-download-selected-btn svg {
+  width: 0.78rem;
+  height: 0.78rem;
+}
+
+.history-item.is-selected {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--brand) 28%, transparent);
+}
+
+.history-select-circle {
+  position: absolute;
+  top: 0.38rem;
+  right: 0.38rem;
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.28);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease;
+}
+
+.history-select-circle.is-selected {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+.history-select-circle svg {
+  width: 0.7rem;
+  height: 0.7rem;
+  color: #fff;
+}
+
 .history-title {
   display: flex;
   align-items: center;
