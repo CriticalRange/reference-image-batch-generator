@@ -2,7 +2,7 @@
 
 import '@/lib/i18n';
 import { get, set } from 'idb-keyval';
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -188,6 +188,8 @@ export default function HomePage() {
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [modelOptions, setModelOptions] = useState<UiModelOption[]>(INITIAL_MODEL_OPTIONS);
   const [activeTab, setActiveTab] = useState<'generator' | 'history'>('generator');
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
   const [isHistoryViewerOpen, setIsHistoryViewerOpen] = useState(false);
   const [historyViewerIndex, setHistoryViewerIndex] = useState(0);
   const historyObjectUrlsRef = useRef<Map<string, string>>(new Map());
@@ -453,6 +455,62 @@ export default function HomePage() {
       setHistoryViewerIndex(historyItems.length - 1);
     }
   }, [historyItems.length, historyViewerIndex, isHistoryViewerOpen]);
+
+  function toggleSelectionMode() {
+    setIsSelectionMode((prev) => !prev);
+    setSelectedHistoryIds(new Set());
+  }
+
+  function toggleSelectImage(id: string) {
+    setSelectedHistoryIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  async function downloadSelected() {
+    const selected = historyItems.filter((item) => selectedHistoryIds.has(item.id));
+    if (selected.length === 0) return;
+
+    if (selected.length === 1) {
+      const item = selected[0];
+      const fileExt = mimeTypeToFileExtension(item.mimeType);
+      const anchor = document.createElement('a');
+      anchor.href = item.imageUrl;
+      anchor.download = `image-${item.createdAt.slice(0, 10)}.${fileExt}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      return;
+    }
+
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      for (let i = 0; i < selected.length; i++) {
+        const item = selected[i];
+        const fileExt = mimeTypeToFileExtension(item.mimeType);
+        const fileName = `image-${item.createdAt.slice(0, 10)}-${String(i + 1).padStart(2, '0')}.${fileExt}`;
+        zip.file(fileName, item.imageBlob);
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `images-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error(t('toastDownloadFailed'), { duration: 4000 });
+    }
+  }
 
   function openReferencePicker() {
     fileInputRef.current?.click();
@@ -844,6 +902,34 @@ export default function HomePage() {
             </span>
           </h2>
           {isLoading ? <p className="history-meta is-busy">{t('historyGeneratingMeta', { count: pendingHistoryIds.length || count })}</p> : null}
+          {historyItems.length > 0 ? (
+            <div className="history-selection-bar">
+              <button
+                type="button"
+                className={`history-select-btn${isSelectionMode ? ' is-active' : ''}`}
+                onClick={toggleSelectionMode}
+              >
+                {isSelectionMode ? t('cancelSelection') : t('selectImages')}
+              </button>
+              <AnimatePresence>
+                {isSelectionMode && selectedHistoryIds.size > 0 ? (
+                  <motion.button
+                    key="download-selected"
+                    type="button"
+                    className="history-download-selected-btn"
+                    onClick={() => { void downloadSelected(); }}
+                    initial={{ scale: 0.5, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.5, opacity: 0 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 26 }}
+                  >
+                    <DownloadIcon />
+                    <span>{t('downloadSelected', { count: selectedHistoryIds.size })}</span>
+                  </motion.button>
+                ) : null}
+              </AnimatePresence>
+            </div>
+          ) : null}
         </div>
 
         {!isHistoryHydrated ? (
@@ -871,19 +957,29 @@ export default function HomePage() {
                 <h3 className="history-date">{group.label}</h3>
                 <div className="history-grid">
                   {group.items.map((item) => (
-                    <article className="history-item" key={item.id}>
+                    <article
+                      className={`history-item${isSelectionMode && selectedHistoryIds.has(item.id) ? ' is-selected' : ''}`}
+                      key={item.id}
+                    >
                       <button
                         type="button"
                         className="history-open-btn"
-                        onClick={() => openHistoryViewer(item.id)}
-                        aria-label={t('openImageViewer')}
+                        onClick={() => isSelectionMode ? toggleSelectImage(item.id) : openHistoryViewer(item.id)}
+                        aria-label={isSelectionMode ? t('selectImages') : t('openImageViewer')}
+                        aria-pressed={isSelectionMode ? selectedHistoryIds.has(item.id) : undefined}
                       >
                         <img src={item.imageUrl} alt={t('historyResultAlt')} loading="lazy" />
-                        <span className="history-open-indicator" aria-hidden="true">
-                          <OpenViewerIcon />
-                        </span>
+                        {isSelectionMode ? (
+                          <span className={`history-select-circle${selectedHistoryIds.has(item.id) ? ' is-selected' : ''}`} aria-hidden="true">
+                            {selectedHistoryIds.has(item.id) ? <CheckIcon /> : null}
+                          </span>
+                        ) : (
+                          <span className="history-open-indicator" aria-hidden="true">
+                            <OpenViewerIcon />
+                          </span>
+                        )}
                       </button>
-                      {item.isNew ? <span className="new-badge">{t('newBadge')}</span> : null}
+                      {item.isNew && !isSelectionMode ? <span className="new-badge">{t('newBadge')}</span> : null}
                     </article>
                   ))}
                 </div>
@@ -2127,6 +2223,14 @@ function ResizeIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 12l4.5 4.5L19 7" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
