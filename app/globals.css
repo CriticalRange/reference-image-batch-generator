@@ -1380,8 +1380,13 @@ button:disabled {
   }
 }
 
+@media (min-width: 981px) {
+  .mobile-tabbar {
+    display: none;
+  }
+}
+
 .mobile-tabbar {
-  display: none;
   position: fixed;
   bottom: 0;
   left: 0;
