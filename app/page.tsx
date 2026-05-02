@@ -1888,6 +1888,8 @@ type HistoryViewerHeaderProps = {
 
 function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHeaderProps) {
   const { t } = useTranslation();
+  const [isExpanded, setIsExpanded] = useState(false);
+  const detailsId = useId();
 
   if (!item) {
     return null;
@@ -1902,8 +1904,19 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHe
         <strong className="history-viewer-title">{generatedDescription}</strong>
       </div>
 
-      <div className="history-viewer-actions">
-        <div className="history-viewer-config-icons">
+      <button
+        type="button"
+        className="history-viewer-toggle"
+        onClick={() => setIsExpanded((previous) => !previous)}
+        aria-expanded={isExpanded}
+        aria-controls={detailsId}
+      >
+        {isExpanded ? '−' : '+'}
+      </button>
+
+      {isExpanded ? (
+        <div className="history-viewer-actions" id={detailsId}>
+          <div className="history-viewer-config-icons">
           {config ? (
             <>
               <span className="history-viewer-config-pill" title={config.model}>
@@ -1938,8 +1951,9 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHe
             <RegenerateIcon />
             {t('regenerate')}
           </button>
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }
