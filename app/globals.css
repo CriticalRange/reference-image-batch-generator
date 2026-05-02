@@ -253,6 +253,21 @@ label {
   transform: translateX(0) translateY(-50%);
 }
 
+@media (max-width: 700px) {
+  .info-hint-tooltip {
+    left: auto;
+    right: 0;
+    top: calc(100% + 6px);
+    transform: translateY(-4px);
+    width: min(240px, 80vw);
+  }
+
+  .info-hint:hover .info-hint-tooltip,
+  .info-hint:focus-visible .info-hint-tooltip {
+    transform: translateY(0);
+  }
+}
+
 .reference-block {
   border: 1px dashed var(--line);
   border-radius: 14px;
@@ -361,6 +376,15 @@ label {
   height: 0.75rem;
 }
 
+@media (pointer: coarse) {
+  .ref-remove-btn {
+    width: 32px;
+    height: 32px;
+    top: -8px;
+    right: -8px;
+  }
+}
+
 .reference-note {
   margin: 0;
   color: var(--muted);
@@ -457,33 +481,6 @@ button {
 button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
-}
-
-.ref-add-primary,
-.ref-add-circle,
-.ref-remove-btn {
-  border-style: solid;
-}
-
-.ref-add-primary,
-.ref-add-circle {
-  color: var(--ink);
-  background: color-mix(in oklab, var(--surface) 82%, var(--bg-accent) 18%);
-}
-
-.ref-add-primary {
-  border-color: var(--line);
-  border-radius: 14px;
-}
-
-.ref-add-circle {
-  border: 1px dashed var(--line);
-  border-radius: 14px;
-}
-
-.ref-remove-btn {
-  border-radius: 999px;
-  background: linear-gradient(145deg, #8f1212, #cf1d1d);
 }
 
 .theme-toggle {
@@ -1362,6 +1359,8 @@ button:disabled {
   }
 
   .history-viewer-config-icons {
+    display: flex;
+    flex-wrap: wrap;
     justify-content: flex-start;
     max-width: 100%;
   }
