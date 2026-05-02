@@ -108,8 +108,7 @@ type ArchiveStorageItem = Omit<ArchiveItem, 'imageUrl'>;
 
 type ThemeMode = 'light' | 'dark';
 type AspectRatioOption = '1:1' | '2:3' | '3:2' | '3:4' | '4:3' | '4:5' | '5:4' | '9:16' | '16:9' | '21:9';
-type ResolutionOption =
-  | '512'
+type ResolutionOption =  | '512'
   | '1K'
   | '2K'
   | '4K'
@@ -126,6 +125,7 @@ type ResolutionOption =
 type ResizePresetOption = 'none' | '2000x3000' | '1536x2048' | '1696x2528' | '2048x2048' | 'custom';
 type ProductTypeOption = 'console' | 'dressing-table' | 'tv-dressing-table' | 'tv-shelf';
 type ProductColorOption = 'travertine' | 'anthracite' | 'white' | 'sapphire-oak';
+type RoomStyleOption = 'minimalist' | 'modern' | 'classic' | 'industrial';
 
 const DEFAULT_COUNT = 1;
 const MAX_HISTORY_ITEMS = 120;
@@ -159,6 +159,7 @@ const ALL_RESOLUTION_OPTIONS: ResolutionOption[] = [...RESOLUTION_OPTIONS, ...TO
 const RESIZE_PRESET_OPTIONS: Array<Exclude<ResizePresetOption, 'custom'>> = ['none', '2000x3000', '1536x2048', '1696x2528', '2048x2048'];
 const PRODUCT_TYPE_OPTIONS: ProductTypeOption[] = ['console', 'dressing-table', 'tv-dressing-table', 'tv-shelf'];
 const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = ['travertine', 'anthracite', 'white', 'sapphire-oak'];
+const ROOM_STYLE_OPTIONS: RoomStyleOption[] = ['minimalist', 'modern', 'classic', 'industrial'];
 const INITIAL_MODEL_OPTIONS = sortModelOptions(
   mergeModelOptions(CURATED_MODEL_OPTIONS, [
     {
@@ -174,6 +175,7 @@ export default function HomePage() {
   const [prompt, setPrompt] = useState('');
   const [selectedProductType, setSelectedProductType] = useState<ProductTypeOption | ''>('');
   const [selectedProductColor, setSelectedProductColor] = useState<ProductColorOption | ''>('');
+  const [selectedRoomStyle, setSelectedRoomStyle] = useState<RoomStyleOption>('minimalist');
   const [negativePrompt, setNegativePrompt] = useState('');
   const [count, setCount] = useState(DEFAULT_COUNT);
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
@@ -255,8 +257,8 @@ export default function HomePage() {
       return;
     }
 
-    setPrompt(buildPresetPrompt(selectedProductType, selectedProductColor));
-  }, [selectedProductColor, selectedProductType]);
+    setPrompt(buildPresetPrompt(selectedProductType, selectedProductColor, selectedRoomStyle));
+  }, [selectedProductColor, selectedProductType, selectedRoomStyle]);
 
   useEffect(() => {
     autoResizeTextarea(promptTextareaRef.current);
@@ -1303,6 +1305,17 @@ export default function HomePage() {
                     </option>
                   ))}
                 </select>
+                <select
+                  id="room-style"
+                  value={selectedRoomStyle}
+                  onChange={(event) => setSelectedRoomStyle(event.target.value as RoomStyleOption)}
+                >
+                  {ROOM_STYLE_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {t(`roomStyleOptions.${option}`)}
+                    </option>
+                  ))}
+                </select>
               </div>
               <textarea
                 ref={promptTextareaRef}
@@ -2102,13 +2115,27 @@ function getBatchStatusText(
   }
 }
 
-function buildPresetPrompt(type: ProductTypeOption, color: ProductColorOption): string {
+function buildPresetPrompt(type: ProductTypeOption, color: ProductColorOption, scene: RoomStyleOption): string {
   const colorText = resolveProductColorText(color);
   const productText = resolveProductTypeText(type);
   const topElementText = resolveTopElementText(type);
   const stylingText = resolveStylingText(type);
+  const sceneText = resolveSceneText(scene);
 
-  return `A professional e-commerce product photography of a wall-mounted ${colorText} ${productText} with ${topElementText}. The ${productText} is mounted on a clean, minimalist wall featuring plexiglass surfaces with precise laser-etched lines. Only the plexiglass must show realistic, crisp reflections of the surroundings. The ${productText} remains exactly as designed with its original hardware and laser-etched line details from the reference image. ${stylingText} The floor features a rug of any kind. The room has a minimalist interior design with soft, natural daylight coming from the side.`;
+  return `A professional e-commerce product photography of a wall-mounted ${colorText} ${productText} with ${topElementText}. The ${productText} is mounted on a clean, minimalist wall featuring plexiglass surfaces with precise laser-etched lines. Only the plexiglass must show realistic, crisp reflections of the surroundings. The ${productText} remains exactly as designed with its original hardware and laser-etched line details from the reference image. ${stylingText} The floor features a rug of any kind. ${sceneText}`;
+}
+
+function resolveSceneText(scene: RoomStyleOption): string {
+  switch (scene) {
+    case 'minimalist':
+      return 'The room has a minimalist interior design with soft, natural daylight coming from the side.';
+    case 'modern':
+      return 'The room features a modern interior design with bold geometric elements, polished concrete textures, and dramatic indirect lighting from recessed ceiling lights.';
+    case 'classic':
+      return 'The room has a classic, traditional interior design with warm wood tones, elegant decorative moldings, and soft ambient lighting from ornate wall sconces.';
+    case 'industrial':
+      return 'The room features an industrial interior design with exposed brick walls, raw metal accents, Edison bulb pendant lighting, and dark weathered wooden floors.';
+  }
 }
 
 function resolveProductTypeText(type: ProductTypeOption): string {

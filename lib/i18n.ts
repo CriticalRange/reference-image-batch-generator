@@ -44,6 +44,12 @@ const resources = {
         white: 'White',
         'sapphire-oak': 'Sapphire Oak'
       },
+      roomStyleOptions: {
+        minimalist: 'Minimalist',
+        modern: 'Modern',
+        classic: 'Classic',
+        industrial: 'Industrial'
+      },
       negativePrompt: 'Negative Prompt',
       promptPlaceholder: 'Describe the image you want while keeping the reference identity/style...',
       negativePromptPlaceholder: 'Describe what to avoid (e.g. blurry, distorted, extra objects, text overlay)...',
@@ -188,6 +194,12 @@ const resources = {
         anthracite: 'Antrasit',
         white: 'Beyaz',
         'sapphire-oak': 'Safir Meşe'
+      },
+      roomStyleOptions: {
+        minimalist: 'Minimalist',
+        modern: 'Modern',
+        classic: 'Klasik',
+        industrial: 'Endüstriyel'
       },
       negativePrompt: 'Negatif İstem',
       promptPlaceholder: 'Referans kimliğini/stilini koruyarak istediğiniz görseli tanımlayın...',
