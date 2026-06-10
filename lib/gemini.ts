@@ -393,14 +393,17 @@ async function getVertexAccessToken(): Promise<{ token: string; projectId: strin
 
   const credentialsPath = process.env.VERTEX_AI_CREDENTIALS_PATH;
   const credentialsJson = process.env.VERTEX_AI_CREDENTIALS;
+  const credentialsBase64 = process.env.VERTEX_AI_CREDENTIALS_BASE64;
 
   let credentialsText: string;
   if (credentialsPath) {
     credentialsText = await fs.readFile(credentialsPath, 'utf8');
+  } else if (credentialsBase64) {
+    credentialsText = Buffer.from(credentialsBase64, 'base64').toString('utf8');
   } else if (credentialsJson) {
     credentialsText = credentialsJson;
   } else {
-    throw new Error('Missing VERTEX_AI_CREDENTIALS_PATH or VERTEX_AI_CREDENTIALS environment variable.');
+    throw new Error('Missing VERTEX_AI_CREDENTIALS_PATH, VERTEX_AI_CREDENTIALS_BASE64, or VERTEX_AI_CREDENTIALS environment variable.');
   }
 
   const credentials = JSON.parse(credentialsText) as VertexCredentials;

@@ -30,6 +30,16 @@ This project only supports compliant generation flows. It does not implement wat
 - For server-to-server usage, set `APP_ACCESS_TOKEN` and send `Authorization: Bearer <token>`.
 - Before public hosting, put the app behind real user auth and provider-budget controls.
 
+## Vercel Vertex AI credentials
+
+Do not commit the service account JSON file. For Vercel, base64-encode the JSON locally and add it as `VERTEX_AI_CREDENTIALS_BASE64` in the Vercel project environment variables:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("free-494923-3c3b6ca698b4.json"))
+```
+
+Also set `VERTEX_AI_REGION` and `GEMINI_IMAGE_MODEL` in Vercel. `VERTEX_AI_CREDENTIALS_PATH` is only for local/server environments where the JSON file exists on disk.
+
 ## Quick start
 
 1. Install dependencies:
