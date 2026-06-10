@@ -35,13 +35,19 @@ export const CURATED_MODEL_OPTIONS: UiModelOption[] = [
   { name: 'Gemini 3 Flash Preview', code: 'gemini-3-flash-preview', group: 'Gemini Preview' },
   { name: 'Gemini 3.1 Flash Lite Preview', code: 'gemini-3.1-flash-lite-preview', group: 'Gemini Preview' },
   { name: 'Gemini 2.5 Flash Lite Preview', code: 'gemini-2.5-flash-lite-preview-09-2025', group: 'Gemini Preview' },
-  { name: 'Gemini 2.5 Flash Preview', code: 'gemini-2.5-flash-preview-09-2025', group: 'Gemini Preview' }
+  { name: 'Gemini 2.5 Flash Preview', code: 'gemini-2.5-flash-preview-09-2025', group: 'Gemini Preview' },
+  { name: 'Gemini 2.5 Flash Image (Vertex)', code: 'vertex/gemini-2.5-flash-image', group: 'Vertex AI' },
+  { name: 'Gemini 3.1 Flash Image (Vertex)', code: 'vertex/gemini-3.1-flash-image-preview', group: 'Vertex AI' },
+  { name: 'Imagen 4 Ultra (Vertex)', code: 'vertex/imagen-4.0-ultra-generate-001', group: 'Vertex AI' },
+  { name: 'Imagen 4 (Vertex)', code: 'vertex/imagen-4.0-generate-001', group: 'Vertex AI' },
+  { name: 'Imagen 4 Fast (Vertex)', code: 'vertex/imagen-4.0-fast-generate-001', group: 'Vertex AI' }
 ];
 
 const GROUP_ORDER = [
   'Gemini Image',
   'Together AI',
   'Fal AI',
+  'Vertex AI',
   'Imagen',
   'Gemini Preview',
   'Gemini',
@@ -101,6 +107,10 @@ export function sortModelOptions(options: UiModelOption[]): UiModelOption[] {
 }
 
 export function inferModelGroup(code: string): string {
+  if (/^vertex\//i.test(code)) {
+    return 'Vertex AI';
+  }
+
   if (
     /^qwen\/qwen-image/i.test(code) ||
     /qwen-image/i.test(code) ||

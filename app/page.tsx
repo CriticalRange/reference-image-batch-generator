@@ -2,7 +2,7 @@
 
 import '@/lib/i18n';
 import { get, set } from 'idb-keyval';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, LayoutGroup, motion } from 'framer-motion';
 import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -35,8 +35,8 @@ type GenerationFailure = {
 
 type BatchSubmitResponse = {
   jobId: string;
-  provider: 'gemini' | 'together' | 'fal';
-  // Present for synchronous providers (Together/fal.ai) — results are computed during submit.
+  provider: 'gemini' | 'together' | 'fal' | 'vertex';
+  // Present for synchronous providers (Together/fal.ai/vertex) — results are computed during submit.
   results?: {
     usedModel: string;
     requestedCount: number;
@@ -136,14 +136,16 @@ const MAX_RESIZE_DIMENSION = 8192;
 const DEFAULT_CUSTOM_RESIZE_WIDTH = 2000;
 const DEFAULT_CUSTOM_RESIZE_HEIGHT = 3000;
 const DEFAULT_TOGETHER_STEPS = 28;
+const MAX_REFERENCE_FILE_BYTES = 8 * 1024 * 1024;
 const HISTORY_STORAGE_KEY = 'reference-batch-history-v1';
 const ARCHIVE_STORAGE_KEY = 'reference-batch-archive-v1';
 const ARCHIVE_TTL_DAYS = 15;
 const THEME_STORAGE_KEY = 'reference-batch-theme-v1';
 const LANGUAGE_STORAGE_KEY = 'reference-batch-language-v1';
+const LAST_PROMPT_STORAGE_KEY = 'reference-batch-last-prompt-v1';
 const FAL_PRICING_STORAGE_KEY = 'reference-batch-fal-pricing-v1';
 const FAL_PRICING_TTL_MS = 10 * 24 * 60 * 60 * 1000;
-const DEFAULT_MODEL = 'google/flash-image-2.5';
+const DEFAULT_MODEL = 'vertex/gemini-2.5-flash-image';
 const ASPECT_RATIO_OPTIONS: AspectRatioOption[] = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
 const RESOLUTION_OPTIONS: ResolutionOption[] = ['512', '1K', '2K', '4K'];
 const TOGETHER_RESOLUTION_OPTIONS: ResolutionOption[] = [
@@ -163,6 +165,9 @@ const RESIZE_PRESET_OPTIONS: Array<Exclude<ResizePresetOption, 'custom'>> = ['no
 const PRODUCT_TYPE_OPTIONS: ProductTypeOption[] = ['console', 'dressing-table', 'tv-dressing-table', 'tv-shelf'];
 const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = ['travertine', 'anthracite', 'white', 'sapphire-oak'];
 const ROOM_STYLE_OPTIONS: RoomStyleOption[] = ['minimalist', 'modern', 'classic', 'industrial'];
+const ALLOWED_REFERENCE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
+const TURKEY_PROMPT =
+  'Analyze the furniture, determine its type and style. Select the most common room in Turkey where this furniture is typically used. Place the product in that environment at a realistic scale. Add a few compatible decorative objects that are commonly used on this type of furniture in Turkey. The environment should feel clean, spacious, and modern, reflecting a contemporary Turkish home atmosphere. The product must remain the main focal point. Create a clean, photorealistic, and sales-oriented scene suitable for e-commerce. Do NOT modify the furniture in any way. The design, color, proportions, and details must remain exactly the same. Only create the background and surrounding environment.';
 const INITIAL_MODEL_OPTIONS = sortModelOptions(
   mergeModelOptions(CURATED_MODEL_OPTIONS, [
     {
@@ -209,8 +214,10 @@ export default function HomePage() {
   const [isArchiveSectionOpen, setIsArchiveSectionOpen] = useState(false);
   const [isHistoryViewerOpen, setIsHistoryViewerOpen] = useState(false);
   const [historyViewerIndex, setHistoryViewerIndex] = useState(0);
+  const [isViewerPromptCollapsed, setIsViewerPromptCollapsed] = useState(false);
   const historyObjectUrlsRef = useRef<Map<string, string>>(new Map());
   const archiveObjectUrlsRef = useRef<Map<string, string>>(new Map());
+  const hasPromptHydratedRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const negativePromptTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -263,6 +270,31 @@ export default function HomePage() {
 
     setPrompt(buildPresetPrompt(selectedProductType, selectedProductColor, selectedRoomStyle));
   }, [selectedProductColor, selectedProductType, selectedRoomStyle]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const storedPrompt = window.localStorage.getItem(LAST_PROMPT_STORAGE_KEY);
+    if (storedPrompt) {
+      setPrompt(storedPrompt);
+    }
+    hasPromptHydratedRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !hasPromptHydratedRef.current) {
+      return;
+    }
+
+    const nextPrompt = prompt.trim();
+    if (nextPrompt) {
+      window.localStorage.setItem(LAST_PROMPT_STORAGE_KEY, prompt);
+    } else {
+      window.localStorage.removeItem(LAST_PROMPT_STORAGE_KEY);
+    }
+  }, [prompt]);
 
   useEffect(() => {
     autoResizeTextarea(promptTextareaRef.current);
@@ -818,6 +850,24 @@ export default function HomePage() {
     const createdReferences: ReferenceImage[] = [];
 
     for (const file of selected) {
+      if (!ALLOWED_REFERENCE_MIME_TYPES.has(file.type.toLowerCase())) {
+        setError(t('errorFailedReadImageFile'));
+        toast.error(t('toastReferenceReadFailed'), {
+          description: t('toastReferenceReadFailedDesc'),
+          duration: 5000
+        });
+        continue;
+      }
+
+      if (file.size > MAX_REFERENCE_FILE_BYTES) {
+        setError(t('payloadTooLarge'));
+        toast.error(t('toastReferenceReadFailed'), {
+          description: t('payloadTooLarge'),
+          duration: 5000
+        });
+        continue;
+      }
+
       const dataUrl = await readFileAsDataUrl(file);
       const parsed = parseDataUrlImage(dataUrl);
 
@@ -1385,6 +1435,19 @@ export default function HomePage() {
                   ))}
                 </select>
               </div>
+              <div className="prompt-preset-row">
+                <button
+                  type="button"
+                  className="prompt-preset-btn"
+                  onClick={() => {
+                    setSelectedProductType('');
+                    setSelectedProductColor('');
+                    setPrompt(TURKEY_PROMPT);
+                  }}
+                >
+                  TURKEY
+                </button>
+              </div>
               <textarea
                 ref={promptTextareaRef}
                 id="prompt"
@@ -1667,11 +1730,13 @@ export default function HomePage() {
           }
         }}
         render={{
-          slideHeader: () => (
+          controls: () => (
             <HistoryViewerHeader
               item={activeHistoryItem}
               onDownload={downloadHistoryImage}
               onRegenerate={applyRegenerateConfiguration}
+              isPromptCollapsed={isViewerPromptCollapsed}
+              onToggleCollapsed={() => setIsViewerPromptCollapsed((v) => !v)}
             />
           )
         }}
@@ -1952,9 +2017,11 @@ type HistoryViewerHeaderProps = {
   item: HistoryItem | undefined;
   onDownload: () => void;
   onRegenerate: () => void;
+  isPromptCollapsed: boolean;
+  onToggleCollapsed: () => void;
 };
 
-function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHeaderProps) {
+function HistoryViewerHeader({ item, onDownload, onRegenerate, isPromptCollapsed, onToggleCollapsed }: HistoryViewerHeaderProps) {
   const { t } = useTranslation();
 
   if (!item) {
@@ -1964,11 +2031,42 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate }: HistoryViewerHe
   const config = item.generationConfig;
   const generatedDescription = item.promptVariant.trim() || config?.basePrompt?.trim() || t('historyViewer');
 
+  const collapseTransition = { duration: 0.22, ease: 'easeInOut' as const };
+
   return (
     <div className="history-viewer-header">
-      <div className="history-viewer-meta">
-        <strong className="history-viewer-title">{generatedDescription}</strong>
-      </div>
+      <button
+        type="button"
+        className="history-viewer-toggle"
+        onClick={onToggleCollapsed}
+        title={isPromptCollapsed ? t('showPrompt') : t('hidePrompt')}
+      >
+        <motion.span
+          animate={{ rotate: isPromptCollapsed ? 180 : 0 }}
+          transition={collapseTransition}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </motion.span>
+      </button>
+
+      <AnimatePresence initial={false}>
+        {!isPromptCollapsed && (
+          <motion.div
+            key="prompt-meta"
+            className="history-viewer-meta"
+            initial={{ opacity: 0, width: 0 }}
+            animate={{ opacity: 1, width: 'auto' }}
+            exit={{ opacity: 0, width: 0 }}
+            transition={collapseTransition}
+            style={{ minWidth: 0, flex: '1 1 auto', marginRight: '0.25rem', overflow: 'hidden' }}
+          >
+            <strong className="history-viewer-title">{generatedDescription}</strong>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="history-viewer-actions">
         <div className="history-viewer-config-icons">

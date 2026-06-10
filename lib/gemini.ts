@@ -1,5 +1,6 @@
 import { GoogleGenAI, JobState as GeminiJobState } from '@google/genai';
 import type { BatchJob, InlinedResponse } from '@google/genai';
+import { JWT } from 'google-auth-library';
 import Together from 'together-ai';
 import sharp from 'sharp';
 import { randomUUID } from 'crypto';
@@ -51,8 +52,8 @@ export type JobState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancell
 
 export type SubmitBatchResult = {
   jobId: string;
-  provider: 'gemini' | 'together' | 'fal';
-  // Populated immediately for Together AI — no polling required.
+  provider: 'gemini' | 'together' | 'fal' | 'vertex';
+  // Populated immediately for sync providers — no polling required.
   results?: BatchOutput;
 };
 
@@ -65,7 +66,7 @@ export type BatchStatusResult = {
   results?: BatchOutput;
 };
 
-const DEFAULT_MODEL = 'google/flash-image-2.5';
+const DEFAULT_MODEL = 'vertex/gemini-2.5-flash-image';
 const DEFAULT_MAX_BATCH = 8;
 const DEFAULT_MAX_PARALLEL_REQUESTS = 2;
 const DEFAULT_MAX_REFERENCE_IMAGES = 4;
@@ -81,6 +82,7 @@ const GOOGLE_FLASH_IMAGE_TOGETHER_MODEL_PATTERN = /^google\/flash-image-/i;
 const GPT_IMAGE_TOGETHER_MODEL_PATTERN = /^openai\/gpt-image-/i;
 const IDEOGRAM_TOGETHER_MODEL_PATTERN = /^ideogram\//i;
 const FAL_MODEL_PATTERN = /^fal-ai\//i;
+const VERTEX_MODEL_PATTERN = /^vertex\//i;
 const FLUX_KONTEXT_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/FLUX\.1-kontext-(pro|max)$/i;
 const FLUX2_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/FLUX\.2-/i;
 const GOOGLE_GEMINI_PRO_IMAGE_TOGETHER_MODEL_PATTERN = /^google\/gemini-3-pro-image$/i;
@@ -184,6 +186,10 @@ function isTogetherImageModel(model: string): boolean {
 
 function isFalImageModel(model: string): boolean {
   return FAL_MODEL_PATTERN.test(model);
+}
+
+function isVertexImageModel(model: string): boolean {
+  return VERTEX_MODEL_PATTERN.test(model);
 }
 
 function normalizeAspectRatio(value: string | undefined): string {
@@ -363,6 +369,175 @@ function resolveFalImageUrl(payload: unknown): string | undefined {
   }
 
   return firstStringValue([record.url, record.image_url, record.output_url]);
+}
+
+type VertexCredentials = {
+  client_email: string;
+  private_key: string;
+  project_id: string;
+};
+
+type VertexTokenCache = {
+  token: string;
+  projectId: string;
+  expiresAt: number;
+};
+
+let vertexTokenCache: VertexTokenCache | null = null;
+
+async function getVertexAccessToken(): Promise<{ token: string; projectId: string }> {
+  const now = Date.now();
+  if (vertexTokenCache && vertexTokenCache.expiresAt > now) {
+    return { token: vertexTokenCache.token, projectId: vertexTokenCache.projectId };
+  }
+
+  const credentialsPath = process.env.VERTEX_AI_CREDENTIALS_PATH;
+  const credentialsJson = process.env.VERTEX_AI_CREDENTIALS;
+
+  let credentialsText: string;
+  if (credentialsPath) {
+    credentialsText = await fs.readFile(credentialsPath, 'utf8');
+  } else if (credentialsJson) {
+    credentialsText = credentialsJson;
+  } else {
+    throw new Error('Missing VERTEX_AI_CREDENTIALS_PATH or VERTEX_AI_CREDENTIALS environment variable.');
+  }
+
+  const credentials = JSON.parse(credentialsText) as VertexCredentials;
+  const jwt = new JWT({
+    email: credentials.client_email,
+    key: credentials.private_key,
+    scopes: ['https://www.googleapis.com/auth/cloud-platform']
+  });
+
+  const tokenResponse = await jwt.getAccessToken();
+  if (!tokenResponse.token) {
+    throw new Error('Failed to obtain Vertex AI access token.');
+  }
+
+  // Google service account JWT tokens expire after 1 hour; refresh 5 min before expiry.
+  vertexTokenCache = {
+    token: tokenResponse.token,
+    projectId: credentials.project_id,
+    expiresAt: now + 55 * 60 * 1000
+  };
+
+  return { token: tokenResponse.token, projectId: credentials.project_id };
+}
+
+function extractVertexImageFromResponse(response: Record<string, unknown>): BatchResult | null {
+  const candidates = Array.isArray(response.candidates) ? response.candidates : [];
+  for (const candidate of candidates) {
+    const parts: unknown[] = (candidate as Record<string, unknown>)?.content
+      ? ((candidate as Record<string, unknown>).content as Record<string, unknown>)?.parts as unknown[]
+      : [];
+    if (!Array.isArray(parts)) {
+      continue;
+    }
+    for (const part of parts) {
+      const inlineData = (part as Record<string, unknown>)?.inlineData as Record<string, unknown> | undefined;
+      if (inlineData?.data && typeof inlineData.data === 'string') {
+        return {
+          promptVariant: '',
+          imageBase64: inlineData.data,
+          mimeType: typeof inlineData.mimeType === 'string' ? inlineData.mimeType : 'image/png'
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function isVertexImagenModel(modelName: string): boolean {
+  return /^imagen-/i.test(modelName);
+}
+
+function extractImagenVertexImageFromResponse(response: Record<string, unknown>): BatchResult | null {
+  const predictions = Array.isArray(response.predictions) ? response.predictions : [];
+  for (const prediction of predictions) {
+    const pred = prediction as Record<string, unknown>;
+    if (typeof pred.bytesBase64Encoded === 'string' && pred.bytesBase64Encoded) {
+      return {
+        promptVariant: '',
+        imageBase64: pred.bytesBase64Encoded,
+        mimeType: typeof pred.mimeType === 'string' ? pred.mimeType : 'image/png'
+      };
+    }
+  }
+  return null;
+}
+
+async function runVertexBatch(
+  model: string,
+  requestedCount: number,
+  prompts: string[],
+  references: Array<{ base64: string; mimeType: string }>,
+  resizeTo: { width: number; height: number } | undefined
+): Promise<BatchOutput> {
+  const { token, projectId } = await getVertexAccessToken();
+  const region = process.env.VERTEX_AI_REGION ?? 'us-central1';
+  const modelName = model.replace(VERTEX_MODEL_PATTERN, '');
+  const useImagenApi = isVertexImagenModel(modelName);
+  const apiEndpoint = useImagenApi ? 'predict' : 'generateContent';
+  const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${modelName}:${apiEndpoint}`;
+  const maxParallel = parseMaxParallelRequests();
+
+  const jobs = prompts.map((promptVariant) => {
+    return async () => {
+      let payload: unknown;
+
+      if (useImagenApi) {
+        // Vertex Imagen API uses :predict with instances/parameters format.
+        payload = {
+          instances: [{ prompt: promptVariant }],
+          parameters: { sampleCount: 1 }
+        };
+      } else {
+        // Vertex Gemini API uses :generateContent with contents format.
+        const parts: unknown[] = [{ text: promptVariant }];
+        for (const ref of references) {
+          parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
+        }
+        payload = {
+          contents: [{ role: 'user', parts }],
+          generationConfig: {
+            responseModalities: ['IMAGE', 'TEXT']
+          }
+        };
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+
+      if (!response.ok) {
+        const errDetail = (data.error as Record<string, unknown> | undefined)?.message;
+        const errMsg = firstStringValue([errDetail, data.message]) ?? `Vertex AI request failed (${response.status})`;
+        throw new Error(String(errMsg));
+      }
+
+      const extracted = useImagenApi
+        ? extractImagenVertexImageFromResponse(data)
+        : extractVertexImageFromResponse(data);
+
+      if (!extracted) {
+        throw getNoImageReturnedError('Vertex AI returned no image in response.');
+      }
+
+      const processed = resizeTo ? await resizeGeneratedImage(extracted, resizeTo) : extracted;
+      return { ...processed, promptVariant } satisfies BatchResult;
+    };
+  });
+
+  const settled = await runWithConcurrency(jobs, maxParallel);
+  return buildBatchOutput(model, requestedCount, prompts, settled);
 }
 
 async function runFalBatch(
@@ -925,6 +1100,18 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       resizeTo
     );
     return { jobId, provider: 'fal', results: result };
+  }
+
+  if (isVertexImageModel(model)) {
+    const jobId = randomUUID();
+    const result = await runVertexBatch(
+      model,
+      clampedCount,
+      prompts,
+      references,
+      resizeTo
+    );
+    return { jobId, provider: 'vertex', results: result };
   }
 
   const apiKey = process.env.GEMINI_API_KEY;

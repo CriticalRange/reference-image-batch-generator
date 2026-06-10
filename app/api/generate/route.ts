@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { submitBatch, getBatchStatus, type SubmitBatchResult } from '@/lib/gemini';
+import { enforceRateLimit, requireApiAccess } from '@/lib/security';
 
 type RequestBody = {
   prompt?: string;
@@ -19,8 +20,39 @@ type RequestBody = {
   }>;
 };
 
+const DEFAULT_MAX_REQUEST_BYTES = 16 * 1024 * 1024;
+const DEFAULT_MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_REFERENCE_BYTES = 24 * 1024 * 1024;
+const MAX_PROMPT_LENGTH = 4_000;
+const MAX_NEGATIVE_PROMPT_LENGTH = 2_000;
+const MAX_JOB_ID_LENGTH = 220;
+const JOB_ID_PATTERN = /^[a-zA-Z0-9_./:-]+$/;
+const ALLOWED_REFERENCE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif'
+]);
+
 export async function POST(req: NextRequest) {
   try {
+    const accessDenied = requireApiAccess(req);
+    if (accessDenied) {
+      return accessDenied;
+    }
+
+    const limited = enforceRateLimit(req, 'generate:post');
+    if (limited) {
+      return limited;
+    }
+
+    const bodyTooLarge = rejectLargeRequest(req);
+    if (bodyTooLarge) {
+      return bodyTooLarge;
+    }
+
     const body = (await req.json()) as RequestBody;
     const prompt = body.prompt?.trim() ?? '';
     const negativePrompt = body.negativePrompt?.trim() ?? undefined;
@@ -45,6 +77,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Prompt is required.' }, { status: 400 });
     }
 
+    if (prompt.length > MAX_PROMPT_LENGTH) {
+      return NextResponse.json({ error: `Prompt must be ${MAX_PROMPT_LENGTH} characters or fewer.` }, { status: 400 });
+    }
+
+    if (negativePrompt && negativePrompt.length > MAX_NEGATIVE_PROMPT_LENGTH) {
+      return NextResponse.json({ error: `Negative prompt must be ${MAX_NEGATIVE_PROMPT_LENGTH} characters or fewer.` }, { status: 400 });
+    }
+
     if ((typeof resizeWidth === 'number' && typeof resizeHeight !== 'number') || (typeof resizeHeight === 'number' && typeof resizeWidth !== 'number')) {
       return NextResponse.json({ error: 'Resize width and height must both be provided.' }, { status: 400 });
     }
@@ -53,8 +93,13 @@ export async function POST(req: NextRequest) {
       referenceImages.length > 0
         ? referenceImages
         : referenceImageBase64 && referenceMimeType
-          ? [{ base64: referenceImageBase64, mimeType: referenceMimeType }]
-          : [];
+        ? [{ base64: referenceImageBase64, mimeType: referenceMimeType }]
+        : [];
+    const referenceValidationError = validateReferenceImages(normalizedReferences);
+    if (referenceValidationError) {
+      return NextResponse.json({ error: referenceValidationError }, { status: 400 });
+    }
+
     const resizeTo =
       typeof resizeWidth === 'number' && typeof resizeHeight === 'number'
         ? {
@@ -83,6 +128,16 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
+    const accessDenied = requireApiAccess(req);
+    if (accessDenied) {
+      return accessDenied;
+    }
+
+    const limited = enforceRateLimit(req, 'generate:get');
+    if (limited) {
+      return limited;
+    }
+
     const { searchParams } = new URL(req.url);
     const jobId = searchParams.get('job');
 
@@ -90,11 +145,30 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Missing job parameter.' }, { status: 400 });
     }
 
+    if (jobId.length > MAX_JOB_ID_LENGTH || !JOB_ID_PATTERN.test(jobId)) {
+      return NextResponse.json({ error: 'Invalid job parameter.' }, { status: 400 });
+    }
+
     const status = await getBatchStatus(jobId);
     return NextResponse.json(status, { status: 200 });
   } catch (error) {
     return createErrorResponse(error);
   }
+}
+
+function parseByteLimit(envName: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[envName] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function rejectLargeRequest(req: NextRequest): NextResponse | null {
+  const contentLength = Number.parseInt(req.headers.get('content-length') ?? '', 10);
+  const maxBytes = parseByteLimit('MAX_REQUEST_BYTES', DEFAULT_MAX_REQUEST_BYTES);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    return NextResponse.json({ error: 'Request body is too large.' }, { status: 413 });
+  }
+
+  return null;
 }
 
 function parseResizeDimension(value: unknown): number | undefined {
@@ -123,15 +197,79 @@ function parseStepCount(value: unknown): number | undefined {
   return Math.max(1, Math.min(Math.round(parsed), 50));
 }
 
+function estimateBase64Bytes(base64: string): number {
+  const paddingMatch = base64.match(/=+$/);
+  const padding = paddingMatch ? paddingMatch[0].length : 0;
+  return Math.floor((base64.length * 3) / 4) - padding;
+}
+
+function isValidBase64(value: string): boolean {
+  if (!value || value.length % 4 !== 0 || !/^[a-zA-Z0-9+/]+={0,2}$/.test(value)) {
+    return false;
+  }
+
+  try {
+    return Buffer.from(value, 'base64').toString('base64').replace(/=+$/g, '') === value.replace(/=+$/g, '');
+  } catch {
+    return false;
+  }
+}
+
+function validateReferenceImages(images: Array<{ base64: string; mimeType: string }>): string | undefined {
+  const maxReferenceBytes = parseByteLimit('MAX_REFERENCE_IMAGE_BYTES', DEFAULT_MAX_REFERENCE_BYTES);
+  const maxTotalBytes = parseByteLimit('MAX_TOTAL_REFERENCE_IMAGE_BYTES', DEFAULT_MAX_TOTAL_REFERENCE_BYTES);
+  let totalBytes = 0;
+
+  for (const image of images) {
+    const mimeType = image.mimeType.toLowerCase();
+    if (!ALLOWED_REFERENCE_MIME_TYPES.has(mimeType)) {
+      return 'Reference images must be JPEG, PNG, WebP, HEIC, or HEIF.';
+    }
+
+    if (!isValidBase64(image.base64)) {
+      return 'Reference image data is not valid base64.';
+    }
+
+    const bytes = estimateBase64Bytes(image.base64);
+    if (bytes > maxReferenceBytes) {
+      return 'A reference image is too large.';
+    }
+
+    totalBytes += bytes;
+    if (totalBytes > maxTotalBytes) {
+      return 'Combined reference images are too large.';
+    }
+  }
+
+  return undefined;
+}
+
 function createErrorResponse(error: unknown) {
   const status = resolveHttpStatus(error);
-  const message = formatApiError(error);
+  const message = safeClientErrorMessage(error, status);
   console.error('[api/generate] request failed', {
     status,
-    message,
+    message: formatApiError(error),
     error
   });
   return NextResponse.json({ error: message }, { status });
+}
+
+function safeClientErrorMessage(error: unknown, status: number): string {
+  const message = redactSensitiveText(formatApiError(error));
+  if (status >= 500) {
+    return 'Generation failed. Check server logs for details.';
+  }
+
+  return message || 'Request failed.';
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[redacted-api-key]')
+    .replace(/-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----/g, '[redacted-private-key]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/Key\s+[A-Za-z0-9._~+/=-]+/gi, 'Key [redacted]');
 }
 
 function resolveHttpStatus(error: unknown): number {

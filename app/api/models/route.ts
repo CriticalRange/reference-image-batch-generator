@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
+
+export const revalidate = 3600;
 import {
   CURATED_MODEL_OPTIONS,
   humanizeModelCode,
@@ -10,7 +12,7 @@ import {
   type UiModelOption
 } from '@/lib/modelOptions';
 
-const DEFAULT_MODEL = 'google/flash-image-2.5';
+const DEFAULT_MODEL = 'vertex/gemini-2.5-flash-image';
 const MAX_DISCOVERED_MODELS = 300;
 
 function isSelectableModel(code: string): boolean {

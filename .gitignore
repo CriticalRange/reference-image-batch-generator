@@ -13,3 +13,5 @@ pnpm-debug.log*
 .vercel
 *.tsbuildinfo
 .codex
+*-service-account.json
+free-*.json

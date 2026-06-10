@@ -23,6 +23,13 @@ A standalone desktop app is better only if you need tight OS integration, offlin
 
 This project only supports compliant generation flows. It does not implement watermark/provenance removal or bypassing provider safeguards.
 
+## Security notes
+
+- Keep `.env.local` and provider credential JSON files out of git. If a service account key is ever exposed, revoke it and create a new key.
+- `POST /api/generate` enforces request size, reference image MIME/base64 validation, and a basic IP rate limit.
+- For server-to-server usage, set `APP_ACCESS_TOKEN` and send `Authorization: Bearer <token>`.
+- Before public hosting, put the app behind real user auth and provider-budget controls.
+
 ## Quick start
 
 1. Install dependencies:
@@ -54,7 +61,8 @@ npm run dev
 - Default batch size is `5`.
 - Maximum batch size is controlled with `MAX_BATCH_SIZE` (default `8`).
 - Parallel request count is controlled with `MAX_PARALLEL_REQUESTS` (default `2`).
-- Model can be overridden with `GEMINI_IMAGE_MODEL` (default `gemini-2.5-flash-image`).
+- API request throttling is controlled with `API_RATE_LIMIT` and `API_RATE_WINDOW_MS`.
+- Model can be overridden with `GEMINI_IMAGE_MODEL` (default `vertex/gemini-2.5-flash-image`).
 - History key used by IndexedDB cache: `reference-batch-history-v1`.
 
 ## Troubleshooting

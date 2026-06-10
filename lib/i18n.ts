@@ -102,6 +102,8 @@ const resources = {
       toastSomeVariantsFailedDesc: '{{count}} variant(s) failed. Check the Failed Variants panel for details.',
       historyViewer: 'History Viewer',
       historyViewerNoConfig: 'Older item: configuration metadata not available',
+      showPrompt: 'Show prompt',
+      hidePrompt: 'Hide prompt',
       historyViewerConfigSummary:
         'Model {{model}} | Aspect {{aspect}}{{imageSize}} | {{count}} variant(s) | Refs {{refs}} | Resize {{resize}}',
       historyViewerImageSizePart: ' | {{size}}',
@@ -253,6 +255,8 @@ const resources = {
       toastSomeVariantsFailedDesc: '{{count}} varyant başarısız oldu. Ayrıntılar için Başarısız Varyantlar paneline bakın.',
       historyViewer: 'Geçmiş Görüntüleyici',
       historyViewerNoConfig: 'Eski öğe: yapılandırma meta verisi mevcut değil',
+      showPrompt: 'Promptu göster',
+      hidePrompt: 'Promptu gizle',
       historyViewerConfigSummary:
         'Model {{model}} | Oran {{aspect}}{{imageSize}} | {{count}} varyant | Ref {{refs}} | Yeniden boyutlandırma {{resize}}',
       historyViewerImageSizePart: ' | {{size}}',

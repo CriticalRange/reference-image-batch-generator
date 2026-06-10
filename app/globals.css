@@ -403,6 +403,31 @@ label {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.prompt-preset-row {
+  display: flex;
+  align-items: center;
+  margin-top: 0.65rem;
+  margin-bottom: 0.65rem;
+}
+
+.prompt-preset-btn {
+  width: auto;
+  min-height: 2.35rem;
+  padding: 0.58rem 0.92rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.82rem;
+  letter-spacing: 0;
+  box-shadow: none;
+}
+
+.prompt-preset-btn:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
 input,
 textarea,
 select,
@@ -1265,14 +1290,11 @@ button:disabled {
 }
 
 .history-viewer-header {
-  width: min(620px, calc(100vw - 1.4rem));
-  max-width: calc(100vw - 1.4rem);
+  max-width: min(620px, calc(100vw - 1.4rem));
   box-sizing: border-box;
   position: absolute;
-  top: auto;
   bottom: 1rem;
   right: 0.7rem;
-  left: auto;
   z-index: 10000;
   padding: 0.78rem 0.96rem;
   border-radius: 12px;
@@ -1291,8 +1313,6 @@ button:disabled {
   display: grid;
   gap: 0.18rem;
   min-width: 0;
-  flex: 1 1 auto;
-  margin-right: 0.25rem;
 }
 
 .history-viewer-meta strong {
@@ -1345,7 +1365,7 @@ button:disabled {
   flex-direction: column;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 0;
+  gap: 0.6rem;
   min-width: 0;
   flex-shrink: 0;
   align-self: stretch;
@@ -1502,6 +1522,19 @@ button:disabled {
       0 14px 30px rgba(0, 0, 0, 0.32),
       0 0 16px rgba(94, 180, 255, 0.25),
       inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  }
+
+  .yarl__container .yarl__navigation_prev:hover,
+  .yarl__container .yarl__navigation_next:hover,
+  .yarl__container .yarl__navigation_prev:focus-visible:hover,
+  .yarl__container .yarl__navigation_next:focus-visible:hover {
+    background: var(--mono-btn-bg) !important;
+    border-color: var(--mono-btn-border) !important;
+    color: var(--mono-btn-ink) !important;
+    transform: translateY(-50%);
+    box-shadow:
+      0 10px 24px rgba(0, 0, 0, 0.25),
+      inset 0 1px 0 rgba(255, 255, 255, 0.18);
   }
 }
 
