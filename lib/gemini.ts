@@ -67,8 +67,10 @@ export type BatchStatusResult = {
 };
 
 const DEFAULT_MODEL = 'vertex/gemini-2.5-flash-image';
-const DEFAULT_MAX_BATCH = 8;
+const DEFAULT_MAX_BATCH = 10;
 const DEFAULT_MAX_PARALLEL_REQUESTS = 2;
+const VERTEX_MAX_SAMPLE_COUNT = 10;
+const VERTEX_IMAGEN_MAX_PER_REQUEST = 4;
 const DEFAULT_MAX_REFERENCE_IMAGES = 4;
 const DEFAULT_ASPECT_RATIO = '1:1';
 const DEFAULT_MIN_RESIZE_DIMENSION = 64;
@@ -455,19 +457,20 @@ function isVertexImagenModel(modelName: string): boolean {
   return /^imagen-/i.test(modelName);
 }
 
-function extractImagenVertexImageFromResponse(response: Record<string, unknown>): BatchResult | null {
+function extractAllImagenVertexImagesFromResponse(response: Record<string, unknown>): BatchResult[] {
   const predictions = Array.isArray(response.predictions) ? response.predictions : [];
+  const collected: BatchResult[] = [];
   for (const prediction of predictions) {
     const pred = prediction as Record<string, unknown>;
     if (typeof pred.bytesBase64Encoded === 'string' && pred.bytesBase64Encoded) {
-      return {
+      collected.push({
         promptVariant: '',
         imageBase64: pred.bytesBase64Encoded,
         mimeType: typeof pred.mimeType === 'string' ? pred.mimeType : 'image/png'
-      };
+      });
     }
   }
-  return null;
+  return collected;
 }
 
 async function runVertexBatch(
@@ -483,31 +486,100 @@ async function runVertexBatch(
   const useImagenApi = isVertexImagenModel(modelName);
   const apiEndpoint = useImagenApi ? 'predict' : 'generateContent';
   const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${modelName}:${apiEndpoint}`;
-  const maxParallel = parseMaxParallelRequests();
 
+  if (useImagenApi) {
+    // Imagen batch: chunk requests using sampleCount (max VERTEX_IMAGEN_MAX_PER_REQUEST per call).
+    const totalCount = Math.min(requestedCount, VERTEX_MAX_SAMPLE_COUNT);
+    const chunks: number[] = [];
+    for (let rem = totalCount; rem > 0; rem -= VERTEX_IMAGEN_MAX_PER_REQUEST) {
+      chunks.push(Math.min(rem, VERTEX_IMAGEN_MAX_PER_REQUEST));
+    }
+
+    const chunkJobs = chunks.map((chunkSize, chunkIndex) => {
+      const promptVariant = prompts[chunkIndex % prompts.length];
+      return async (): Promise<BatchResult[]> => {
+        const payload = {
+          instances: [{ prompt: promptVariant }],
+          parameters: { sampleCount: chunkSize }
+        };
+
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+
+        if (!response.ok) {
+          const errDetail = (data.error as Record<string, unknown> | undefined)?.message;
+          const errMsg = firstStringValue([errDetail, data.message]) ?? `Vertex AI request failed (${response.status})`;
+          throw new Error(String(errMsg));
+        }
+
+        const extracted = extractAllImagenVertexImagesFromResponse(data);
+        if (extracted.length === 0) {
+          throw getNoImageReturnedError('Vertex AI returned no images in response.');
+        }
+
+        return Promise.all(
+          extracted.map(async (image) => {
+            const processed = resizeTo ? await resizeGeneratedImage(image, resizeTo) : image;
+            return { ...processed, promptVariant } satisfies BatchResult;
+          })
+        );
+      };
+    });
+
+    const settledChunks = await runWithConcurrency(chunkJobs, parseMaxParallelRequests());
+
+    const allResults: BatchResult[] = [];
+    const allFailures: BatchFailure[] = [];
+
+    for (let i = 0; i < settledChunks.length; i++) {
+      const chunk = settledChunks[i];
+      if (chunk.status === 'fulfilled') {
+        allResults.push(...chunk.value);
+      } else {
+        allFailures.push({ promptVariant: prompts[i % prompts.length], error: formatError(chunk.reason) });
+      }
+    }
+
+    if (allResults.length === 0) {
+      const failureSummary = allFailures.map((entry, i) => `#${i + 1}: ${entry.error}`).join(' || ');
+      throw new Error(`Generation failed for all variants. ${failureSummary}`);
+    }
+
+    enforceBatchPayloadLimit(allResults);
+
+    return {
+      usedModel: model,
+      requestedCount: totalCount,
+      succeededCount: allResults.length,
+      failedCount: allFailures.length,
+      results: allResults,
+      failures: allFailures
+    };
+  }
+
+  // Vertex Gemini: parallel generateContent requests with prompt variants.
+  const maxParallel = parseMaxParallelRequests();
   const jobs = prompts.map((promptVariant) => {
     return async () => {
-      let payload: unknown;
-
-      if (useImagenApi) {
-        // Vertex Imagen API uses :predict with instances/parameters format.
-        payload = {
-          instances: [{ prompt: promptVariant }],
-          parameters: { sampleCount: 1 }
-        };
-      } else {
-        // Vertex Gemini API uses :generateContent with contents format.
-        const parts: unknown[] = [{ text: promptVariant }];
-        for (const ref of references) {
-          parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
-        }
-        payload = {
-          contents: [{ role: 'user', parts }],
-          generationConfig: {
-            responseModalities: ['IMAGE', 'TEXT']
-          }
-        };
+      const parts: unknown[] = [{ text: promptVariant }];
+      for (const ref of references) {
+        parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
       }
+
+      const payload = {
+        contents: [{ role: 'user', parts }],
+        generationConfig: {
+          responseModalities: ['IMAGE', 'TEXT']
+        }
+      };
 
       const response = await fetch(url, {
         method: 'POST',
@@ -526,10 +598,7 @@ async function runVertexBatch(
         throw new Error(String(errMsg));
       }
 
-      const extracted = useImagenApi
-        ? extractImagenVertexImageFromResponse(data)
-        : extractVertexImageFromResponse(data);
-
+      const extracted = extractVertexImageFromResponse(data);
       if (!extracted) {
         throw getNoImageReturnedError('Vertex AI returned no image in response.');
       }

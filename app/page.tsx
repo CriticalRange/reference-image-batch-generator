@@ -70,6 +70,12 @@ type ReferenceImage = {
   previewDataUrl: string;
 };
 
+type BatchRunResult = {
+  refIndex: number;
+  refPreviewDataUrl: string;
+  items: HistoryItem[];
+};
+
 type GenerationConfigSnapshot = {
   basePrompt: string;
   negativePrompt?: string;
@@ -129,6 +135,8 @@ type RoomStyleOption = 'minimalist' | 'modern' | 'classic' | 'industrial';
 type FalPricingMap = Record<string, string>;
 
 const DEFAULT_COUNT = 1;
+const DEFAULT_BATCH_RATE_LIMIT_SEC = 120;
+const MAX_BATCH_RATE_LIMIT_SEC = 600;
 const MAX_HISTORY_ITEMS = 120;
 const MAX_REFERENCE_IMAGES = 6;
 const MIN_RESIZE_DIMENSION = 64;
@@ -142,6 +150,8 @@ const ARCHIVE_STORAGE_KEY = 'reference-batch-archive-v1';
 const ARCHIVE_TTL_DAYS = 15;
 const THEME_STORAGE_KEY = 'reference-batch-theme-v1';
 const LANGUAGE_STORAGE_KEY = 'reference-batch-language-v1';
+const BATCH_MODE_STORAGE_KEY = 'reference-batch-batchmode-v1';
+const BATCH_RATE_LIMIT_STORAGE_KEY = 'reference-batch-ratelimit-v1';
 const LAST_PROMPT_STORAGE_KEY = 'reference-batch-last-prompt-v1';
 const FAL_PRICING_STORAGE_KEY = 'reference-batch-fal-pricing-v1';
 const FAL_PRICING_TTL_MS = 10 * 24 * 60 * 60 * 1000;
@@ -186,6 +196,9 @@ export default function HomePage() {
   const [selectedRoomStyle, setSelectedRoomStyle] = useState<RoomStyleOption>('minimalist');
   const [negativePrompt, setNegativePrompt] = useState('');
   const [count, setCount] = useState(DEFAULT_COUNT);
+  const [countInput, setCountInput] = useState(String(DEFAULT_COUNT));
+  const [resizeWidthInput, setResizeWidthInput] = useState(String(DEFAULT_CUSTOM_RESIZE_WIDTH));
+  const [resizeHeightInput, setResizeHeightInput] = useState(String(DEFAULT_CUSTOM_RESIZE_HEIGHT));
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
   const [failures, setFailures] = useState<GenerationFailure[]>([]);
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
@@ -215,9 +228,16 @@ export default function HomePage() {
   const [isHistoryViewerOpen, setIsHistoryViewerOpen] = useState(false);
   const [historyViewerIndex, setHistoryViewerIndex] = useState(0);
   const [isViewerPromptCollapsed, setIsViewerPromptCollapsed] = useState(false);
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [batchRateLimitSec, setBatchRateLimitSec] = useState(DEFAULT_BATCH_RATE_LIMIT_SEC);
+  const [batchRateLimitInput, setBatchRateLimitInput] = useState(String(DEFAULT_BATCH_RATE_LIMIT_SEC));
+  const [batchRunResults, setBatchRunResults] = useState<BatchRunResult[]>([]);
+  const [batchTotalRefs, setBatchTotalRefs] = useState(0);
   const historyObjectUrlsRef = useRef<Map<string, string>>(new Map());
   const archiveObjectUrlsRef = useRef<Map<string, string>>(new Map());
   const hasPromptHydratedRef = useRef(false);
+  const lastBatchRunTimeRef = useRef<number>(0);
+  const batchRunResultsRef = useRef<BatchRunResult[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const negativePromptTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -259,9 +279,51 @@ export default function HomePage() {
   const activeHistoryItem = historyItems[historyViewerIndex];
   const newHistoryCount = useMemo(() => historyItems.filter((item) => item.isNew).length, [historyItems]);
 
+  const countError = useMemo<string | null>(() => {
+    const n = Number.parseInt(countInput, 10);
+    if (!Number.isFinite(n)) return t('errorInvalidNumber');
+    if (n < 1) return t('errorCountMin');
+    if (n > 10) return t('errorCountMax');
+    return null;
+  }, [countInput, t]);
+
+  const resizeWidthError = useMemo<string | null>(() => {
+    if (resizePreset !== 'custom') return null;
+    const n = Number.parseInt(resizeWidthInput, 10);
+    if (!Number.isFinite(n)) return t('errorInvalidNumber');
+    if (n < MIN_RESIZE_DIMENSION) return t('errorResizeTooSmall', { min: MIN_RESIZE_DIMENSION });
+    if (n > MAX_RESIZE_DIMENSION) return t('errorResizeTooBig', { max: MAX_RESIZE_DIMENSION });
+    return null;
+  }, [resizePreset, resizeWidthInput, t]);
+
+  const resizeHeightError = useMemo<string | null>(() => {
+    if (resizePreset !== 'custom') return null;
+    const n = Number.parseInt(resizeHeightInput, 10);
+    if (!Number.isFinite(n)) return t('errorInvalidNumber');
+    if (n < MIN_RESIZE_DIMENSION) return t('errorResizeTooSmall', { min: MIN_RESIZE_DIMENSION });
+    if (n > MAX_RESIZE_DIMENSION) return t('errorResizeTooBig', { max: MAX_RESIZE_DIMENSION });
+    return null;
+  }, [resizePreset, resizeHeightInput, t]);
+
+  const batchRateLimitError = useMemo<string | null>(() => {
+    if (!isBatchMode) return null;
+    const n = Number.parseInt(batchRateLimitInput, 10);
+    if (!Number.isFinite(n)) return t('errorInvalidNumber');
+    if (n < 0) return t('errorRateLimitMin');
+    if (n > MAX_BATCH_RATE_LIMIT_SEC) return t('errorRateLimitMax');
+    return null;
+  }, [isBatchMode, batchRateLimitInput, t]);
+
   const canSubmit = useMemo(() => {
-    return prompt.trim().length > 0 && !isLoading;
-  }, [prompt, isLoading]);
+    return (
+      prompt.trim().length > 0 &&
+      !isLoading &&
+      !countError &&
+      !resizeWidthError &&
+      !resizeHeightError &&
+      !batchRateLimitError
+    );
+  }, [prompt, isLoading, countError, resizeWidthError, resizeHeightError, batchRateLimitError]);
 
   useEffect(() => {
     if (!selectedProductType || !selectedProductColor) {
@@ -309,6 +371,15 @@ export default function HomePage() {
       setImageSize(availableResolutionOptions[0] ?? '1K');
     }
   }, [availableResolutionOptions, imageSize]);
+
+  useEffect(() => {
+    if (resizePreset === 'custom') {
+      setResizeWidthInput(String(customResizeWidth));
+      setResizeHeightInput(String(customResizeHeight));
+    }
+    // Only sync strings when the preset switch happens, not on every width/height change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resizePreset]);
 
   useEffect(() => {
     let cancelled = false;
@@ -543,6 +614,34 @@ export default function HomePage() {
   }, [i18n, language]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(BATCH_MODE_STORAGE_KEY);
+    if (stored === 'true') setIsBatchMode(true);
+    const storedLimit = window.localStorage.getItem(BATCH_RATE_LIMIT_STORAGE_KEY);
+    if (storedLimit !== null) {
+      const parsed = Number.parseInt(storedLimit, 10);
+      if (Number.isFinite(parsed) && parsed >= 0 && parsed <= MAX_BATCH_RATE_LIMIT_SEC) {
+        setBatchRateLimitSec(parsed);
+        setBatchRateLimitInput(String(parsed));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(BATCH_MODE_STORAGE_KEY, String(isBatchMode));
+    if (!isBatchMode) {
+      setBatchRunResults([]);
+      batchRunResultsRef.current = [];
+    }
+  }, [isBatchMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(BATCH_RATE_LIMIT_STORAGE_KEY, String(batchRateLimitSec));
+  }, [batchRateLimitSec]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
@@ -630,6 +729,26 @@ export default function HomePage() {
     }
   }, [historyItems.length, historyViewerIndex, isHistoryViewerOpen]);
 
+  // Mark the currently viewed item as seen in a separate effect so that the
+  // historyItems state update (which re-renders historySlides) never happens in
+  // the same commit as the historyViewerIndex change. If both happen together,
+  // YARL receives a new `slides` reference AND a new `index` in one render and
+  // can misfire its "index-changed" navigation handler, causing prev/next to
+  // intermittently not work.
+  useEffect(() => {
+    if (!isHistoryViewerOpen) {
+      return;
+    }
+    const viewedId = historyItems[historyViewerIndex]?.id;
+    if (viewedId) {
+      markHistoryItemAsViewed(viewedId);
+    }
+    // Intentionally excludes historyItems: we only want to run when the viewer
+    // opens or the user navigates — not when items are updated as a result of
+    // this very effect, which would cause an update loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyViewerIndex, isHistoryViewerOpen]);
+
   function archiveSelected() {
     const selectedIds = new Set(selectedHistoryIds);
     const toArchive = historyItems.filter((item) => selectedIds.has(item.id));
@@ -711,6 +830,40 @@ export default function HomePage() {
       URL.revokeObjectURL(url);
     } catch {
       toast.error(t('toastDownloadFailed'), { duration: 4000 });
+    }
+  }
+
+  async function downloadBatchResults() {
+    const results = batchRunResultsRef.current;
+    if (results.length === 0) return;
+
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+
+      for (const run of results) {
+        const folderName = `ref-${String(run.refIndex + 1).padStart(2, '0')}`;
+        const folder = zip.folder(folderName);
+        if (!folder) continue;
+
+        for (let i = 0; i < run.items.length; i++) {
+          const item = run.items[i];
+          const fileExt = mimeTypeToFileExtension(item.mimeType);
+          folder.file(`image-${String(i + 1).padStart(2, '0')}.${fileExt}`, item.imageBlob);
+        }
+      }
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `batch-results-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error(t('batchDownloadFailed'), { duration: 4000 });
     }
   }
 
@@ -800,10 +953,16 @@ export default function HomePage() {
     const restoredResizePreset = toResizePresetOption(config.resizePreset, config.resizeWidth, config.resizeHeight);
     setResizePreset(restoredResizePreset);
     if (restoredResizePreset === 'custom') {
-      setCustomResizeWidth(clampResizeDimension(config.resizeWidth ?? DEFAULT_CUSTOM_RESIZE_WIDTH));
-      setCustomResizeHeight(clampResizeDimension(config.resizeHeight ?? DEFAULT_CUSTOM_RESIZE_HEIGHT));
+      const restoredWidth = clampResizeDimension(config.resizeWidth ?? DEFAULT_CUSTOM_RESIZE_WIDTH);
+      const restoredHeight = clampResizeDimension(config.resizeHeight ?? DEFAULT_CUSTOM_RESIZE_HEIGHT);
+      setCustomResizeWidth(restoredWidth);
+      setCustomResizeHeight(restoredHeight);
+      setResizeWidthInput(String(restoredWidth));
+      setResizeHeightInput(String(restoredHeight));
     }
-    setCount(Math.max(1, Math.min(Number(config.requestedCount) || DEFAULT_COUNT, 10)));
+    const restoredCount = Math.max(1, Math.min(Number(config.requestedCount) || DEFAULT_COUNT, 10));
+    setCount(restoredCount);
+    setCountInput(String(restoredCount));
     const hasStoredReferenceMetadata = Array.isArray(config.referenceImages);
     const restoredReferences = (config.referenceImages ?? []).slice(0, MAX_REFERENCE_IMAGES).map((reference) => ({
       id: makeId(),
@@ -918,195 +1077,280 @@ export default function HomePage() {
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
     const submittedCount = Math.max(1, Math.min(count, 10));
-    setIsLoading(true);
-    setError('');
-    setStatusText(t('statusSubmitting', { count: submittedCount }));
-    setFailures([]);
-    setPendingHistoryIds(Array.from({ length: submittedCount }, () => makeId()));
+    const submittedPrompt = prompt.trim();
+    const submittedNegativePrompt = negativePrompt.trim();
+    const submittedModel = selectedModel;
+    const submittedRefs = referenceImages.map((img) => ({ base64: img.base64, mimeType: img.mimeType }));
+
     const submittedConfig: GenerationConfigSnapshot = {
-      basePrompt: prompt.trim(),
-      ...(negativePrompt.trim() ? { negativePrompt: negativePrompt.trim() } : {}),
-      model: selectedModel,
+      basePrompt: submittedPrompt,
+      ...(submittedNegativePrompt ? { negativePrompt: submittedNegativePrompt } : {}),
+      model: submittedModel,
       aspectRatio,
       ...(supportsTogetherSteps ? { steps } : {}),
       ...(supportsResolutionSelector ? { imageSize } : {}),
       resizePreset,
       ...(resolvedResize ? { resizeWidth: resolvedResize.width, resizeHeight: resolvedResize.height } : {}),
       requestedCount: submittedCount,
-      referenceImages: referenceImages.map((image) => ({
-        base64: image.base64,
-        mimeType: image.mimeType
-      }))
     };
 
-    try {
-      // Phase 1: submit the batch job.
+    setIsLoading(true);
+    setError('');
+    setFailures([]);
+    setBatchRunResults([]);
+    batchRunResultsRef.current = [];
+
+    // Calls /api/generate with the given refs, polls until done, returns structured output.
+    async function callApiAndGetResults(refs: Array<{ base64: string; mimeType: string }>) {
+      setStatusText(t('statusSubmitting', { count: submittedCount }));
+
       const submitResponse = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt,
-          negativePrompt: negativePrompt.trim() || undefined,
+          prompt: submittedPrompt,
+          negativePrompt: submittedNegativePrompt || undefined,
           count: submittedCount,
-          model: selectedModel,
+          model: submittedModel,
           aspectRatio,
           steps: supportsTogetherSteps ? steps : undefined,
           imageSize: supportsResolutionSelector ? imageSize : undefined,
           resizeWidth: resolvedResize?.width,
           resizeHeight: resolvedResize?.height,
-          referenceImages: referenceImages.map((image) => ({
-            base64: image.base64,
-            mimeType: image.mimeType
-          }))
+          referenceImages: refs
         })
       });
 
       const submitPayload = await parseApiJsonOrThrow(submitResponse, '/api/generate');
-
       if (!submitResponse.ok) {
         throw new Error((submitPayload as { error?: string } | null)?.error ?? t('errorGenerationFailed'));
       }
 
       const submitResult = submitPayload as BatchSubmitResponse;
-      const { jobId, provider } = submitResult;
+      const { jobId } = submitResult;
 
-      // Phase 2: get the final BatchOutput — either immediately (Together AI, which
-      // runs synchronously and includes results in the submit response) or by polling
-      // the Gemini async batch job until it completes.
       type BatchOutputShape = NonNullable<BatchSubmitResponse['results']>;
       let batchOutput: BatchOutputShape;
 
       if (submitResult.results) {
-        // Together AI: results are already in the submit response — no polling needed.
         batchOutput = submitResult.results;
       } else {
-        // Gemini: poll until the async batch job reaches a terminal state.
         setStatusText(t('statusBatchSubmitted'));
         const POLL_INTERVAL_MS = 5000;
-        let statusPayload: BatchStatusResponse;
+        let finalStatus: BatchStatusResponse | undefined;
 
         while (true) {
-          const statusResponse = await fetch(
-            `/api/generate?job=${encodeURIComponent(jobId)}`
-          );
-
-          statusPayload = (await parseApiJsonOrThrow(statusResponse, '/api/generate')) as BatchStatusResponse;
+          const statusResponse = await fetch(`/api/generate?job=${encodeURIComponent(jobId)}`);
+          finalStatus = (await parseApiJsonOrThrow(statusResponse, '/api/generate')) as BatchStatusResponse;
 
           if (!statusResponse.ok) {
-            throw new Error((statusPayload as unknown as { error?: string }).error ?? t('errorGenerationFailed'));
+            throw new Error((finalStatus as unknown as { error?: string }).error ?? t('errorGenerationFailed'));
           }
 
-          setStatusText(getBatchStatusText(statusPayload.state, statusPayload.stateLabel, statusPayload.stateDetail, t));
-
-          if (isTerminalBatchState(statusPayload.state)) {
-            break;
-          }
-
+          setStatusText(getBatchStatusText(finalStatus.state, finalStatus.stateLabel, finalStatus.stateDetail, t));
+          if (isTerminalBatchState(finalStatus.state)) break;
           await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         }
 
-        if (statusPayload.state !== 'succeeded') {
-          throw new Error(statusPayload.error?.trim() || `Batch job ${statusPayload.stateLabel.toLowerCase()}.`);
+        if (!finalStatus || finalStatus.state !== 'succeeded') {
+          throw new Error(finalStatus?.error?.trim() || `Batch job ${finalStatus?.stateLabel?.toLowerCase() ?? 'failed'}.`);
         }
 
-        batchOutput = statusPayload.results as BatchOutputShape;
+        batchOutput = finalStatus.results as BatchOutputShape;
       }
 
-      // Phase 3: process results.
-      const outputResults = (batchOutput?.results ?? []) as GenerationResult[];
-      const outputFailures = (batchOutput?.failures ?? []) as GenerationFailure[];
-      const successCount = Number(batchOutput?.succeededCount ?? outputResults.length);
-      const failCount = Number(batchOutput?.failedCount ?? outputFailures.length);
-      const usedModel = String(batchOutput?.usedModel ?? 'unknown-model');
+      return {
+        outputResults: (batchOutput?.results ?? []) as GenerationResult[],
+        outputFailures: (batchOutput?.failures ?? []) as GenerationFailure[],
+        succeededCount: Number(batchOutput?.succeededCount ?? (batchOutput?.results ?? []).length),
+        failedCount: Number(batchOutput?.failedCount ?? (batchOutput?.failures ?? []).length),
+        usedModel: String(batchOutput?.usedModel ?? 'unknown-model')
+      };
+    }
 
+    function applyUsedModel(usedModel: string): string {
       if (usedModel && usedModel !== 'unknown-model') {
         const normalizedUsedModel = normalizeModelCode(usedModel);
         setSelectedModel(normalizedUsedModel);
         setModelOptions((previous) =>
-          sortModelOptions(
-            mergeModelOptions(previous, [
-              {
-                code: normalizedUsedModel,
-                name: humanizeModelCode(normalizedUsedModel),
-                group: inferModelGroup(normalizedUsedModel)
-              }
-            ])
-          )
+          sortModelOptions(mergeModelOptions(previous, [{
+            code: normalizedUsedModel,
+            name: humanizeModelCode(normalizedUsedModel),
+            group: inferModelGroup(normalizedUsedModel)
+          }]))
         );
+        return normalizedUsedModel;
+      }
+      return submittedModel;
+    }
+
+    if (isBatchMode && referenceImages.length > 0) {
+      // Batch mode: one generation run per reference image with configurable rate limiting between runs.
+      const totalRefs = referenceImages.length;
+      const rateLimitMs = batchRateLimitSec * 1000;
+      setBatchTotalRefs(totalRefs);
+
+      try {
+        for (let i = 0; i < referenceImages.length; i++) {
+          const ref = referenceImages[i];
+
+          if (i > 0) {
+            const targetTime = lastBatchRunTimeRef.current + rateLimitMs;
+            let remaining = targetTime - Date.now();
+            while (remaining > 0) {
+              const seconds = Math.ceil(remaining / 1000);
+              setStatusText(t('batchRateLimitWait', { seconds }));
+              await new Promise<void>((r) => setTimeout(r, Math.min(1000, remaining)));
+              remaining = targetTime - Date.now();
+            }
+          }
+
+          setStatusText(t('batchGeneratingStep', { current: i + 1, total: totalRefs }));
+          setPendingHistoryIds(Array.from({ length: submittedCount }, () => makeId()));
+
+          const singleRefConfig: GenerationConfigSnapshot = {
+            ...submittedConfig,
+            referenceImages: [{ base64: ref.base64, mimeType: ref.mimeType }]
+          };
+
+          try {
+            const { outputResults, outputFailures, usedModel } = await callApiAndGetResults([
+              { base64: ref.base64, mimeType: ref.mimeType }
+            ]);
+
+            lastBatchRunTimeRef.current = Date.now();
+            const resolvedUsedModel = applyUsedModel(usedModel);
+            const historyConfig: GenerationConfigSnapshot = { ...singleRefConfig, model: resolvedUsedModel };
+
+            if (outputFailures.length > 0) {
+              setFailures((prev) => [
+                ...prev,
+                ...outputFailures.map((f) => ({ ...f, error: formatGenerationError(f.error, t) }))
+              ]);
+              toast.error(t('toastSomeVariantsFailed'), {
+                description: t('toastSomeVariantsFailedDesc', { count: outputFailures.length }),
+                duration: 4500
+              });
+            }
+
+            let runItems: HistoryItem[] = [];
+            if (outputResults.length > 0) {
+              const createdAt = new Date().toISOString();
+              runItems = outputResults.map((entry) =>
+                createHistoryItemFromGenerationResult(entry, {
+                  id: makeId(),
+                  createdAt,
+                  isNew: true,
+                  generationConfig: historyConfig
+                })
+              );
+
+              setHistoryItems((previous) => {
+                const olderItems = previous.map((e) => ({ ...e, isNew: false }));
+                return [...runItems, ...olderItems].slice(0, MAX_HISTORY_ITEMS);
+              });
+
+              toast.success(t('toastGenerationCompleted'), {
+                description: t('toastGenerationCompletedDesc', { count: outputResults.length }),
+                duration: 3000
+              });
+            }
+
+            const runResult: BatchRunResult = { refIndex: i, refPreviewDataUrl: ref.previewDataUrl, items: runItems };
+            batchRunResultsRef.current = [...batchRunResultsRef.current, runResult];
+            setBatchRunResults([...batchRunResultsRef.current]);
+
+          } catch (stepError) {
+            const rawMessage = stepError instanceof Error ? stepError.message : t('unexpectedError');
+            console.error('[batch-generate] step failed', { refIndex: i, error: stepError });
+            const message = formatGenerationError(rawMessage, t);
+            setError(message);
+            toast.error(t('errorGenerationFailed'), { description: message, duration: 6000 });
+          } finally {
+            setPendingHistoryIds([]);
+          }
+        }
+
+        setStatusText(t('batchComplete', { total: totalRefs }));
+        if (totalRefs > 1) {
+          toast.success(t('batchComplete', { total: totalRefs }), { duration: 5000 });
+        }
+
+        if (typeof window !== 'undefined' && window.innerWidth <= 980 && batchRunResultsRef.current.length > 0) {
+          setActiveTab('history');
+        }
+      } finally {
+        setIsLoading(false);
       }
 
-      setFailures(
-        outputFailures.map((failure) => ({
-          ...failure,
-          error: formatGenerationError(failure.error, t)
-        }))
-      );
-      setStatusText(
-        t('statusModelSummary', {
-          model: usedModel,
-          success: successCount,
-          fail: failCount
-        })
-      );
+    } else {
+      // Normal single generation: all reference images in one call.
+      setPendingHistoryIds(Array.from({ length: submittedCount }, () => makeId()));
 
-      if (outputResults.length > 0) {
-        const createdAt = new Date().toISOString();
-        const resolvedHistoryModel = usedModel && usedModel !== 'unknown-model' ? normalizeModelCode(usedModel) : submittedConfig.model;
+      try {
+        const { outputResults, outputFailures, succeededCount, failedCount, usedModel } =
+          await callApiAndGetResults(submittedRefs);
+
+        const resolvedUsedModel = applyUsedModel(usedModel);
         const historyConfig: GenerationConfigSnapshot = {
           ...submittedConfig,
-          model: resolvedHistoryModel
+          model: resolvedUsedModel,
+          referenceImages: submittedRefs
         };
-        setHistoryItems((previous) => {
-          const olderItems = previous.map((entry) => ({ ...entry, isNew: false }));
-          const latestItems = outputResults.map((entry) =>
-            createHistoryItemFromGenerationResult(entry, {
-              id: makeId(),
-              createdAt,
-              isNew: true,
-              generationConfig: historyConfig
-            })
-          );
 
-          return [...latestItems, ...olderItems].slice(0, MAX_HISTORY_ITEMS);
-        });
-      }
+        setFailures(outputFailures.map((failure) => ({
+          ...failure,
+          error: formatGenerationError(failure.error, t)
+        })));
 
-      if (outputResults.length > 0 && typeof window !== 'undefined' && window.innerWidth <= 980) {
-        setActiveTab('history');
-      }
+        setStatusText(t('statusModelSummary', { model: usedModel, success: succeededCount, fail: failedCount }));
 
-      if (successCount > 0) {
-        toast.success(t('toastGenerationCompleted'), {
-          description: t('toastGenerationCompletedDesc', { count: successCount }),
-          duration: 4200
-        });
-      }
+        if (outputResults.length > 0) {
+          const createdAt = new Date().toISOString();
+          setHistoryItems((previous) => {
+            const olderItems = previous.map((entry) => ({ ...entry, isNew: false }));
+            const latestItems = outputResults.map((entry) =>
+              createHistoryItemFromGenerationResult(entry, {
+                id: makeId(),
+                createdAt,
+                isNew: true,
+                generationConfig: historyConfig
+              })
+            );
+            return [...latestItems, ...olderItems].slice(0, MAX_HISTORY_ITEMS);
+          });
+        }
 
-      if (failCount > 0) {
-        toast.error(t('toastSomeVariantsFailed'), {
-          description: t('toastSomeVariantsFailedDesc', { count: failCount }),
-          duration: 6500
-        });
+        if (outputResults.length > 0 && typeof window !== 'undefined' && window.innerWidth <= 980) {
+          setActiveTab('history');
+        }
+
+        if (succeededCount > 0) {
+          toast.success(t('toastGenerationCompleted'), {
+            description: t('toastGenerationCompletedDesc', { count: succeededCount }),
+            duration: 4200
+          });
+        }
+
+        if (failedCount > 0) {
+          toast.error(t('toastSomeVariantsFailed'), {
+            description: t('toastSomeVariantsFailedDesc', { count: failedCount }),
+            duration: 6500
+          });
+        }
+      } catch (submitError) {
+        const rawMessage = submitError instanceof Error ? submitError.message : t('unexpectedError');
+        console.error('[generate] request failed', { error: submitError, rawMessage, selectedModel, submittedCount });
+        const message = formatGenerationError(rawMessage, t);
+        setStatusText(t('statusGenerationFailed'));
+        setError(message);
+        toast.error(t('errorGenerationFailed'), { description: message, duration: 8000 });
+      } finally {
+        setPendingHistoryIds([]);
+        setIsLoading(false);
       }
-    } catch (submitError) {
-      const rawMessage = submitError instanceof Error ? submitError.message : t('unexpectedError');
-      console.error('[generate] request failed', {
-        error: submitError,
-        rawMessage,
-        selectedModel,
-        submittedCount
-      });
-      const message = formatGenerationError(rawMessage, t);
-      setStatusText(t('statusGenerationFailed'));
-      setError(message);
-      toast.error(t('errorGenerationFailed'), {
-        description: message,
-        duration: 8000
-      });
-    } finally {
-      setPendingHistoryIds([]);
-      setIsLoading(false);
     }
   }
 
@@ -1166,6 +1410,41 @@ export default function HomePage() {
             </div>
           ) : null}
         </div>
+
+        {isBatchMode && (batchRunResults.length > 0 || isLoading) ? (
+          <section className="batch-mode-panel">
+            <div className="batch-mode-panel-head">
+              <span className="batch-mode-panel-title">{t('batchPanelTitle')}</span>
+              {isLoading ? (
+                <span className="batch-mode-panel-status">
+                  {t('batchStillGenerating', {
+                    current: Math.min(batchRunResults.length + 1, batchTotalRefs),
+                    total: batchTotalRefs
+                  })}
+                </span>
+              ) : null}
+            </div>
+            {batchRunResults.length > 0 ? (
+              <div className="batch-ref-thumbs">
+                {batchRunResults.map((run) => (
+                  <div key={run.refIndex} className="batch-ref-thumb">
+                    <img src={run.refPreviewDataUrl} alt={`Ref ${run.refIndex + 1}`} />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {!isLoading && batchRunResults.length > 0 ? (
+              <button
+                type="button"
+                className="batch-download-btn"
+                onClick={() => { void downloadBatchResults(); }}
+              >
+                <DownloadIcon />
+                {t('downloadBatchResults')}
+              </button>
+            ) : null}
+          </section>
+        ) : null}
 
         {!isHistoryHydrated ? (
           <p className="history-empty">{t('loadingHistory')}</p>
@@ -1273,6 +1552,15 @@ export default function HomePage() {
             >
               {themeMode === 'dark' ? <SunIcon /> : <MoonIcon />}
             </button>
+            <button
+              type="button"
+              className={`batch-mode-toggle${isBatchMode ? ' is-active' : ''}`}
+              onClick={() => setIsBatchMode((prev) => !prev)}
+              aria-label={t('batchModeToggle')}
+              title={t('batchModeToggle')}
+            >
+              {isBatchMode ? t('batchModeOn') : t('batchModeOff')}
+            </button>
             <div className="language-dropdown-wrap">
               <GlobeIcon />
               <select
@@ -1329,7 +1617,7 @@ export default function HomePage() {
             <section className="reference-block">
               <div className="field-head">
                 <GalleryIcon />
-                <span>{t('referenceImages')}</span>
+                <span>{isBatchMode ? t('referenceImagesBatch') : t('referenceImages')}</span>
                 <InfoHint text={t('fieldInfo.referenceImages')} />
               </div>
 
@@ -1390,7 +1678,41 @@ export default function HomePage() {
               <p className="reference-note">
                 {t('referenceSelectedCount', { selected: referenceImages.length, max: MAX_REFERENCE_IMAGES })}
               </p>
+              {isBatchMode ? (
+                <p className="reference-note batch-mode-note">
+                  {t('batchReferenceNote', { count: referenceImages.length })}
+                </p>
+              ) : null}
             </section>
+
+            {isBatchMode ? (
+              <label htmlFor="batch-rate-limit">
+                <span className="field-head">
+                  <LayersIcon />
+                  <span>{t('batchRateLimit')}</span>
+                  <InfoHint text={t('fieldInfo.batchRateLimit')} />
+                </span>
+                <input
+                  id="batch-rate-limit"
+                  type="number"
+                  min={0}
+                  max={MAX_BATCH_RATE_LIMIT_SEC}
+                  value={batchRateLimitInput}
+                  className={batchRateLimitError ? 'is-invalid' : ''}
+                  onChange={(event) => setBatchRateLimitInput(event.target.value)}
+                  onBlur={() => {
+                    const n = Number.parseInt(batchRateLimitInput, 10);
+                    if (Number.isFinite(n) && n >= 0 && n <= MAX_BATCH_RATE_LIMIT_SEC) {
+                      setBatchRateLimitSec(n);
+                      setBatchRateLimitInput(String(n));
+                    } else {
+                      setBatchRateLimitInput(String(batchRateLimitSec));
+                    }
+                  }}
+                />
+                {batchRateLimitError ? <p className="field-error">{batchRateLimitError}</p> : null}
+              </label>
+            ) : null}
 
             <label htmlFor="prompt">
               <span className="field-head">
@@ -1483,9 +1805,20 @@ export default function HomePage() {
                 type="number"
                 min={1}
                 max={10}
-                value={count}
-                onChange={(event) => setCount(Number.parseInt(event.target.value, 10) || DEFAULT_COUNT)}
+                value={countInput}
+                className={countError ? 'is-invalid' : ''}
+                onChange={(event) => setCountInput(event.target.value)}
+                onBlur={() => {
+                  const n = Number.parseInt(countInput, 10);
+                  if (Number.isFinite(n) && n >= 1 && n <= 10) {
+                    setCount(n);
+                    setCountInput(String(n));
+                  } else {
+                    setCountInput(String(count));
+                  }
+                }}
               />
+              {countError ? <p className="field-error">{countError}</p> : null}
             </label>
 
             <label htmlFor="aspect-ratio">
@@ -1587,11 +1920,20 @@ export default function HomePage() {
                     type="number"
                     min={MIN_RESIZE_DIMENSION}
                     max={MAX_RESIZE_DIMENSION}
-                    value={customResizeWidth}
-                    onChange={(event) =>
-                      setCustomResizeWidth(clampResizeDimension(Number.parseInt(event.target.value, 10) || DEFAULT_CUSTOM_RESIZE_WIDTH))
-                    }
+                    value={resizeWidthInput}
+                    className={resizeWidthError ? 'is-invalid' : ''}
+                    onChange={(event) => setResizeWidthInput(event.target.value)}
+                    onBlur={() => {
+                      const n = Number.parseInt(resizeWidthInput, 10);
+                      if (Number.isFinite(n) && n >= MIN_RESIZE_DIMENSION && n <= MAX_RESIZE_DIMENSION) {
+                        setCustomResizeWidth(n);
+                        setResizeWidthInput(String(n));
+                      } else {
+                        setResizeWidthInput(String(customResizeWidth));
+                      }
+                    }}
                   />
+                  {resizeWidthError ? <p className="field-error">{resizeWidthError}</p> : null}
                 </label>
 
                 <label htmlFor="resize-height">
@@ -1603,11 +1945,20 @@ export default function HomePage() {
                     type="number"
                     min={MIN_RESIZE_DIMENSION}
                     max={MAX_RESIZE_DIMENSION}
-                    value={customResizeHeight}
-                    onChange={(event) =>
-                      setCustomResizeHeight(clampResizeDimension(Number.parseInt(event.target.value, 10) || DEFAULT_CUSTOM_RESIZE_HEIGHT))
-                    }
+                    value={resizeHeightInput}
+                    className={resizeHeightError ? 'is-invalid' : ''}
+                    onChange={(event) => setResizeHeightInput(event.target.value)}
+                    onBlur={() => {
+                      const n = Number.parseInt(resizeHeightInput, 10);
+                      if (Number.isFinite(n) && n >= MIN_RESIZE_DIMENSION && n <= MAX_RESIZE_DIMENSION) {
+                        setCustomResizeHeight(n);
+                        setResizeHeightInput(String(n));
+                      } else {
+                        setResizeHeightInput(String(customResizeHeight));
+                      }
+                    }}
                   />
+                  {resizeHeightError ? <p className="field-error">{resizeHeightError}</p> : null}
                 </label>
               </div>
             ) : null}
@@ -1652,7 +2003,10 @@ export default function HomePage() {
                 {isLoading ? (
                   <>
                     <span className="generate-btn-spinner" aria-hidden="true" />
-                    <span>{t('generating')}</span>
+                    <span className="generate-btn-loading-wrap">
+                      <span>{t('generating')}</span>
+                      {statusText ? <span className="generate-btn-sub-label">{statusText}</span> : null}
+                    </span>
                   </>
                 ) : (
                   <>
@@ -1680,6 +2034,7 @@ export default function HomePage() {
             </div>
           </section>
         ) : null}
+
       </section>
 
       <nav className="mobile-tabbar" aria-label="Ana sekme navigasyonu">
@@ -1723,10 +2078,6 @@ export default function HomePage() {
         on={{
           view: ({ index }) => {
             setHistoryViewerIndex(index);
-            const viewedId = historyItems[index]?.id;
-            if (viewedId) {
-              markHistoryItemAsViewed(viewedId);
-            }
           }
         }}
         render={{

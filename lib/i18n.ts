@@ -91,6 +91,11 @@ const resources = {
         'Re-generate settings applied ({{count}} reference image(s) restored, resize {{resize}}).',
       toastReferenceLimitReached: 'Reference limit reached',
       toastReferenceLimitReachedDesc: 'You can add up to {{max}} reference images.',
+      errorInvalidNumber: 'Please enter a valid whole number.',
+      errorCountMin: 'Must be at least 1.',
+      errorCountMax: 'Maximum is 10 variants.',
+      errorResizeTooSmall: 'Must be at least {{min}}px.',
+      errorResizeTooBig: 'Maximum is {{max}}px.',
       errorFailedReadImageFile: 'Failed to read image file.',
       toastReferenceReadFailed: 'Reference image read failed',
       toastReferenceReadFailedDesc: 'Please choose a valid image file and try again.',
@@ -120,6 +125,21 @@ const resources = {
       toastDownloadFailed: 'Download failed',
       download: 'Download',
       regenerate: 'Re-generate',
+      batchPanelTitle: 'Batch Mode',
+      batchStillGenerating: 'Still generating at {{current}} / {{total}}',
+      batchModeOn: 'Batch Mode: ON',
+      batchModeOff: 'Batch Mode: OFF',
+      batchModeToggle: 'Toggle batch mode',
+      referenceImagesBatch: 'Reference Image(s)',
+      batchReferenceNote: 'Each image generates separately. {{count}} image(s) = {{count}} generation run(s).',
+      batchGeneratingStep: 'Batch {{current}}/{{total}}: generating...',
+      batchRateLimit: 'Rate Limit (seconds)',
+      errorRateLimitMin: 'Must be 0 or more.',
+      errorRateLimitMax: 'Maximum is 600 seconds (10 min).',
+      batchRateLimitWait: 'Rate limit: waiting {{seconds}}s before next run...',
+      batchComplete: 'Batch done: {{total}} reference image(s) processed.',
+      downloadBatchResults: 'Download All (organized by reference)',
+      batchDownloadFailed: 'Batch download failed',
       resizeOff: 'off',
       modelReturnedText:
         'Model returned text instead of an image: "{{modelText}}". Try another image model, simplify the prompt, or adjust references.',
@@ -152,7 +172,8 @@ const resources = {
         aspectRatio: 'Controls output image shape (portrait, square, landscape). A 2:3 aspect ratio is required for 2000x3000 output.',
         steps: 'Higher steps can improve detail but may be slower.',
         resolution: 'Controls pixel dimensions/output quality preset.',
-        resizeOutput: 'Optionally resize generated images to export-friendly dimensions. For marketplaces like Trendyol and Hepsiburada, 2000x3000 is recommended.'
+        resizeOutput: 'Optionally resize generated images to export-friendly dimensions. For marketplaces like Trendyol and Hepsiburada, 2000x3000 is recommended.',
+        batchRateLimit: 'Seconds to wait between each batch generation run. Set to 0 for no delay. Recommended: 120s (2 min) to avoid API exhaustion.'
       }
     }
   },
@@ -244,6 +265,11 @@ const resources = {
       toastConfigLoadedDesc: 'Yeniden üretim ayarları uygulandı ({{count}} referans görsel geri yüklendi, yeniden boyutlandırma {{resize}}).',
       toastReferenceLimitReached: 'Referans limiti doldu',
       toastReferenceLimitReachedDesc: 'En fazla {{max}} referans görsel ekleyebilirsiniz.',
+      errorInvalidNumber: 'Lütfen geçerli bir tam sayı girin.',
+      errorCountMin: 'En az 1 olmalıdır.',
+      errorCountMax: 'En fazla 10 varyant olabilir.',
+      errorResizeTooSmall: 'En az {{min}}px olmalıdır.',
+      errorResizeTooBig: 'En fazla {{max}}px olabilir.',
       errorFailedReadImageFile: 'Görsel dosyası okunamadı.',
       toastReferenceReadFailed: 'Referans görsel okunamadı',
       toastReferenceReadFailedDesc: 'Lütfen geçerli bir görsel dosyası seçip tekrar deneyin.',
@@ -273,6 +299,21 @@ const resources = {
       toastDownloadFailed: 'İndirme başarısız oldu',
       download: 'İndir',
       regenerate: 'Yeniden Üret',
+      batchPanelTitle: 'Toplu Mod',
+      batchStillGenerating: '{{current}} / {{total}} - üretim devam ediyor',
+      batchModeOn: 'Toplu Mod: AÇIK',
+      batchModeOff: 'Toplu Mod: KAPALI',
+      batchModeToggle: 'Toplu modu değiştir',
+      referenceImagesBatch: 'Referans Görsel(ler)',
+      batchReferenceNote: 'Her görsel ayrı ayrı üretilir. {{count}} görsel = {{count}} üretim turu.',
+      batchGeneratingStep: 'Toplu {{current}}/{{total}}: üretiliyor...',
+      batchRateLimit: 'Hız Limiti (saniye)',
+      errorRateLimitMin: '0 veya daha büyük olmalıdır.',
+      errorRateLimitMax: 'En fazla 600 saniye (10 dk) olabilir.',
+      batchRateLimitWait: 'Hız limiti: sonraki tur için {{seconds}} saniye bekleniyor...',
+      batchComplete: 'Toplu işlem bitti: {{total}} referans görsel işlendi.',
+      downloadBatchResults: 'Tümünü İndir (referansa göre ayrılmış)',
+      batchDownloadFailed: 'Toplu indirme başarısız',
       resizeOff: 'kapalı',
       modelReturnedText:
         'Model görsel yerine metin döndürdü: "{{modelText}}". Başka bir görsel model deneyin, istemi sadeleştirin veya referansları ayarlayın.',
@@ -305,7 +346,8 @@ const resources = {
         aspectRatio: 'Çıktı görsel oranını belirler (dikey, kare, yatay). 2000x3000 çıktı için 2:3 en-boy oranı gerekir.',
         steps: 'Adım sayısı arttıkça detay artabilir, ancak süre uzayabilir.',
         resolution: 'Piksel boyutunu/çıktı kalite önayarını belirler.',
-        resizeOutput: 'Üretilen görselleri dışa aktarıma uygun boyutlara yeniden ölçekler. Özellikle Trendyol, Hepsiburada gibi sitelere 2000x3000 boyutlandırması önerilir.'
+        resizeOutput: 'Üretilen görselleri dışa aktarıma uygun boyutlara yeniden ölçekler. Özellikle Trendyol, Hepsiburada gibi sitelere 2000x3000 boyutlandırması önerilir.',
+        batchRateLimit: 'Her toplu üretim turu arasındaki bekleme süresi (saniye). Gecikme istemiyorsanız 0 girin. Önerilen: 120s (2 dk) — API limitinin aşılmaması için.'
       }
     }
   }
