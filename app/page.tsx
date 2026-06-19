@@ -254,6 +254,7 @@ export default function HomePage() {
     [selectedModelIsTogether]
   );
   const selectedModelLooksImageCapable = useMemo(() => modelLooksImageCapable(selectedModel), [selectedModel]);
+  const canAddReferenceImage = isBatchMode || referenceImages.length < MAX_REFERENCE_IMAGES;
   const resolvedResize = useMemo(() => {
     if (resizePreset === 'none') {
       return undefined;
@@ -964,7 +965,8 @@ export default function HomePage() {
     setCount(restoredCount);
     setCountInput(String(restoredCount));
     const hasStoredReferenceMetadata = Array.isArray(config.referenceImages);
-    const restoredReferences = (config.referenceImages ?? []).slice(0, MAX_REFERENCE_IMAGES).map((reference) => ({
+    const restoredSourceReferences = config.referenceImages ?? [];
+    const restoredReferences = (isBatchMode ? restoredSourceReferences : restoredSourceReferences.slice(0, MAX_REFERENCE_IMAGES)).map((reference) => ({
       id: makeId(),
       base64: reference.base64,
       mimeType: reference.mimeType,
@@ -995,8 +997,8 @@ export default function HomePage() {
     }
 
     const incomingFiles = Array.from(files);
-    const availableSlots = Math.max(0, MAX_REFERENCE_IMAGES - referenceImages.length);
-    const selected = incomingFiles.slice(0, availableSlots);
+    const availableSlots = isBatchMode ? incomingFiles.length : Math.max(0, MAX_REFERENCE_IMAGES - referenceImages.length);
+    const selected = isBatchMode ? incomingFiles : incomingFiles.slice(0, availableSlots);
 
     if (selected.length === 0) {
       toast.error(t('toastReferenceLimitReached'), {
@@ -1048,7 +1050,10 @@ export default function HomePage() {
     }
 
     if (createdReferences.length > 0) {
-      setReferenceImages((previous) => [...previous, ...createdReferences].slice(0, MAX_REFERENCE_IMAGES));
+      setReferenceImages((previous) => {
+        const nextReferences = [...previous, ...createdReferences];
+        return isBatchMode ? nextReferences : nextReferences.slice(0, MAX_REFERENCE_IMAGES);
+      });
       setError('');
     }
   }
@@ -1083,6 +1088,16 @@ export default function HomePage() {
     const submittedNegativePrompt = negativePrompt.trim();
     const submittedModel = selectedModel;
     const submittedRefs = referenceImages.map((img) => ({ base64: img.base64, mimeType: img.mimeType }));
+
+    if (!isBatchMode && submittedRefs.length > MAX_REFERENCE_IMAGES) {
+      const message = t('errorReferenceLimitNormalMode', { max: MAX_REFERENCE_IMAGES });
+      setError(message);
+      toast.error(t('toastReferenceLimitReached'), {
+        description: message,
+        duration: 5000
+      });
+      return;
+    }
 
     const submittedConfig: GenerationConfigSnapshot = {
       basePrompt: submittedPrompt,
@@ -1658,7 +1673,7 @@ export default function HomePage() {
                     </article>
                   ))}
 
-                  {referenceImages.length < MAX_REFERENCE_IMAGES ? (
+                  {canAddReferenceImage ? (
                     <button
                       type="button"
                       className="ref-add-circle"
@@ -1676,7 +1691,9 @@ export default function HomePage() {
               </div>
 
               <p className="reference-note">
-                {t('referenceSelectedCount', { selected: referenceImages.length, max: MAX_REFERENCE_IMAGES })}
+                {isBatchMode
+                  ? t('referenceSelectedCountBatch', { selected: referenceImages.length })
+                  : t('referenceSelectedCount', { selected: referenceImages.length, max: MAX_REFERENCE_IMAGES })}
               </p>
               {isBatchMode ? (
                 <p className="reference-note batch-mode-note">
