@@ -68,11 +68,13 @@ type ReferenceImage = {
   base64: string;
   mimeType: string;
   previewDataUrl: string;
+  fileName: string;
 };
 
 type BatchRunResult = {
   refIndex: number;
   refPreviewDataUrl: string;
+  refFileName?: string;
   items: HistoryItem[];
 };
 
@@ -90,6 +92,7 @@ type GenerationConfigSnapshot = {
   referenceImages?: Array<{
     base64: string;
     mimeType: string;
+    fileName?: string;
   }>;
 };
 
@@ -804,7 +807,7 @@ export default function HomePage() {
       const fileExt = mimeTypeToFileExtension(item.mimeType);
       const anchor = document.createElement('a');
       anchor.href = item.imageUrl;
-      anchor.download = `image-${item.createdAt.slice(0, 10)}.${fileExt}`;
+      anchor.download = getHistoryImageDownloadName(item, 1, fileExt);
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -817,14 +820,14 @@ export default function HomePage() {
       for (let i = 0; i < selected.length; i++) {
         const item = selected[i];
         const fileExt = mimeTypeToFileExtension(item.mimeType);
-        const fileName = `image-${item.createdAt.slice(0, 10)}-${String(i + 1).padStart(2, '0')}.${fileExt}`;
+        const fileName = getHistoryImageDownloadName(item, i + 1, fileExt);
         zip.file(fileName, item.imageBlob);
       }
       const blob = await zip.generateAsync({ type: 'blob' });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `images-${new Date().toISOString().slice(0, 10)}.zip`;
+      anchor.download = `${getDownloadBatchBaseName(selected)}.zip`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -843,14 +846,14 @@ export default function HomePage() {
       const zip = new JSZip();
 
       for (const run of results) {
-        const folderName = `ref-${String(run.refIndex + 1).padStart(2, '0')}`;
+        const folderName = getBatchReferenceFolderName(run);
         const folder = zip.folder(folderName);
         if (!folder) continue;
 
         for (let i = 0; i < run.items.length; i++) {
           const item = run.items[i];
           const fileExt = mimeTypeToFileExtension(item.mimeType);
-          folder.file(`image-${String(i + 1).padStart(2, '0')}.${fileExt}`, item.imageBlob);
+          folder.file(getHistoryImageDownloadName(item, i + 1, fileExt), item.imageBlob);
         }
       }
 
@@ -858,7 +861,7 @@ export default function HomePage() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `batch-results-${new Date().toISOString().slice(0, 10)}.zip`;
+      anchor.download = `${getDownloadBatchBaseName(results.flatMap((run) => run.items))}.zip`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -910,10 +913,9 @@ export default function HomePage() {
     }
 
     const fileExt = mimeTypeToFileExtension(item.mimeType);
-    const createdKey = item.createdAt.slice(0, 10);
     const anchor = document.createElement('a');
     anchor.href = item.imageUrl;
-    anchor.download = `history-${createdKey}-${historyViewerIndex + 1}.${fileExt}`;
+    anchor.download = getHistoryImageDownloadName(item, historyViewerIndex + 1, fileExt);
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -970,7 +972,8 @@ export default function HomePage() {
       id: makeId(),
       base64: reference.base64,
       mimeType: reference.mimeType,
-      previewDataUrl: `data:${reference.mimeType};base64,${reference.base64}`
+      previewDataUrl: `data:${reference.mimeType};base64,${reference.base64}`,
+      fileName: reference.fileName ?? ''
     }));
     setReferenceImages(restoredReferences);
     setIsHistoryViewerOpen(false);
@@ -1045,7 +1048,8 @@ export default function HomePage() {
         id: makeId(),
         base64: parsed.base64,
         mimeType: parsed.mimeType,
-        previewDataUrl: dataUrl
+        previewDataUrl: dataUrl,
+        fileName: file.name
       });
     }
 
@@ -1087,7 +1091,7 @@ export default function HomePage() {
     const submittedPrompt = prompt.trim();
     const submittedNegativePrompt = negativePrompt.trim();
     const submittedModel = selectedModel;
-    const submittedRefs = referenceImages.map((img) => ({ base64: img.base64, mimeType: img.mimeType }));
+    const submittedRefs = referenceImages.map((img) => ({ base64: img.base64, mimeType: img.mimeType, fileName: img.fileName }));
 
     if (!isBatchMode && submittedRefs.length > MAX_REFERENCE_IMAGES) {
       const message = t('errorReferenceLimitNormalMode', { max: MAX_REFERENCE_IMAGES });
@@ -1118,7 +1122,7 @@ export default function HomePage() {
     batchRunResultsRef.current = [];
 
     // Calls /api/generate with the given refs, polls until done, returns structured output.
-    async function callApiAndGetResults(refs: Array<{ base64: string; mimeType: string }>) {
+    async function callApiAndGetResults(refs: Array<{ base64: string; mimeType: string; fileName?: string }>) {
       setStatusText(t('statusSubmitting', { count: submittedCount }));
 
       const submitResponse = await fetch('/api/generate', {
@@ -1227,7 +1231,7 @@ export default function HomePage() {
 
           const singleRefConfig: GenerationConfigSnapshot = {
             ...submittedConfig,
-            referenceImages: [{ base64: ref.base64, mimeType: ref.mimeType }]
+            referenceImages: [{ base64: ref.base64, mimeType: ref.mimeType, fileName: ref.fileName }]
           };
 
           try {
@@ -1273,7 +1277,12 @@ export default function HomePage() {
               });
             }
 
-            const runResult: BatchRunResult = { refIndex: i, refPreviewDataUrl: ref.previewDataUrl, items: runItems };
+            const runResult: BatchRunResult = {
+              refIndex: i,
+              refPreviewDataUrl: ref.previewDataUrl,
+              refFileName: ref.fileName,
+              items: runItems
+            };
             batchRunResultsRef.current = [...batchRunResultsRef.current, runResult];
             setBatchRunResults([...batchRunResultsRef.current]);
 
@@ -2200,6 +2209,56 @@ function mimeTypeToFileExtension(mimeType: string): string {
   return map[mimeType.toLowerCase()] ?? 'png';
 }
 
+function getReferenceFileName(item: HistoryItem): string {
+  return item.generationConfig?.referenceImages?.find((reference) => reference.fileName?.trim())?.fileName?.trim() ?? '';
+}
+
+function getReferenceBaseName(item: HistoryItem): string {
+  return sanitizeDownloadName(stripFileExtension(getReferenceFileName(item))) || 'history';
+}
+
+function getHistoryImageDownloadName(item: HistoryItem, index: number, fileExt: string): string {
+  const baseName = getReferenceBaseName(item);
+  const createdKey = item.createdAt.slice(0, 10);
+  const suffix = String(Math.max(1, index)).padStart(2, '0');
+  return `${baseName}-${createdKey}-${suffix}.${fileExt}`;
+}
+
+function getDownloadBatchBaseName(items: HistoryItem[]): string {
+  const referenceNames = Array.from(new Set(items.map(getReferenceBaseName).filter((name) => name !== 'history')));
+  const dateKey = new Date().toISOString().slice(0, 10);
+
+  if (referenceNames.length === 1) {
+    return `${referenceNames[0]}-${dateKey}`;
+  }
+
+  if (referenceNames.length > 1) {
+    return `references-${dateKey}`;
+  }
+
+  return `history-${dateKey}`;
+}
+
+function getBatchReferenceFolderName(run: BatchRunResult): string {
+  const safeName = sanitizeDownloadName(stripFileExtension(run.refFileName ?? ''));
+  const fallback = `ref-${String(run.refIndex + 1).padStart(2, '0')}`;
+  return safeName ? `${fallback}-${safeName}` : fallback;
+}
+
+function stripFileExtension(fileName: string): string {
+  return fileName.replace(/\.[^./\\]+$/, '');
+}
+
+function sanitizeDownloadName(value: string): string {
+  return value
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[.-]+|[.-]+$/g, '')
+    .slice(0, 80);
+}
+
 function groupHistoryByDate(items: HistoryItem[], language: 'tr' | 'en'): Array<{ dateKey: string; label: string; items: HistoryItem[] }> {
   const grouped = new Map<string, HistoryItem[]>();
 
@@ -2299,7 +2358,11 @@ function isGenerationConfigSnapshot(value: unknown): value is GenerationConfigSn
         }
 
         const referenceRecord = entry as Record<string, unknown>;
-        return typeof referenceRecord.base64 === 'string' && typeof referenceRecord.mimeType === 'string';
+        return (
+          typeof referenceRecord.base64 === 'string' &&
+          typeof referenceRecord.mimeType === 'string' &&
+          (typeof referenceRecord.fileName === 'undefined' || typeof referenceRecord.fileName === 'string')
+        );
       }));
   const hasValidResizePreset =
     typeof record.resizePreset === 'undefined' || (typeof record.resizePreset === 'string' && isResizePresetOption(record.resizePreset));
