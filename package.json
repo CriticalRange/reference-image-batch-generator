@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@google/genai": "^1.8.0",
+    "@tensorflow/tfjs": "~4.11.0",
+    "@upscalerjs/esrgan-thick": "^1.0.0",
     "framer-motion": "^12.38.0",
     "google-auth-library": "^10.7.0",
     "i18next": "^26.0.8",
@@ -23,6 +25,7 @@
     "sharp": "^0.34.5",
     "sonner": "^2.0.7",
     "together-ai": "^0.39.0",
+    "upscaler": "^1.0.0",
     "yet-another-react-lightbox": "^3.31.0"
   },
   "devDependencies": {
@@ -35,5 +38,8 @@
   },
   "overrides": {
     "postcss": "^8.5.10"
+  },
+  "optionalDependencies": {
+    "@tensorflow/tfjs-node": "~4.11.0"
   }
 }

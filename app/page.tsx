@@ -94,6 +94,7 @@ type GenerationConfigSnapshot = {
   resizePreset?: ResizePresetOption;
   resizeWidth?: number;
   resizeHeight?: number;
+  aiUpscale?: boolean;
   requestedCount: number;
   referenceImages?: Array<{
     base64: string;
@@ -359,6 +360,7 @@ export default function HomePage() {
   const [resizePreset, setResizePreset] = useState<ResizePresetOption>('2000x3000');
   const [customResizeWidth, setCustomResizeWidth] = useState(DEFAULT_CUSTOM_RESIZE_WIDTH);
   const [customResizeHeight, setCustomResizeHeight] = useState(DEFAULT_CUSTOM_RESIZE_HEIGHT);
+  const [aiUpscale, setAiUpscale] = useState(false);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [modelOptions, setModelOptions] = useState<UiModelOption[]>(INITIAL_MODEL_OPTIONS);
   const [falPricingByModel, setFalPricingByModel] = useState<FalPricingMap>({});
@@ -1095,6 +1097,7 @@ export default function HomePage() {
     setImageSize(toResolutionOption(config.imageSize));
     const restoredResizePreset = toResizePresetOption(config.resizePreset, config.resizeWidth, config.resizeHeight);
     setResizePreset(restoredResizePreset);
+    setAiUpscale(Boolean(config.aiUpscale));
     if (restoredResizePreset === 'custom') {
       const restoredWidth = clampResizeDimension(config.resizeWidth ?? DEFAULT_CUSTOM_RESIZE_WIDTH);
       const restoredHeight = clampResizeDimension(config.resizeHeight ?? DEFAULT_CUSTOM_RESIZE_HEIGHT);
@@ -1252,6 +1255,7 @@ export default function HomePage() {
       ...(supportsResolutionSelector ? { imageSize } : {}),
       resizePreset,
       ...(resolvedResize ? { resizeWidth: resolvedResize.width, resizeHeight: resolvedResize.height } : {}),
+      ...(aiUpscale ? { aiUpscale: true } : {}),
       requestedCount: submittedCount,
     };
 
@@ -1281,6 +1285,7 @@ export default function HomePage() {
           imageSize: supportsResolutionSelector ? imageSize : undefined,
           resizeWidth: resolvedResize?.width,
           resizeHeight: resolvedResize?.height,
+          aiUpscale,
           referenceImages: refs
         })
       });
@@ -2175,6 +2180,20 @@ export default function HomePage() {
               </div>
             ) : null}
 
+            <label className="checkbox-row" htmlFor="ai-upscale">
+              <input
+                id="ai-upscale"
+                type="checkbox"
+                checked={aiUpscale}
+                onChange={(event) => setAiUpscale(event.target.checked)}
+              />
+              <span className="field-head">
+                <ResizeIcon />
+                <span>{t('aiUpscale')}</span>
+                <InfoHint text={t('fieldInfo.aiUpscale')} />
+              </span>
+            </label>
+
             <motion.button
               type="submit"
               className={`generate-btn${isLoading ? ' is-loading' : ''}`}
@@ -2426,13 +2445,19 @@ function getDownloadBatchBaseName(items: HistoryItem[]): string {
 }
 
 function getBatchReferenceFolderName(run: BatchRunResult): string {
-  const safeName = sanitizeDownloadName(stripFileExtension(run.refFileName ?? ''));
+  const safeName = getReferenceGroupingCode(run.refFileName ?? '');
   const fallback = `ref-${String(run.refIndex + 1).padStart(2, '0')}`;
-  return safeName ? `${fallback}-${safeName}` : fallback;
+  return safeName || fallback;
 }
 
 function stripFileExtension(fileName: string): string {
   return fileName.replace(/\.[^./\\]+$/, '');
+}
+
+function getReferenceGroupingCode(fileName: string): string {
+  const baseName = stripFileExtension(fileName).trim();
+  const match = baseName.match(/^[A-Za-z]+\d+/);
+  return sanitizeDownloadName(match?.[0] ?? baseName);
 }
 
 function sanitizeDownloadName(value: string): string {
@@ -2555,6 +2580,7 @@ function isGenerationConfigSnapshot(value: unknown): value is GenerationConfigSn
   const hasResizeWidth = typeof record.resizeWidth === 'number';
   const hasResizeHeight = typeof record.resizeHeight === 'number';
   const hasValidResizePair = (!hasResizeWidth && !hasResizeHeight) || (hasResizeWidth && hasResizeHeight);
+  const hasValidAiUpscale = typeof record.aiUpscale === 'undefined' || typeof record.aiUpscale === 'boolean';
   return (
     typeof record.basePrompt === 'string' &&
     typeof record.model === 'string' &&
@@ -2564,6 +2590,7 @@ function isGenerationConfigSnapshot(value: unknown): value is GenerationConfigSn
     typeof record.requestedCount === 'number' &&
     hasValidResizePreset &&
     hasValidResizePair &&
+    hasValidAiUpscale &&
     hasValidReferences
   );
 }

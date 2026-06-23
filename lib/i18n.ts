@@ -68,6 +68,7 @@ const resources = {
       resizePreset2048x2048: '2048 x 2048',
       resizeWidth: 'Width (px)',
       resizeHeight: 'Height (px)',
+      aiUpscale: 'AI Upscale 2x',
       generate: 'Generate',
       generating: 'Generating...',
       failedVariants: 'Failed Variants',
@@ -175,6 +176,7 @@ const resources = {
         steps: 'Higher steps can improve detail but may be slower.',
         resolution: 'Controls pixel dimensions/output quality preset.',
         resizeOutput: 'Optionally resize generated images to export-friendly dimensions. For marketplaces like Trendyol and Hepsiburada, 2000x3000 is recommended.',
+        aiUpscale: 'Runs ESRGAN Thick 2x after generation, then applies the selected resize/export size. Uses more CPU/RAM and takes longer per image.',
         batchRateLimit: 'Seconds to wait between each batch generation run. Set to 0 for no delay. Recommended: 120s (2 min) to avoid API exhaustion.'
       }
     }
@@ -245,6 +247,7 @@ const resources = {
       resizePreset2048x2048: '2048 x 2048',
       resizeWidth: 'Genişlik (px)',
       resizeHeight: 'Yükseklik (px)',
+      aiUpscale: 'AI Upscale 2x',
       generate: 'Üret',
       generating: 'Üretiliyor...',
       failedVariants: 'Başarısız Varyantlar',
@@ -351,6 +354,7 @@ const resources = {
         steps: 'Adım sayısı arttıkça detay artabilir, ancak süre uzayabilir.',
         resolution: 'Piksel boyutunu/çıktı kalite önayarını belirler.',
         resizeOutput: 'Üretilen görselleri dışa aktarıma uygun boyutlara yeniden ölçekler. Özellikle Trendyol, Hepsiburada gibi sitelere 2000x3000 boyutlandırması önerilir.',
+        aiUpscale: 'Uretimden sonra ESRGAN Thick 2x calistirir, ardindan secili yeniden boyutlandirma/dis aktarim boyutunu uygular. Daha fazla CPU/RAM kullanir ve gorsel basina daha uzun surer.',
         batchRateLimit: 'Her toplu üretim turu arasındaki bekleme süresi (saniye). Gecikme istemiyorsanız 0 girin. Önerilen: 120s (2 dk) — API limitinin aşılmaması için.'
       }
     }

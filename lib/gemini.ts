@@ -26,6 +26,7 @@ export type BatchInput = {
     width: number;
     height: number;
   };
+  aiUpscale?: boolean;
 };
 
 export type BatchResult = {
@@ -66,6 +67,10 @@ export type BatchStatusResult = {
   results?: BatchOutput;
 };
 
+type UpscalerConstructor = new (options: { model: unknown }) => {
+  upscale(input: Buffer): Promise<string>;
+};
+
 const DEFAULT_MODEL = 'vertex/gemini-2.5-flash-image';
 const DEFAULT_MAX_BATCH = 10;
 const DEFAULT_MAX_PARALLEL_REQUESTS = 2;
@@ -88,6 +93,7 @@ const VERTEX_MODEL_PATTERN = /^vertex\//i;
 const FLUX_KONTEXT_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/FLUX\.1-kontext-(pro|max)$/i;
 const FLUX2_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/FLUX\.2-/i;
 const GOOGLE_GEMINI_PRO_IMAGE_TOGETHER_MODEL_PATTERN = /^google\/gemini-3-pro-image$/i;
+let esrgan2xUpscalerPromise: Promise<InstanceType<UpscalerConstructor>> | undefined;
 const ALLOWED_ASPECT_RATIOS = new Set([
   '1:1',
   '1:4',
@@ -478,7 +484,8 @@ async function runVertexBatch(
   requestedCount: number,
   prompts: string[],
   references: Array<{ base64: string; mimeType: string }>,
-  resizeTo: { width: number; height: number } | undefined
+  resizeTo: { width: number; height: number } | undefined,
+  aiUpscale: boolean
 ): Promise<BatchOutput> {
   const { token, projectId } = await getVertexAccessToken();
   const region = process.env.VERTEX_AI_REGION ?? 'us-central1';
@@ -527,14 +534,14 @@ async function runVertexBatch(
 
         return Promise.all(
           extracted.map(async (image) => {
-            const processed = resizeTo ? await resizeGeneratedImage(image, resizeTo) : image;
+            const processed = await processGeneratedImage(image, resizeTo, aiUpscale);
             return { ...processed, promptVariant } satisfies BatchResult;
           })
         );
       };
     });
 
-    const settledChunks = await runWithConcurrency(chunkJobs, parseMaxParallelRequests());
+    const settledChunks = await runWithConcurrency(chunkJobs, aiUpscale ? 1 : parseMaxParallelRequests());
 
     const allResults: BatchResult[] = [];
     const allFailures: BatchFailure[] = [];
@@ -566,7 +573,7 @@ async function runVertexBatch(
   }
 
   // Vertex Gemini: parallel generateContent requests with prompt variants.
-  const maxParallel = parseMaxParallelRequests();
+  const maxParallel = aiUpscale ? 1 : parseMaxParallelRequests();
   const jobs = prompts.map((promptVariant) => {
     return async () => {
       const parts: unknown[] = [{ text: promptVariant }];
@@ -603,7 +610,7 @@ async function runVertexBatch(
         throw getNoImageReturnedError('Vertex AI returned no image in response.');
       }
 
-      const processed = resizeTo ? await resizeGeneratedImage(extracted, resizeTo) : extracted;
+      const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
       return { ...processed, promptVariant } satisfies BatchResult;
     };
   });
@@ -619,7 +626,8 @@ async function runFalBatch(
   negativePrompt: string | undefined,
   references: Array<{ base64: string; mimeType: string }>,
   aspectRatio: string,
-  resizeTo: { width: number; height: number } | undefined
+  resizeTo: { width: number; height: number } | undefined,
+  aiUpscale: boolean
 ): Promise<BatchOutput> {
   const apiKey = process.env.FAL_AI_API_KEY;
   if (!apiKey) {
@@ -627,7 +635,7 @@ async function runFalBatch(
   }
 
   const endpoint = `https://fal.run/${model}`;
-  const maxParallel = parseMaxParallelRequests();
+  const maxParallel = aiUpscale ? 1 : parseMaxParallelRequests();
   const referenceImageUrl = references[0] ? buildReferenceDataUrl(references[0]) : undefined;
 
   const jobs = prompts.map((promptVariant) => {
@@ -670,7 +678,7 @@ async function runFalBatch(
         imageBase64: downloaded.imageBase64,
         mimeType: downloaded.mimeType
       };
-      const processed = resizeTo ? await resizeGeneratedImage(extracted, resizeTo) : extracted;
+      const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
 
       return {
         ...processed,
@@ -737,6 +745,65 @@ async function resizeGeneratedImage(result: BatchResult, resizeTo: { width: numb
     ...result,
     imageBase64: resizedBuffer.toString('base64'),
     mimeType: 'image/png'
+  };
+}
+
+async function processGeneratedImage(
+  result: BatchResult,
+  resizeTo: { width: number; height: number } | undefined,
+  aiUpscale: boolean
+): Promise<BatchResult> {
+  const enhanced = aiUpscale ? await upscaleGeneratedImage(result) : result;
+  return resizeTo ? resizeGeneratedImage(enhanced, resizeTo) : enhanced;
+}
+
+async function upscaleGeneratedImage(result: BatchResult): Promise<BatchResult> {
+  const upscaler = await getEsrgan2xUpscaler();
+  const inputBuffer = Buffer.from(result.imageBase64, 'base64');
+  const upscaledDataUrl = await upscaler.upscale(inputBuffer);
+  const parsed = parseUpscalerDataUrl(upscaledDataUrl);
+
+  return {
+    ...result,
+    imageBase64: parsed.imageBase64,
+    mimeType: parsed.mimeType
+  };
+}
+
+async function getEsrgan2xUpscaler(): Promise<InstanceType<UpscalerConstructor>> {
+  esrgan2xUpscalerPromise ??= (async () => {
+    try {
+      const runtimeRequire = Function('return require')() as NodeRequire;
+      const upscalerModule = runtimeRequire('upscaler/node') as { default?: unknown };
+      const modelModule = runtimeRequire('@upscalerjs/esrgan-thick/2x') as { default?: unknown };
+      const Upscaler = (upscalerModule.default ?? upscalerModule) as unknown as UpscalerConstructor;
+      const model = (modelModule.default ?? modelModule) as unknown;
+      return new Upscaler({ model });
+    } catch (error) {
+      esrgan2xUpscalerPromise = undefined;
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        'AI Upscale requires UpscalerJS with @tensorflow/tfjs-node available in this Node environment. ' +
+          `Install a supported Node LTS runtime or TensorFlow.js native backend. ${detail}`
+      );
+    }
+  })();
+
+  return esrgan2xUpscalerPromise;
+}
+
+function parseUpscalerDataUrl(value: string): { imageBase64: string; mimeType: string } {
+  const match = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(value.trim());
+  if (match) {
+    return {
+      mimeType: match[1],
+      imageBase64: match[2]
+    };
+  }
+
+  return {
+    mimeType: 'image/png',
+    imageBase64: value.trim()
   };
 }
 
@@ -943,6 +1010,10 @@ function findResizeFromMetadata(inlinedResponses: InlinedResponse[]): { width: n
   return undefined;
 }
 
+function findAiUpscaleFromMetadata(inlinedResponses: InlinedResponse[]): boolean {
+  return inlinedResponses.some((response) => response.metadata?.aiUpscale === 'true');
+}
+
 function normalizePromptVariant(metadata: Record<string, string> | undefined, fallbackIndex: number): string {
   const variant = metadata?.promptVariant?.trim();
   if (variant) {
@@ -1022,7 +1093,8 @@ async function runTogetherBatch(
   aspectRatio: string,
   requestedDimensions: { width: number; height: number } | undefined,
   steps: number | undefined,
-  resizeTo: { width: number; height: number } | undefined
+  resizeTo: { width: number; height: number } | undefined,
+  aiUpscale: boolean
 ): Promise<BatchOutput> {
   const apiKey = process.env.TOGETHER_API_KEY;
   if (!apiKey) {
@@ -1032,7 +1104,7 @@ async function runTogetherBatch(
   const together = new Together({ apiKey });
   const referenceImageUrls = references.map(buildReferenceDataUrl);
   const dimensions = requestedDimensions ?? resolveTogetherDimensions(aspectRatio);
-  const maxParallel = parseMaxParallelRequests();
+  const maxParallel = aiUpscale ? 1 : parseMaxParallelRequests();
   const referenceMode = resolveTogetherReferenceMode(model);
   const referencePayload =
     referenceMode === 'image_url'
@@ -1076,7 +1148,7 @@ async function runTogetherBatch(
       }
 
       const extracted = await extractTogetherImageFromResponse(response);
-      const processed = resizeTo ? await resizeGeneratedImage(extracted, resizeTo) : extracted;
+      const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
 
       return {
         ...processed,
@@ -1100,6 +1172,7 @@ async function extractGeminiBatchResults(ai: GoogleGenAI, job: BatchJob, context
 
   const requestedCount = findRequestedCountFromMetadata(inlinedResponses) ?? inlinedResponses.length;
   const resizeTo = findResizeFromMetadata(inlinedResponses);
+  const aiUpscale = findAiUpscaleFromMetadata(inlinedResponses);
   const prompts = inlinedResponses.map((response, index) => normalizePromptVariant(response.metadata, index));
 
   const settled = await Promise.allSettled(
@@ -1120,7 +1193,7 @@ async function extractGeminiBatchResults(ai: GoogleGenAI, job: BatchJob, context
         throw getNoImageReturnedError(undefined);
       }
 
-      const processed = resizeTo ? await resizeGeneratedImage(extracted, resizeTo) : extracted;
+      const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
       const promptVariant = normalizePromptVariant(inlined.metadata, i);
 
       return { ...processed, promptVariant } satisfies BatchResult;
@@ -1141,6 +1214,7 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
   const togetherRequestedDimensions = parseTogetherRequestedDimensions(input.imageSize);
   const steps = normalizeSteps(input.steps);
   const resizeTo = normalizeResizeTo(input.resizeTo);
+  const aiUpscale = input.aiUpscale === true;
 
   if (isTogetherImageModel(model)) {
     // Together AI has no async batch API — run synchronously and return results directly.
@@ -1155,7 +1229,8 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       aspectRatio,
       togetherRequestedDimensions,
       steps,
-      resizeTo
+      resizeTo,
+      aiUpscale
     );
     return { jobId, provider: 'together', results: result };
   }
@@ -1169,7 +1244,8 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       input.negativePrompt?.trim() || undefined,
       references,
       aspectRatio,
-      resizeTo
+      resizeTo,
+      aiUpscale
     );
     return { jobId, provider: 'fal', results: result };
   }
@@ -1181,7 +1257,8 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       clampedCount,
       prompts,
       references,
-      resizeTo
+      resizeTo,
+      aiUpscale
     );
     return { jobId, provider: 'vertex', results: result };
   }
@@ -1216,6 +1293,7 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
     metadata: {
       promptVariant,
       requestedCount: String(clampedCount),
+      ...(aiUpscale ? { aiUpscale: 'true' } : {}),
       ...(resizeTo
         ? {
             resizeWidth: String(resizeTo.width),

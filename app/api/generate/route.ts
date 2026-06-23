@@ -14,6 +14,7 @@ type RequestBody = {
   imageSize?: string;
   resizeWidth?: number;
   resizeHeight?: number;
+  aiUpscale?: boolean;
   referenceImages?: Array<{
     base64?: string;
     mimeType?: string;
@@ -63,6 +64,7 @@ export async function POST(req: NextRequest) {
     const imageSize = body.imageSize?.trim() ?? undefined;
     const resizeWidth = parseResizeDimension(body.resizeWidth);
     const resizeHeight = parseResizeDimension(body.resizeHeight);
+    const aiUpscale = body.aiUpscale === true;
     const referenceImageBase64 = body.referenceImageBase64?.trim() ?? '';
     const referenceMimeType = body.referenceMimeType?.trim() ?? '';
     const referenceImages =
@@ -117,6 +119,7 @@ export async function POST(req: NextRequest) {
       aspectRatio,
       imageSize,
       resizeTo,
+      aiUpscale,
       referenceImages: normalizedReferences
     });
 

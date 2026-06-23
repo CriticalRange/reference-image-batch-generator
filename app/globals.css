@@ -397,6 +397,19 @@ label {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.checkbox-row input[type='checkbox'] {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--brand);
+  flex: 0 0 auto;
+}
+
 .inline-select-grid {
   display: grid;
   gap: 0.6rem;
