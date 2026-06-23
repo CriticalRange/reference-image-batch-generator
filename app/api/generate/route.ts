@@ -91,6 +91,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Resize width and height must both be provided.' }, { status: 400 });
     }
 
+    if (aiUpscale && process.env.VERCEL === '1') {
+      return NextResponse.json(
+        {
+          error:
+            'AI Upscale is not supported on Vercel Serverless because the TensorFlow/ESRGAN runtime exceeds function size limits. Use normal resize on Vercel, or deploy this app on VPS/Docker for AI Upscale.'
+        },
+        { status: 400 }
+      );
+    }
+
     const normalizedReferences =
       referenceImages.length > 0
         ? referenceImages
