@@ -405,20 +405,22 @@ label {
 
 .prompt-preset-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 0.45rem;
   margin-top: 0.65rem;
   margin-bottom: 0.65rem;
 }
 
 .prompt-preset-btn {
   width: auto;
-  min-height: 2.35rem;
-  padding: 0.58rem 0.92rem;
+  min-height: 2.15rem;
+  padding: 0.5rem 0.72rem;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
   color: var(--ink);
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   letter-spacing: 0;
   box-shadow: none;
 }

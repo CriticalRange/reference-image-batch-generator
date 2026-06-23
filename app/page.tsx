@@ -78,6 +78,12 @@ type BatchRunResult = {
   items: HistoryItem[];
 };
 
+type BatchQueueItem = {
+  ref: ReferenceImage;
+  refIndex: number;
+  attempt: number;
+};
+
 type GenerationConfigSnapshot = {
   basePrompt: string;
   negativePrompt?: string;
@@ -139,6 +145,7 @@ type FalPricingMap = Record<string, string>;
 
 const DEFAULT_COUNT = 1;
 const DEFAULT_BATCH_RATE_LIMIT_SEC = 120;
+const MAX_BATCH_REFERENCE_RETRIES = 1;
 const MAX_BATCH_RATE_LIMIT_SEC = 600;
 const MAX_HISTORY_ITEMS = 120;
 const MAX_REFERENCE_IMAGES = 6;
@@ -179,93 +186,140 @@ const PRODUCT_TYPE_OPTIONS: ProductTypeOption[] = ['console', 'dressing-table', 
 const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = ['travertine', 'anthracite', 'white', 'sapphire-oak'];
 const ROOM_STYLE_OPTIONS: RoomStyleOption[] = ['minimalist', 'modern', 'classic', 'industrial'];
 const ALLOWED_REFERENCE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
-const BATCH_PROMPT_ROTATION = [
-  'Analyze the furniture, determine its type and style. Select the most common room in Turkey where this furniture is typically used. Place the product in that environment at a realistic scale. Add a few compatible decorative objects that are commonly used on this type of furniture in Turkey. The environment should feel clean, spacious, and modern, reflecting a contemporary Turkish home atmosphere. The product must remain the main focal point. Create a clean, photorealistic, and sales-oriented scene suitable for e-commerce. Do NOT modify the furniture in any way. The design, color, proportions, and details must remain exactly the same. Only create the background and surrounding environment.',
-  buildRegionalProductScenePrompt(
+const BATCH_PROMPT_PRESETS = [
+  {
+    label: 'TURKEY',
+    prompt:
+      'Analyze the furniture, determine its type and style. Select the most common room in Turkey where this furniture is typically used. Place the product in that environment at a realistic scale. Add a few compatible decorative objects that are commonly used on this type of furniture in Turkey. The environment should feel clean, spacious, and modern, reflecting a contemporary Turkish home atmosphere. The product must remain the main focal point. Create a clean, photorealistic, and sales-oriented scene suitable for e-commerce. Do NOT modify the furniture in any way. The design, color, proportions, and details must remain exactly the same. Only create the background and surrounding environment.'
+  },
+  {
+    label: 'GREEK ISLANDS',
+    prompt: buildRegionalProductScenePrompt(
     'the Greek Islands',
     'an airy Aegean island home with whitewashed walls, soft sunlight, pale stone, and sea-breeze freshness',
     'the most natural Greek island room setting for this furniture',
     'subtle ceramic objects, linen textures, and restrained blue accents'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'MEDITERRANEAN',
+    prompt: buildRegionalProductScenePrompt(
     'the Mediterranean coast',
     'a warm Mediterranean interior with natural plaster, travertine tones, woven textures, and relaxed coastal brightness',
     'a bright coastal room where this furniture would realistically be used',
     'olive branches, ceramic vases, light books, and minimal woven decor'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'GERMANY',
+    prompt: buildRegionalProductScenePrompt(
     'Germany',
     'a refined German contemporary home with precise lines, high-quality materials, balanced symmetry, and understated warmth',
     'the most practical modern German room for this furniture',
     'neat functional decor, sculptural lighting, books, and subtle metal accents'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'SCANDINAVIA',
+    prompt: buildRegionalProductScenePrompt(
     'Scandinavia',
     'a calm Scandinavian room with pale wood, soft daylight, wool textures, and uncluttered functional styling',
     'a Nordic living space where this furniture feels natural and useful',
     'simple ceramics, neutral books, a small plant, and tactile textile accents'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'ITALY',
+    prompt: buildRegionalProductScenePrompt(
     'Italy',
     'a polished Italian modern interior with elegant marble notes, warm neutral walls, curated art, and boutique showroom refinement',
     'a sophisticated Milan-inspired room suited to this furniture',
     'design books, a sculptural vase, and refined decorative objects'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'FRANCE',
+    prompt: buildRegionalProductScenePrompt(
     'France',
     'a modern Parisian apartment with soft moldings, warm oak flooring, quiet elegance, and balanced contemporary styling',
     'a refined French room where this furniture is typically placed',
     'a small art book stack, a glass vase, and delicate decorative accents'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'SPAIN',
+    prompt: buildRegionalProductScenePrompt(
     'Spain',
     'a sunlit Spanish home with limewashed walls, warm terracotta hints, natural wood, and relaxed Andalusian character',
     'a comfortable Spanish living area appropriate for this furniture',
     'ceramic bowls, subtle greenery, and warm handcrafted decor'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'JAPAN',
+    prompt: buildRegionalProductScenePrompt(
     'Japan',
     'a quiet Japanese contemporary room with wabi-sabi restraint, natural textures, soft shadows, and precise negative space',
     'a serene Japanese room where the furniture can remain the focal point',
     'one ceramic vessel, a small branch arrangement, and minimal organic decor'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'UK',
+    prompt: buildRegionalProductScenePrompt(
     'the United Kingdom',
     'a tasteful London townhouse interior with warm neutrals, classic details, contemporary lighting, and composed styling',
     'an elegant British room where this furniture fits naturally',
     'coffee-table books, a framed artwork, and refined small accessories'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'NETHERLANDS',
+    prompt: buildRegionalProductScenePrompt(
     'the Netherlands',
     'a bright Dutch canal-house inspired interior with tall-window daylight, pale walls, clean wood floors, and practical modern styling',
     'a compact but spacious-feeling Dutch room for this furniture',
     'simple glassware, design books, and restrained greenery'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'CALIFORNIA',
+    prompt: buildRegionalProductScenePrompt(
     'California',
     'a clean California coastal home with soft natural light, sandy neutrals, casual luxury, and an open airy feeling',
     'a modern coastal room where this furniture can be used realistically',
     'light ceramics, neutral books, linen textures, and small organic decor'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'SWITZERLAND',
+    prompt: buildRegionalProductScenePrompt(
     'Switzerland',
     'a premium Swiss modern interior with alpine calm, precise craftsmanship, stone details, and warm minimal luxury',
     'a refined Swiss room that suits the furniture type',
     'a sculptural lamp, orderly books, and subtle natural stone accessories'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'MOROCCO',
+    prompt: buildRegionalProductScenePrompt(
     'Morocco',
     'a clean Moroccan-Mediterranean interior with soft arches, warm plaster, zellige-inspired texture, and modern restraint',
     'a bright room where Moroccan character supports the product without overpowering it',
     'handmade ceramics, a small brass object, and muted woven accents'
-  ),
-  buildRegionalProductScenePrompt(
+    )
+  },
+  {
+    label: 'DUBAI',
+    prompt: buildRegionalProductScenePrompt(
     'Dubai',
     'a contemporary Dubai apartment with polished stone, warm indirect lighting, premium finishes, and spacious luxury',
     'a modern upscale room where this furniture is typically showcased',
     'minimal metallic decor, designer books, and a refined sculptural object'
-  )
+    )
+  }
 ];
+const BATCH_PROMPT_ROTATION = BATCH_PROMPT_PRESETS.map((preset) => preset.prompt);
 const TURKEY_PROMPT = BATCH_PROMPT_ROTATION[0];
 const INITIAL_MODEL_OPTIONS = sortModelOptions(
   mergeModelOptions(CURATED_MODEL_OPTIONS, [
@@ -1295,17 +1349,22 @@ export default function HomePage() {
     }
 
     if (isBatchMode && referenceImages.length > 0) {
-      // Batch mode: one generation run per reference image with configurable rate limiting between runs.
+      // Batch mode: one generation run per reference image with retry items inserted next in line.
       const totalRefs = referenceImages.length;
       const rateLimitMs = batchRateLimitSec * 1000;
+      const queue: BatchQueueItem[] = referenceImages.map((ref, refIndex) => ({ ref, refIndex, attempt: 0 }));
+      let processedAttempts = 0;
       setBatchTotalRefs(totalRefs);
 
       try {
-        for (let i = 0; i < referenceImages.length; i++) {
-          const ref = referenceImages[i];
-          const promptForRun = getBatchPromptForReference(submittedPrompt, i);
+        while (queue.length > 0) {
+          const item = queue.shift();
+          if (!item) break;
 
-          if (i > 0) {
+          const { ref, refIndex, attempt } = item;
+          const promptForRun = getBatchPromptForReference(submittedPrompt, refIndex);
+
+          if (processedAttempts > 0) {
             const targetTime = lastBatchRunTimeRef.current + rateLimitMs;
             let remaining = targetTime - Date.now();
             while (remaining > 0) {
@@ -1316,7 +1375,7 @@ export default function HomePage() {
             }
           }
 
-          setStatusText(t('batchGeneratingStep', { current: i + 1, total: totalRefs }));
+          setStatusText(t('batchGeneratingStep', { current: Math.min(batchRunResultsRef.current.length + 1, totalRefs), total: totalRefs }));
           setPendingHistoryIds(Array.from({ length: submittedCount }, () => makeId()));
 
           const singleRefConfig: GenerationConfigSnapshot = {
@@ -1331,6 +1390,13 @@ export default function HomePage() {
             ], promptForRun);
 
             lastBatchRunTimeRef.current = Date.now();
+
+            if (outputResults.length < submittedCount) {
+              const firstFailure = outputFailures[0]?.error?.trim();
+              throw new Error(firstFailure || `Generated ${outputResults.length} of ${submittedCount} requested image(s).`);
+            }
+
+            processedAttempts += 1;
             const resolvedUsedModel = applyUsedModel(usedModel);
             const historyConfig: GenerationConfigSnapshot = { ...singleRefConfig, model: resolvedUsedModel };
 
@@ -1369,7 +1435,7 @@ export default function HomePage() {
             }
 
             const runResult: BatchRunResult = {
-              refIndex: i,
+              refIndex,
               refPreviewDataUrl: ref.previewDataUrl,
               refFileName: ref.fileName,
               items: runItems
@@ -1378,11 +1444,37 @@ export default function HomePage() {
             setBatchRunResults([...batchRunResultsRef.current]);
 
           } catch (stepError) {
+            lastBatchRunTimeRef.current = Date.now();
+            processedAttempts += 1;
             const rawMessage = stepError instanceof Error ? stepError.message : t('unexpectedError');
-            console.error('[batch-generate] step failed', { refIndex: i, error: stepError });
+            console.error('[batch-generate] step failed', { refIndex, attempt, error: stepError });
             const message = formatGenerationError(rawMessage, t);
-            setError(message);
-            toast.error(t('errorGenerationFailed'), { description: message, duration: 6000 });
+
+            if (attempt < MAX_BATCH_REFERENCE_RETRIES) {
+              queue.unshift({ ref, refIndex, attempt: attempt + 1 });
+              toast.error(t('errorGenerationFailed'), {
+                description: `${message} Retrying this product next.`,
+                duration: 4500
+              });
+            } else {
+              setError(message);
+              setFailures((prev) => [
+                ...prev,
+                {
+                  promptVariant: promptForRun,
+                  error: message
+                }
+              ]);
+              const failedRunResult: BatchRunResult = {
+                refIndex,
+                refPreviewDataUrl: ref.previewDataUrl,
+                refFileName: ref.fileName,
+                items: []
+              };
+              batchRunResultsRef.current = [...batchRunResultsRef.current, failedRunResult];
+              setBatchRunResults([...batchRunResultsRef.current]);
+              toast.error(t('errorGenerationFailed'), { description: message, duration: 6000 });
+            }
           } finally {
             setPendingHistoryIds([]);
           }
@@ -1875,17 +1967,20 @@ export default function HomePage() {
                 </select>
               </div>
               <div className="prompt-preset-row">
-                <button
-                  type="button"
-                  className="prompt-preset-btn"
-                  onClick={() => {
-                    setSelectedProductType('');
-                    setSelectedProductColor('');
-                    setPrompt(TURKEY_PROMPT);
-                  }}
-                >
-                  TURKEY
-                </button>
+                {BATCH_PROMPT_PRESETS.map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    className="prompt-preset-btn"
+                    onClick={() => {
+                      setSelectedProductType('');
+                      setSelectedProductColor('');
+                      setPrompt(preset.prompt);
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
               </div>
               <textarea
                 ref={promptTextareaRef}
@@ -2814,13 +2909,13 @@ function buildRegionalProductScenePrompt(
 
 function getBatchPromptForReference(submittedPrompt: string, referenceIndex: number): string {
   const trimmedPrompt = submittedPrompt.trim();
-  const shouldRotatePreset = BATCH_PROMPT_ROTATION.includes(trimmedPrompt);
+  const selectedPresetIndex = BATCH_PROMPT_ROTATION.indexOf(trimmedPrompt);
 
-  if (!shouldRotatePreset) {
+  if (selectedPresetIndex < 0) {
     return trimmedPrompt;
   }
 
-  return BATCH_PROMPT_ROTATION[referenceIndex % BATCH_PROMPT_ROTATION.length];
+  return BATCH_PROMPT_ROTATION[(selectedPresetIndex + referenceIndex) % BATCH_PROMPT_ROTATION.length];
 }
 
 function buildPresetPrompt(type: ProductTypeOption, color: ProductColorOption, scene: RoomStyleOption): string {
