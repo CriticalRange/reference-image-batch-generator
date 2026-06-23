@@ -3,7 +3,15 @@ const isDevelopment = process.env.NODE_ENV === 'development';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typedRoutes: true,
-  serverExternalPackages: ['sharp'],
+  serverExternalPackages: ['sharp', 'upscaler', '@upscalerjs/esrgan-thick', '@tensorflow/tfjs-node'],
+  outputFileTracingIncludes: {
+    '/api/generate': [
+      './node_modules/upscaler/**/*',
+      './node_modules/@upscalerjs/esrgan-thick/**/*',
+      './node_modules/@tensorflow/**/*',
+      './node_modules/@mapbox/node-pre-gyp/**/*'
+    ]
+  },
   async headers() {
     const securityHeaders = [
       {
