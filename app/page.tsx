@@ -179,8 +179,94 @@ const PRODUCT_TYPE_OPTIONS: ProductTypeOption[] = ['console', 'dressing-table', 
 const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = ['travertine', 'anthracite', 'white', 'sapphire-oak'];
 const ROOM_STYLE_OPTIONS: RoomStyleOption[] = ['minimalist', 'modern', 'classic', 'industrial'];
 const ALLOWED_REFERENCE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
-const TURKEY_PROMPT =
-  'Analyze the furniture, determine its type and style. Select the most common room in Turkey where this furniture is typically used. Place the product in that environment at a realistic scale. Add a few compatible decorative objects that are commonly used on this type of furniture in Turkey. The environment should feel clean, spacious, and modern, reflecting a contemporary Turkish home atmosphere. The product must remain the main focal point. Create a clean, photorealistic, and sales-oriented scene suitable for e-commerce. Do NOT modify the furniture in any way. The design, color, proportions, and details must remain exactly the same. Only create the background and surrounding environment.';
+const BATCH_PROMPT_ROTATION = [
+  'Analyze the furniture, determine its type and style. Select the most common room in Turkey where this furniture is typically used. Place the product in that environment at a realistic scale. Add a few compatible decorative objects that are commonly used on this type of furniture in Turkey. The environment should feel clean, spacious, and modern, reflecting a contemporary Turkish home atmosphere. The product must remain the main focal point. Create a clean, photorealistic, and sales-oriented scene suitable for e-commerce. Do NOT modify the furniture in any way. The design, color, proportions, and details must remain exactly the same. Only create the background and surrounding environment.',
+  buildRegionalProductScenePrompt(
+    'the Greek Islands',
+    'an airy Aegean island home with whitewashed walls, soft sunlight, pale stone, and sea-breeze freshness',
+    'the most natural Greek island room setting for this furniture',
+    'subtle ceramic objects, linen textures, and restrained blue accents'
+  ),
+  buildRegionalProductScenePrompt(
+    'the Mediterranean coast',
+    'a warm Mediterranean interior with natural plaster, travertine tones, woven textures, and relaxed coastal brightness',
+    'a bright coastal room where this furniture would realistically be used',
+    'olive branches, ceramic vases, light books, and minimal woven decor'
+  ),
+  buildRegionalProductScenePrompt(
+    'Germany',
+    'a refined German contemporary home with precise lines, high-quality materials, balanced symmetry, and understated warmth',
+    'the most practical modern German room for this furniture',
+    'neat functional decor, sculptural lighting, books, and subtle metal accents'
+  ),
+  buildRegionalProductScenePrompt(
+    'Scandinavia',
+    'a calm Scandinavian room with pale wood, soft daylight, wool textures, and uncluttered functional styling',
+    'a Nordic living space where this furniture feels natural and useful',
+    'simple ceramics, neutral books, a small plant, and tactile textile accents'
+  ),
+  buildRegionalProductScenePrompt(
+    'Italy',
+    'a polished Italian modern interior with elegant marble notes, warm neutral walls, curated art, and boutique showroom refinement',
+    'a sophisticated Milan-inspired room suited to this furniture',
+    'design books, a sculptural vase, and refined decorative objects'
+  ),
+  buildRegionalProductScenePrompt(
+    'France',
+    'a modern Parisian apartment with soft moldings, warm oak flooring, quiet elegance, and balanced contemporary styling',
+    'a refined French room where this furniture is typically placed',
+    'a small art book stack, a glass vase, and delicate decorative accents'
+  ),
+  buildRegionalProductScenePrompt(
+    'Spain',
+    'a sunlit Spanish home with limewashed walls, warm terracotta hints, natural wood, and relaxed Andalusian character',
+    'a comfortable Spanish living area appropriate for this furniture',
+    'ceramic bowls, subtle greenery, and warm handcrafted decor'
+  ),
+  buildRegionalProductScenePrompt(
+    'Japan',
+    'a quiet Japanese contemporary room with wabi-sabi restraint, natural textures, soft shadows, and precise negative space',
+    'a serene Japanese room where the furniture can remain the focal point',
+    'one ceramic vessel, a small branch arrangement, and minimal organic decor'
+  ),
+  buildRegionalProductScenePrompt(
+    'the United Kingdom',
+    'a tasteful London townhouse interior with warm neutrals, classic details, contemporary lighting, and composed styling',
+    'an elegant British room where this furniture fits naturally',
+    'coffee-table books, a framed artwork, and refined small accessories'
+  ),
+  buildRegionalProductScenePrompt(
+    'the Netherlands',
+    'a bright Dutch canal-house inspired interior with tall-window daylight, pale walls, clean wood floors, and practical modern styling',
+    'a compact but spacious-feeling Dutch room for this furniture',
+    'simple glassware, design books, and restrained greenery'
+  ),
+  buildRegionalProductScenePrompt(
+    'California',
+    'a clean California coastal home with soft natural light, sandy neutrals, casual luxury, and an open airy feeling',
+    'a modern coastal room where this furniture can be used realistically',
+    'light ceramics, neutral books, linen textures, and small organic decor'
+  ),
+  buildRegionalProductScenePrompt(
+    'Switzerland',
+    'a premium Swiss modern interior with alpine calm, precise craftsmanship, stone details, and warm minimal luxury',
+    'a refined Swiss room that suits the furniture type',
+    'a sculptural lamp, orderly books, and subtle natural stone accessories'
+  ),
+  buildRegionalProductScenePrompt(
+    'Morocco',
+    'a clean Moroccan-Mediterranean interior with soft arches, warm plaster, zellige-inspired texture, and modern restraint',
+    'a bright room where Moroccan character supports the product without overpowering it',
+    'handmade ceramics, a small brass object, and muted woven accents'
+  ),
+  buildRegionalProductScenePrompt(
+    'Dubai',
+    'a contemporary Dubai apartment with polished stone, warm indirect lighting, premium finishes, and spacious luxury',
+    'a modern upscale room where this furniture is typically showcased',
+    'minimal metallic decor, designer books, and a refined sculptural object'
+  )
+];
+const TURKEY_PROMPT = BATCH_PROMPT_ROTATION[0];
 const INITIAL_MODEL_OPTIONS = sortModelOptions(
   mergeModelOptions(CURATED_MODEL_OPTIONS, [
     {
@@ -1122,14 +1208,17 @@ export default function HomePage() {
     batchRunResultsRef.current = [];
 
     // Calls /api/generate with the given refs, polls until done, returns structured output.
-    async function callApiAndGetResults(refs: Array<{ base64: string; mimeType: string; fileName?: string }>) {
+    async function callApiAndGetResults(
+      refs: Array<{ base64: string; mimeType: string; fileName?: string }>,
+      promptForRun = submittedPrompt
+    ) {
       setStatusText(t('statusSubmitting', { count: submittedCount }));
 
       const submitResponse = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: submittedPrompt,
+          prompt: promptForRun,
           negativePrompt: submittedNegativePrompt || undefined,
           count: submittedCount,
           model: submittedModel,
@@ -1214,6 +1303,7 @@ export default function HomePage() {
       try {
         for (let i = 0; i < referenceImages.length; i++) {
           const ref = referenceImages[i];
+          const promptForRun = getBatchPromptForReference(submittedPrompt, i);
 
           if (i > 0) {
             const targetTime = lastBatchRunTimeRef.current + rateLimitMs;
@@ -1231,13 +1321,14 @@ export default function HomePage() {
 
           const singleRefConfig: GenerationConfigSnapshot = {
             ...submittedConfig,
+            basePrompt: promptForRun,
             referenceImages: [{ base64: ref.base64, mimeType: ref.mimeType, fileName: ref.fileName }]
           };
 
           try {
             const { outputResults, outputFailures, usedModel } = await callApiAndGetResults([
               { base64: ref.base64, mimeType: ref.mimeType }
-            ]);
+            ], promptForRun);
 
             lastBatchRunTimeRef.current = Date.now();
             const resolvedUsedModel = applyUsedModel(usedModel);
@@ -2710,6 +2801,26 @@ function getBatchStatusText(
     case 'succeeded': return `${t('statusBatchSucceeded')}${detailSuffix}`;
     default: return stateLabel;
   }
+}
+
+function buildRegionalProductScenePrompt(
+  region: string,
+  atmosphere: string,
+  roomDirection: string,
+  decorDirection: string
+): string {
+  return `Analyze the furniture, determine its type and style. Create a photorealistic e-commerce scene inspired by ${region}. Place the product in ${roomDirection} at a realistic scale. The environment should feel like ${atmosphere}. Add ${decorDirection}, keeping the styling minimal, compatible, and sales-oriented. The product must remain the main focal point. Do NOT modify the furniture in any way. The design, color, proportions, and details must remain exactly the same. Only create the background and surrounding environment.`;
+}
+
+function getBatchPromptForReference(submittedPrompt: string, referenceIndex: number): string {
+  const trimmedPrompt = submittedPrompt.trim();
+  const shouldRotatePreset = BATCH_PROMPT_ROTATION.includes(trimmedPrompt);
+
+  if (!shouldRotatePreset) {
+    return trimmedPrompt;
+  }
+
+  return BATCH_PROMPT_ROTATION[referenceIndex % BATCH_PROMPT_ROTATION.length];
 }
 
 function buildPresetPrompt(type: ProductTypeOption, color: ProductColorOption, scene: RoomStyleOption): string {
