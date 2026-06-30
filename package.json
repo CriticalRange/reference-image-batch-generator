@@ -42,5 +42,9 @@
   },
   "overrides": {
     "postcss": "^8.5.10"
+  },
+  "allowScripts": {
+    "@tensorflow/tfjs-node@4.11.0": true,
+    "sharp@0.34.5": true
   }
 }
