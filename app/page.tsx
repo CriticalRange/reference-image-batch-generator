@@ -189,6 +189,272 @@ const ROOM_STYLE_OPTIONS: RoomStyleOption[] = ['minimalist', 'modern', 'classic'
 const ALLOWED_REFERENCE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
 const BATCH_PROMPT_PRESETS = [
   {
+    label: 'GELİŞMİŞ YERLEŞTİR',
+    // Full preset text — do not shorten. Paste/edit the complete prompt between the backticks.
+    prompt: `1. Camera & Composition
+Full Frame camera simulation.
+Focal Length: 38–50 mm (ideal: 42 mm).
+Camera height: 145–155 cm from the floor (human eye level).
+Perfectly vertical architectural lines using perspective correction.
+Balanced Rule of Thirds composition.
+Strong foreground, midground and background depth.
+Leave intentional negative space (especially in front of rugs and seating areas).
+Avoid wide-angle distortion.
+Slight cinematic depth while maintaining full product visibility.
+Furniture should never touch frame edges unless intentionally cropped.
+2. Commercial Lighting (Wayfair Style)
+Use physically correct lighting only.
+Natural Light
+Large diffused window light
+Soft overcast daylight
+5500K–6500K color temperature
+No harsh sunlight
+No clipped highlights
+Artificial Lighting
+Warm practical lights
+2700K–3000K
+Lamps should emit realistic light intensity
+Warm/cool balance must feel natural
+Three Point Lighting
+Key Light
+Large soft source
+Defines furniture
+Fill Light
+25–35% intensity
+Preserves natural shadows
+Back Light
+Very subtle
+Creates object separation
+Indirect Lighting
+Enable:
+Multiple GI Bounces
+Color Bleeding
+Ambient Occlusion
+Contact Shadows
+Soft Shadow Penumbra
+Lighting should feel invisible—not staged.
+3. Ultra Realistic PBR Materials
+
+Every material must include:
+
+Albedo
+Roughness
+Normal
+Height / Displacement
+Ambient Occlusion
+Metalness (when applicable)
+
+No procedural plastic-looking materials.
+
+Wood
+
+Visible grain direction
+
+Micro scratches
+
+Slight gloss variation
+
+Natural edge wear
+
+Fabric
+
+Visible weave
+
+Fiber depth
+
+Compression wrinkles
+
+Subtle fuzz
+
+Leather
+
+Natural pores
+
+Fine wrinkles
+
+Uneven sheen
+
+Soft edge wear
+
+Metal
+
+Micro brushing
+
+Fine oxidation variation
+
+Tiny imperfections
+
+Real Fresnel reflections
+
+Glass
+
+Correct IOR (≈1.52)
+
+Subtle dust
+
+Real reflections
+
+No perfectly invisible glass
+
+Stone & Marble
+
+Natural veins
+
+Depth variation
+
+Micro roughness
+
+Real edge bevels
+
+4. Styling (Wayfair Editorial)
+
+Every room should feel professionally styled.
+
+Use layered decoration:
+
+Natural plants
+
+Books
+
+Ceramics
+
+Art
+
+Candles
+
+Wood accents
+
+Throw blankets
+
+Decorative pillows
+
+Coffee table books
+
+Small trays
+
+Vases
+
+Baskets
+
+Textured rugs
+
+Curtains with realistic folds
+
+Nothing should appear randomly placed.
+
+Objects should create visual rhythm.
+
+5. Color Palette
+
+Premium neutral palette.
+
+Recommended ratio:
+
+70% neutral
+
+20% secondary tones
+
+10% accent color
+
+Avoid oversaturated colors.
+
+Maintain soft editorial color grading.
+
+6. Micro Details
+
+Realism comes from imperfections.
+
+Include:
+
+Tiny fabric wrinkles
+
+Slight pillow deformation
+
+Natural blanket folds
+
+Book height variation
+
+Leaf orientation differences
+
+Wood color variation
+
+Tiny edge imperfections
+
+Microscopic dust
+
+Very subtle fingerprints
+
+Natural wear
+
+Nothing should look factory perfect.
+
+7. Rendering Quality
+
+Use Path Tracing.
+
+Ultra settings.
+
+Recommended:
+
+2048–4096 Samples
+
+Adaptive Sampling
+
+Multiple Importance Sampling
+
+High Quality Caustics
+
+High Bounce GI
+
+Noise Threshold below 0.005
+
+Minimal AI Denoising
+No visible fireflies.
+No rendering noise.
+8. Color Management
+ACES Filmic
+16-bit workflow
+Natural white balance
+Highlight recovery
+Soft contrast
+Gentle shadow rolloff
+No crushed blacks
+No clipped whites
+Preserve HDR dynamic range.
+9. Post Processing
+Very subtle only.
+Bloom:
+Minimal
+Sharpen:
+Low
+Vignette:
+2–4%
+Chromatic Aberration:
+Disabled
+Lens Distortion:
+Very subtle
+No exaggerated cinematic effects.
+Image must resemble a professional commercial photograph.
+10. Quality Control Checklist
+Before final render verify:
+✓ Correct real-world scale
+✓ Accurate proportions
+✓ Natural lighting
+✓ Physically correct reflections
+✓ No texture stretching
+✓ High-resolution textures (4K–8K where appropriate)
+✓ Correct UV mapping
+✓ Soft realistic shadows
+✓ No floating objects
+✓ No clipping geometry
+✓ Clean topology
+✓ Perfect anti-aliasing
+✓ Consistent material response
+✓ Professional editorial styling
+✓ Balanced composition
+✓ Premium commercial appearance`
+  },
+  {
     label: 'TURKEY',
     prompt:
       'Analyze the furniture, determine its type and style. Select the most common room in Turkey where this furniture is typically used. Place the product in that environment at a realistic scale. Add a few compatible decorative objects that are commonly used on this type of furniture in Turkey. The environment should feel clean, spacious, and modern, reflecting a contemporary Turkish home atmosphere. The product must remain the main focal point. Create a clean, photorealistic, and sales-oriented scene suitable for e-commerce. Do NOT modify the furniture in any way. The design, color, proportions, and details must remain exactly the same. Only create the background and surrounding environment.'
