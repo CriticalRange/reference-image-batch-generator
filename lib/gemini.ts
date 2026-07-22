@@ -10,11 +10,15 @@ import path from 'path';
 import { modelSupportsImageSize, normalizeModelCode } from '@/lib/modelOptions';
 import { buildPromptVariants } from '@/lib/promptVariants';
 
+export type AuthMode = 'service_account' | 'api_key';
+
 export type BatchInput = {
   basePrompt: string;
   negativePrompt?: string;
   model?: string;
   steps?: number;
+  /** Vertex / Google auth: service account (default) or Gemini API key from env. */
+  authMode?: AuthMode;
   referenceImages?: Array<{
     base64: string;
     mimeType: string;
@@ -26,13 +30,15 @@ export type BatchInput = {
     width: number;
     height: number;
   };
-  aiUpscale?: boolean;
+  aiUpscale?: number;
 };
 
 export type BatchResult = {
   promptVariant: string;
   imageBase64: string;
   mimeType: string;
+  /** Set when the image has been offloaded to Vercel Blob — clients should prefer this over imageBase64. */
+  blobUrl?: string;
 };
 
 export type BatchFailure = {
@@ -68,7 +74,7 @@ export type BatchStatusResult = {
 };
 
 type UpscalerConstructor = new (options: { model: unknown }) => {
-  upscale(input: Buffer): Promise<string>;
+  upscale(input: Buffer): Promise<{ dispose?: () => void }>;
 };
 
 const DEFAULT_MODEL = 'vertex/gemini-2.5-flash-image';
@@ -93,7 +99,7 @@ const VERTEX_MODEL_PATTERN = /^vertex\//i;
 const FLUX_KONTEXT_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/FLUX\.1-kontext-(pro|max)$/i;
 const FLUX2_TOGETHER_MODEL_PATTERN = /^black-forest-labs\/FLUX\.2-/i;
 const GOOGLE_GEMINI_PRO_IMAGE_TOGETHER_MODEL_PATTERN = /^google\/gemini-3-pro-image$/i;
-let esrgan2xUpscalerPromise: Promise<InstanceType<UpscalerConstructor>> | undefined;
+const esrganUpscalerCache = new Map<number, Promise<InstanceType<UpscalerConstructor>>>();
 const ALLOWED_ASPECT_RATIOS = new Set([
   '1:1',
   '1:4',
@@ -198,6 +204,14 @@ function isFalImageModel(model: string): boolean {
 
 function isVertexImageModel(model: string): boolean {
   return VERTEX_MODEL_PATTERN.test(model);
+}
+
+function normalizeAuthMode(value: string | undefined): AuthMode {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'api_key' || normalized === 'apikey' || normalized === 'api-key') {
+    return 'api_key';
+  }
+  return 'service_account';
 }
 
 function normalizeAspectRatio(value: string | undefined): string {
@@ -436,6 +450,21 @@ async function getVertexAccessToken(): Promise<{ token: string; projectId: strin
   return { token: tokenResponse.token, projectId: credentials.project_id };
 }
 
+function extractVertexTextFromResponse(response: Record<string, unknown>): string | null {
+  const candidates = Array.isArray(response.candidates) ? response.candidates : [];
+  for (const candidate of candidates) {
+    const parts: unknown[] = (candidate as Record<string, unknown>)?.content
+      ? ((candidate as Record<string, unknown>).content as Record<string, unknown>)?.parts as unknown[]
+      : [];
+    if (!Array.isArray(parts)) continue;
+    for (const part of parts) {
+      const text = (part as Record<string, unknown>)?.text;
+      if (typeof text === 'string' && text.trim()) return text.trim();
+    }
+  }
+  return null;
+}
+
 function extractVertexImageFromResponse(response: Record<string, unknown>): BatchResult | null {
   const candidates = Array.isArray(response.candidates) ? response.candidates : [];
   for (const candidate of candidates) {
@@ -479,13 +508,129 @@ function extractAllImagenVertexImagesFromResponse(response: Record<string, unkno
   return collected;
 }
 
+/**
+ * Generate via API key auth for Vertex-listed models.
+ *
+ * - Vertex Express keys (AQ.…): `new GoogleGenAI({ vertexai: true, apiKey })`
+ *   Note: SDK forbids passing project/location together with apiKey.
+ * - AI Studio keys (AIza…): Gemini Developer API via `new GoogleGenAI({ apiKey })`
+ *
+ * Free-tier / Express accounts often only allow Gemini 2.5 Flash Image (not 3.1).
+ */
+async function runGeminiApiKeyBatch(
+  model: string,
+  requestedCount: number,
+  prompts: string[],
+  references: Array<{ base64: string; mimeType: string }>,
+  resizeTo: { width: number; height: number } | undefined,
+  aiUpscale: number,
+  aspectRatio: string,
+  imageSize: string | undefined
+): Promise<BatchOutput> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error('Missing GEMINI_API_KEY. Set it in .env.local to use API key authentication.');
+  }
+
+  const modelName = model.replace(VERTEX_MODEL_PATTERN, '');
+  if (isVertexImagenModel(modelName)) {
+    throw new Error(
+      'Imagen models require Service Account (Vertex AI) authentication. Switch auth mode to Service Account or choose a Gemini image model.'
+    );
+  }
+
+  // Express keys: vertexai + apiKey only (no project/location — SDK rejects that combo).
+  // AI Studio keys: plain apiKey → Gemini Developer API.
+  const useVertexExpress = isVertexExpressApiKey(apiKey);
+  const ai = useVertexExpress
+    ? new GoogleGenAI({ vertexai: true, apiKey })
+    : new GoogleGenAI({ apiKey });
+  const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
+
+  console.error('[gemini-api-key] runGeminiApiKeyBatch:', {
+    model: modelName,
+    mode: useVertexExpress ? 'vertex-express' : 'gemini-developer-api',
+    referenceCount: references.length,
+    promptCount: prompts.length,
+    aspectRatio,
+    imageSize: imageSize ?? null
+  });
+
+  const jobs = prompts.map((promptVariant) => {
+    return async () => {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: promptVariant },
+                ...references.map((ref) => ({
+                  inlineData: { mimeType: ref.mimeType, data: ref.base64 }
+                }))
+              ]
+            }
+          ],
+          config: {
+            responseModalities: ['IMAGE', 'TEXT'],
+            imageConfig: {
+              aspectRatio,
+              ...(imageSize ? { imageSize } : {})
+            }
+          }
+        });
+
+        const extracted = extractImageFromGenerateContentResponse(response);
+        if (!extracted) {
+          throw getNoImageReturnedError('Gemini API returned no image in response.');
+        }
+
+        const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
+        return { ...processed, promptVariant } satisfies BatchResult;
+      } catch (error) {
+        throw new Error(formatApiKeyAuthError(error, useVertexExpress));
+      }
+    };
+  });
+
+  const settled = await runWithConcurrency(jobs, maxParallel);
+  return buildBatchOutput(model, requestedCount, prompts, settled);
+}
+
+/** Vertex Express / Google Cloud API keys commonly start with "AQ." */
+function isVertexExpressApiKey(apiKey: string): boolean {
+  return /^AQ\./i.test(apiKey.trim());
+}
+
+function formatApiKeyAuthError(error: unknown, usedVertexExpress: boolean): string {
+  const raw = formatError(error);
+  if (/generativelanguage\.googleapis\.com|SERVICE_DISABLED|Gemini API has not been used/i.test(raw)) {
+    return (
+      `${raw} | Hint: this looks like a Gemini Developer API (AI Studio) permission error. ` +
+      `If your key is a Vertex Express key (AQ.…), ensure the app uses vertexai:true. ` +
+      `If it is an AI Studio key (AIza…), enable Gemini API for that project, or use Service Account auth.`
+    );
+  }
+  if (/NOT_FOUND|was not found or your project does not have access|PERMISSION_DENIED|not available|not allowed/i.test(raw)) {
+    return (
+      `${raw} | Hint: free / Express tiers often cannot use Gemini 3.1 image models. ` +
+      `Use vertex/gemini-2.5-flash-image instead.`
+    );
+  }
+  if (!usedVertexExpress && /^\[403\]/i.test(raw)) {
+    return `${raw} | Hint: for Vertex Express API keys use GEMINI_API_KEY from Google Cloud express mode (AQ.…).`;
+  }
+  return raw;
+}
+
 async function runVertexBatch(
   model: string,
   requestedCount: number,
   prompts: string[],
   references: Array<{ base64: string; mimeType: string }>,
   resizeTo: { width: number; height: number } | undefined,
-  aiUpscale: boolean
+  aiUpscale: number
 ): Promise<BatchOutput> {
   const { token, projectId } = await getVertexAccessToken();
   const region = process.env.VERTEX_AI_REGION ?? 'us-central1';
@@ -493,6 +638,17 @@ async function runVertexBatch(
   const useImagenApi = isVertexImagenModel(modelName);
   const apiEndpoint = useImagenApi ? 'predict' : 'generateContent';
   const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${modelName}:${apiEndpoint}`;
+
+  console.error('[vertex] runVertexBatch:', {
+    model: modelName,
+    region,
+    projectId,
+    endpoint: apiEndpoint,
+    referenceCount: references.length,
+    referenceSizesKb: references.map(r => (r.base64.length / 1024).toFixed(1)),
+    promptCount: prompts.length,
+    firstPromptPreview: prompts[0]?.substring(0, 80)
+  });
 
   if (useImagenApi) {
     // Imagen batch: chunk requests using sampleCount (max VERTEX_IMAGEN_MAX_PER_REQUEST per call).
@@ -541,7 +697,7 @@ async function runVertexBatch(
       };
     });
 
-    const settledChunks = await runWithConcurrency(chunkJobs, aiUpscale ? 1 : parseMaxParallelRequests());
+    const settledChunks = await runWithConcurrency(chunkJobs, aiUpscale > 0 ? 1 : parseMaxParallelRequests());
 
     const allResults: BatchResult[] = [];
     const allFailures: BatchFailure[] = [];
@@ -573,7 +729,7 @@ async function runVertexBatch(
   }
 
   // Vertex Gemini: parallel generateContent requests with prompt variants.
-  const maxParallel = aiUpscale ? 1 : parseMaxParallelRequests();
+  const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
   const jobs = prompts.map((promptVariant) => {
     return async () => {
       const parts: unknown[] = [{ text: promptVariant }];
@@ -607,7 +763,15 @@ async function runVertexBatch(
 
       const extracted = extractVertexImageFromResponse(data);
       if (!extracted) {
-        throw getNoImageReturnedError('Vertex AI returned no image in response.');
+        const textResponse = extractVertexTextFromResponse(data);
+        console.error('[vertex] no image in response:', {
+          status: response.status,
+          hasTextResponse: !!textResponse,
+          textPreview: textResponse?.substring(0, 200),
+          responseKeys: Object.keys(data),
+          candidateCount: Array.isArray(data.candidates) ? (data.candidates as unknown[]).length : 0
+        });
+        throw getNoImageReturnedError(`Vertex AI returned no image in response.${textResponse ? ` Model said: "${textResponse.slice(0, 150)}"` : ''}`);
       }
 
       const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
@@ -627,7 +791,7 @@ async function runFalBatch(
   references: Array<{ base64: string; mimeType: string }>,
   aspectRatio: string,
   resizeTo: { width: number; height: number } | undefined,
-  aiUpscale: boolean
+  aiUpscale: number
 ): Promise<BatchOutput> {
   const apiKey = process.env.FAL_AI_API_KEY;
   if (!apiKey) {
@@ -635,7 +799,7 @@ async function runFalBatch(
   }
 
   const endpoint = `https://fal.run/${model}`;
-  const maxParallel = aiUpscale ? 1 : parseMaxParallelRequests();
+  const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
   const referenceImageUrl = references[0] ? buildReferenceDataUrl(references[0]) : undefined;
 
   const jobs = prompts.map((promptVariant) => {
@@ -751,45 +915,71 @@ async function resizeGeneratedImage(result: BatchResult, resizeTo: { width: numb
 async function processGeneratedImage(
   result: BatchResult,
   resizeTo: { width: number; height: number } | undefined,
-  aiUpscale: boolean
+  aiUpscale: number
 ): Promise<BatchResult> {
-  const enhanced = aiUpscale ? await upscaleGeneratedImage(result) : result;
+  const enhanced = aiUpscale > 0 ? await upscaleGeneratedImage(result, aiUpscale) : result;
   return resizeTo ? resizeGeneratedImage(enhanced, resizeTo) : enhanced;
 }
 
-async function upscaleGeneratedImage(result: BatchResult): Promise<BatchResult> {
-  const upscaler = await getEsrgan2xUpscaler();
-  const inputBuffer = Buffer.from(result.imageBase64, 'base64');
-  const upscaledDataUrl = await upscaler.upscale(inputBuffer);
-  const parsed = parseUpscalerDataUrl(upscaledDataUrl);
+async function upscaleGeneratedImage(result: BatchResult, scale: number): Promise<BatchResult> {
+  const upscaler = await getEsrganUpscaler(scale);
+  // ESRGAN only supports 3-channel RGB input. Strip alpha channel if present.
+  const inputBuffer = await sharp(Buffer.from(result.imageBase64, 'base64'))
+    .removeAlpha()
+    .toBuffer();
+  // upscaler.upscale() returns a Tensor, not a Data URL string.
+  const tensor = await upscaler.upscale(inputBuffer);
+  const { node: tfnode } = await getTfjsNode();
+  const upscaledPng = await tfnode.encodePng(tensor as unknown as Uint8Array);
+  tensor.dispose?.();
 
   return {
     ...result,
-    imageBase64: parsed.imageBase64,
-    mimeType: parsed.mimeType
+    imageBase64: Buffer.from(upscaledPng).toString('base64'),
+    mimeType: 'image/png'
   };
 }
 
-async function getEsrgan2xUpscaler(): Promise<InstanceType<UpscalerConstructor>> {
-  esrgan2xUpscalerPromise ??= (async () => {
+let tfjsNodePromise: Promise<typeof import('@tensorflow/tfjs-node')> | undefined;
+
+async function getTfjsNode(): Promise<typeof import('@tensorflow/tfjs-node')> {
+  tfjsNodePromise ??= (async () => {
+    /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+    const runtimeRequire = typeof __non_webpack_require__ !== 'undefined'
+      ? __non_webpack_require__
+      : (Function('return require')() as NodeRequire);
+    return runtimeRequire('@tensorflow/tfjs-node') as typeof import('@tensorflow/tfjs-node');
+  })();
+  return tfjsNodePromise;
+}
+
+async function getEsrganUpscaler(scale: number): Promise<InstanceType<UpscalerConstructor>> {
+  const cached = esrganUpscalerCache.get(scale);
+  if (cached) return cached;
+
+  const promise = (async () => {
     try {
-      const runtimeRequire = Function('return require')() as NodeRequire;
+      /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+      const runtimeRequire = typeof __non_webpack_require__ !== 'undefined'
+        ? __non_webpack_require__
+        : (Function('return require')() as NodeRequire);
       const upscalerModule = runtimeRequire('upscaler/node') as { default?: unknown };
-      const modelModule = runtimeRequire('@upscalerjs/esrgan-thick/2x') as { default?: unknown };
+      const modelModule = runtimeRequire(`@upscalerjs/esrgan-thick/${scale}x`) as { default?: unknown };
       const Upscaler = (upscalerModule.default ?? upscalerModule) as unknown as UpscalerConstructor;
       const model = (modelModule.default ?? modelModule) as unknown;
       return new Upscaler({ model });
     } catch (error) {
-      esrgan2xUpscalerPromise = undefined;
+      esrganUpscalerCache.delete(scale);
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(
-        'AI Upscale requires UpscalerJS with @tensorflow/tfjs-node available in this Node environment. ' +
+        `AI Upscale ${scale}x requires UpscalerJS with @tensorflow/tfjs-node available in this Node environment. ` +
           `Install a supported Node LTS runtime or TensorFlow.js native backend. ${detail}`
       );
     }
   })();
 
-  return esrgan2xUpscalerPromise;
+  esrganUpscalerCache.set(scale, promise);
+  return promise;
 }
 
 function parseUpscalerDataUrl(value: string): { imageBase64: string; mimeType: string } {
@@ -1011,7 +1201,10 @@ function findResizeFromMetadata(inlinedResponses: InlinedResponse[]): { width: n
 }
 
 function findAiUpscaleFromMetadata(inlinedResponses: InlinedResponse[]): boolean {
-  return inlinedResponses.some((response) => response.metadata?.aiUpscale === 'true');
+  return inlinedResponses.reduce((maxScale, response) => {
+    const val = Number(response.metadata?.aiUpscale);
+    return val > maxScale ? val : maxScale;
+  }, 0);
 }
 
 function normalizePromptVariant(metadata: Record<string, string> | undefined, fallbackIndex: number): string {
@@ -1094,7 +1287,7 @@ async function runTogetherBatch(
   requestedDimensions: { width: number; height: number } | undefined,
   steps: number | undefined,
   resizeTo: { width: number; height: number } | undefined,
-  aiUpscale: boolean
+  aiUpscale: number
 ): Promise<BatchOutput> {
   const apiKey = process.env.TOGETHER_API_KEY;
   if (!apiKey) {
@@ -1104,7 +1297,7 @@ async function runTogetherBatch(
   const together = new Together({ apiKey });
   const referenceImageUrls = references.map(buildReferenceDataUrl);
   const dimensions = requestedDimensions ?? resolveTogetherDimensions(aspectRatio);
-  const maxParallel = aiUpscale ? 1 : parseMaxParallelRequests();
+  const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
   const referenceMode = resolveTogetherReferenceMode(model);
   const referencePayload =
     referenceMode === 'image_url'
@@ -1214,7 +1407,7 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
   const togetherRequestedDimensions = parseTogetherRequestedDimensions(input.imageSize);
   const steps = normalizeSteps(input.steps);
   const resizeTo = normalizeResizeTo(input.resizeTo);
-  const aiUpscale = input.aiUpscale === true;
+  const aiUpscale = typeof input.aiUpscale === 'number' && input.aiUpscale > 0 ? input.aiUpscale : 0;
 
   if (isTogetherImageModel(model)) {
     // Together AI has no async batch API — run synchronously and return results directly.
@@ -1252,6 +1445,22 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
 
   if (isVertexImageModel(model)) {
     const jobId = randomUUID();
+    const authMode = normalizeAuthMode(input.authMode);
+
+    if (authMode === 'api_key') {
+      const result = await runGeminiApiKeyBatch(
+        model,
+        clampedCount,
+        prompts,
+        references,
+        resizeTo,
+        aiUpscale,
+        aspectRatio,
+        imageSize
+      );
+      return { jobId, provider: 'gemini', results: result };
+    }
+
     const result = await runVertexBatch(
       model,
       clampedCount,
@@ -1293,7 +1502,7 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
     metadata: {
       promptVariant,
       requestedCount: String(clampedCount),
-      ...(aiUpscale ? { aiUpscale: 'true' } : {}),
+      ...(aiUpscale > 0 ? { aiUpscale: String(aiUpscale) } : {}),
       ...(resizeTo
         ? {
             resizeWidth: String(resizeTo.width),

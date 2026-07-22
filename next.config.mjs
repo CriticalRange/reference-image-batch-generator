@@ -3,7 +3,7 @@ const isDevelopment = process.env.NODE_ENV === 'development';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typedRoutes: true,
-  serverExternalPackages: ['sharp'],
+  serverExternalPackages: ['sharp', 'upscaler', '@upscalerjs/esrgan-thick', '@tensorflow/tfjs-node'],
   async headers() {
     const securityHeaders = [
       {
@@ -14,11 +14,11 @@ const nextConfig = {
           "object-src 'none'",
           "frame-ancestors 'none'",
           "form-action 'self'",
-          "img-src 'self' blob: data:",
+          "img-src 'self' blob: data: https://*.blob.vercel-storage.com",
           "font-src 'self' data:",
           "style-src 'self' 'unsafe-inline'",
           `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ''}`,
-          "connect-src 'self'",
+          "connect-src 'self' https://*.blob.vercel-storage.com",
           'upgrade-insecure-requests'
         ].join('; ')
       },

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { submitBatch, getBatchStatus, type SubmitBatchResult } from '@/lib/gemini';
+import { submitBatch, getBatchStatus, type BatchOutput, type BatchResult, type SubmitBatchResult } from '@/lib/gemini';
 import { enforceRateLimit, requireApiAccess } from '@/lib/security';
+import { uploadBatchToBlob } from '@/lib/blob';
 
 type RequestBody = {
   prompt?: string;
@@ -8,13 +9,15 @@ type RequestBody = {
   count?: number;
   model?: string;
   steps?: number;
+  /** Vertex / Google auth mode: service_account (default) | api_key */
+  authMode?: string;
   referenceImageBase64?: string;
   referenceMimeType?: string;
   aspectRatio?: string;
   imageSize?: string;
   resizeWidth?: number;
   resizeHeight?: number;
-  aiUpscale?: boolean;
+  aiUpscale?: number;
   referenceImages?: Array<{
     base64?: string;
     mimeType?: string;
@@ -59,12 +62,13 @@ export async function POST(req: NextRequest) {
     const negativePrompt = body.negativePrompt?.trim() ?? undefined;
     const count = body.count ?? 5;
     const model = body.model?.trim() ?? undefined;
+    const authMode = parseAuthMode(body.authMode);
     const steps = parseStepCount(body.steps);
     const aspectRatio = body.aspectRatio?.trim() ?? undefined;
     const imageSize = body.imageSize?.trim() ?? undefined;
     const resizeWidth = parseResizeDimension(body.resizeWidth);
     const resizeHeight = parseResizeDimension(body.resizeHeight);
-    const aiUpscale = body.aiUpscale === true;
+    const aiUpscale = typeof body.aiUpscale === 'number' && body.aiUpscale > 0 ? body.aiUpscale : 0;
     const referenceImageBase64 = body.referenceImageBase64?.trim() ?? '';
     const referenceMimeType = body.referenceMimeType?.trim() ?? '';
     const referenceImages =
@@ -91,7 +95,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Resize width and height must both be provided.' }, { status: 400 });
     }
 
-    if (aiUpscale && process.env.VERCEL === '1') {
+    if (aiUpscale > 0 && process.env.VERCEL === '1') {
       return NextResponse.json(
         {
           error:
@@ -107,6 +111,12 @@ export async function POST(req: NextRequest) {
         : referenceImageBase64 && referenceMimeType
         ? [{ base64: referenceImageBase64, mimeType: referenceMimeType }]
         : [];
+    console.error('[api/generate] refs parsed:', {
+      arrayCount: referenceImages.length,
+      hasLegacySingle: !!(referenceImageBase64 && referenceMimeType),
+      normalizedCount: normalizedReferences.length,
+      sizes: normalizedReferences.map(r => ({ mime: r.mimeType, kb: (r.base64.length / 1024).toFixed(1) }))
+    });
     const referenceValidationError = validateReferenceImages(normalizedReferences);
     if (referenceValidationError) {
       return NextResponse.json({ error: referenceValidationError }, { status: 400 });
@@ -125,6 +135,7 @@ export async function POST(req: NextRequest) {
       negativePrompt,
       count,
       model,
+      authMode,
       steps,
       aspectRatio,
       imageSize,
@@ -132,6 +143,12 @@ export async function POST(req: NextRequest) {
       aiUpscale,
       referenceImages: normalizedReferences
     });
+
+    // Offload generated images to Vercel Blob so they don't consume
+    // serverless-function bandwidth when returned as base64 JSON.
+    if (submission.results) {
+      submission.results = await transformBatchOutputForBlob(submission.results, submission.jobId);
+    }
 
     return NextResponse.json(submission, { status: 200 });
   } catch (error) {
@@ -163,10 +180,50 @@ export async function GET(req: NextRequest) {
     }
 
     const status = await getBatchStatus(jobId);
+
+    // Offload generated images to Vercel Blob when the async job completes.
+    if (status.results) {
+      status.results = await transformBatchOutputForBlob(status.results, status.jobId);
+    }
+
     return NextResponse.json(status, { status: 200 });
   } catch (error) {
     return createErrorResponse(error);
   }
+}
+
+// ---- Vercel Blob offload ----
+// Uploads generated base64 images to Vercel Blob and replaces them with
+// lightweight blobUrl fields so the JSON response stays small and
+// serverless-function bandwidth isn't consumed by image payloads.
+// Falls back to keeping base64 when BLOB_READ_WRITE_TOKEN is not set
+// or an individual upload fails.
+
+async function transformBatchOutputForBlob(
+  output: BatchOutput,
+  jobId: string
+): Promise<BatchOutput> {
+  const blobResults = await uploadBatchToBlob(output.results, jobId);
+
+  const transformedResults: BatchResult[] = output.results.map((result, index) => {
+    const blobResult = blobResults[index];
+    if (blobResult?.blobUrl) {
+      // Successfully uploaded — strip the heavy base64 payload, keep only blob URL.
+      return {
+        promptVariant: result.promptVariant,
+        imageBase64: '',
+        mimeType: result.mimeType,
+        blobUrl: blobResult.blobUrl
+      };
+    }
+    // Upload failed or not configured — keep the original base64.
+    return result;
+  });
+
+  return {
+    ...output,
+    results: transformedResults
+  };
 }
 
 function parseByteLimit(envName: string, fallback: number): number {
@@ -182,6 +239,14 @@ function rejectLargeRequest(req: NextRequest): NextResponse | null {
   }
 
   return null;
+}
+
+function parseAuthMode(value: unknown): 'service_account' | 'api_key' {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (normalized === 'api_key' || normalized === 'apikey' || normalized === 'api-key') {
+    return 'api_key';
+  }
+  return 'service_account';
 }
 
 function parseResizeDimension(value: unknown): number | undefined {

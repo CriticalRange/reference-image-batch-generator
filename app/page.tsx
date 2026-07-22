@@ -24,7 +24,8 @@ import {
 
 type GenerationResult = {
   promptVariant: string;
-  imageBase64: string;
+  imageBase64?: string;
+  blobUrl?: string;
   mimeType: string;
 };
 
@@ -94,7 +95,7 @@ type GenerationConfigSnapshot = {
   resizePreset?: ResizePresetOption;
   resizeWidth?: number;
   resizeHeight?: number;
-  aiUpscale?: boolean;
+  aiUpscale?: number;
   requestedCount: number;
   referenceImages?: Array<{
     base64: string;
@@ -123,6 +124,7 @@ type ArchiveItem = HistoryItem & {
 type ArchiveStorageItem = Omit<ArchiveItem, 'imageUrl'>;
 
 type ThemeMode = 'light' | 'dark';
+type AuthModeOption = 'service_account' | 'api_key';
 type AspectRatioOption = '1:1' | '2:3' | '3:2' | '3:4' | '4:3' | '4:5' | '5:4' | '9:16' | '16:9' | '21:9';
 type ResolutionOption =  | '512'
   | '1K'
@@ -161,6 +163,7 @@ const ARCHIVE_STORAGE_KEY = 'reference-batch-archive-v1';
 const ARCHIVE_TTL_DAYS = 15;
 const THEME_STORAGE_KEY = 'reference-batch-theme-v1';
 const LANGUAGE_STORAGE_KEY = 'reference-batch-language-v1';
+const AUTH_MODE_STORAGE_KEY = 'reference-batch-auth-mode-v1';
 const BATCH_MODE_STORAGE_KEY = 'reference-batch-batchmode-v1';
 const BATCH_RATE_LIMIT_STORAGE_KEY = 'reference-batch-ratelimit-v1';
 const LAST_PROMPT_STORAGE_KEY = 'reference-batch-last-prompt-v1';
@@ -360,8 +363,9 @@ export default function HomePage() {
   const [resizePreset, setResizePreset] = useState<ResizePresetOption>('2000x3000');
   const [customResizeWidth, setCustomResizeWidth] = useState(DEFAULT_CUSTOM_RESIZE_WIDTH);
   const [customResizeHeight, setCustomResizeHeight] = useState(DEFAULT_CUSTOM_RESIZE_HEIGHT);
-  const [aiUpscale, setAiUpscale] = useState(false);
+  const [aiUpscale, setAiUpscale] = useState(0);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
+  const [authMode, setAuthMode] = useState<AuthModeOption>('service_account');
   const [modelOptions, setModelOptions] = useState<UiModelOption[]>(INITIAL_MODEL_OPTIONS);
   const [falPricingByModel, setFalPricingByModel] = useState<FalPricingMap>({});
   const [activeTab, setActiveTab] = useState<'generator' | 'history'>('generator');
@@ -389,6 +393,7 @@ export default function HomePage() {
   const historyGroups = useMemo(() => groupHistoryByDate(historyItems, language), [historyItems, language]);
   const modelGroups = useMemo(() => groupModelOptions(modelOptions), [modelOptions]);
   const selectedModelIsTogether = useMemo(() => isTogetherImageModelCode(selectedModel), [selectedModel]);
+  const selectedModelIsVertex = useMemo(() => /^vertex\//i.test(selectedModel), [selectedModel]);
   const supportsTogetherSteps = useMemo(() => modelSupportsTogetherSteps(selectedModel), [selectedModel]);
   const supportsResolutionSelector = useMemo(
     () => modelSupportsImageSize(selectedModel) || selectedModelIsTogether,
@@ -761,6 +766,10 @@ export default function HomePage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    const storedAuthMode = window.localStorage.getItem(AUTH_MODE_STORAGE_KEY);
+    if (storedAuthMode === 'service_account' || storedAuthMode === 'api_key') {
+      setAuthMode(storedAuthMode);
+    }
     const stored = window.localStorage.getItem(BATCH_MODE_STORAGE_KEY);
     if (stored === 'true') setIsBatchMode(true);
     const storedLimit = window.localStorage.getItem(BATCH_RATE_LIMIT_STORAGE_KEY);
@@ -772,6 +781,11 @@ export default function HomePage() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(AUTH_MODE_STORAGE_KEY, authMode);
+  }, [authMode]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1097,7 +1111,7 @@ export default function HomePage() {
     setImageSize(toResolutionOption(config.imageSize));
     const restoredResizePreset = toResizePresetOption(config.resizePreset, config.resizeWidth, config.resizeHeight);
     setResizePreset(restoredResizePreset);
-    setAiUpscale(Boolean(config.aiUpscale));
+    setAiUpscale(typeof config.aiUpscale === 'number' && config.aiUpscale > 0 ? config.aiUpscale : 0);
     if (restoredResizePreset === 'custom') {
       const restoredWidth = clampResizeDimension(config.resizeWidth ?? DEFAULT_CUSTOM_RESIZE_WIDTH);
       const restoredHeight = clampResizeDimension(config.resizeHeight ?? DEFAULT_CUSTOM_RESIZE_HEIGHT);
@@ -1234,6 +1248,8 @@ export default function HomePage() {
     const submittedPrompt = prompt.trim();
     const submittedNegativePrompt = negativePrompt.trim();
     const submittedModel = selectedModel;
+    const submittedAuthMode = authMode;
+    const submittedIsVertex = /^vertex\//i.test(submittedModel);
     const submittedRefs = referenceImages.map((img) => ({ base64: img.base64, mimeType: img.mimeType, fileName: img.fileName }));
 
     if (!isBatchMode && submittedRefs.length > MAX_REFERENCE_IMAGES) {
@@ -1255,7 +1271,7 @@ export default function HomePage() {
       ...(supportsResolutionSelector ? { imageSize } : {}),
       resizePreset,
       ...(resolvedResize ? { resizeWidth: resolvedResize.width, resizeHeight: resolvedResize.height } : {}),
-      ...(aiUpscale ? { aiUpscale: true } : {}),
+      ...(aiUpscale > 0 ? { aiUpscale } : {}),
       requestedCount: submittedCount,
     };
 
@@ -1280,12 +1296,13 @@ export default function HomePage() {
           negativePrompt: submittedNegativePrompt || undefined,
           count: submittedCount,
           model: submittedModel,
+          authMode: submittedIsVertex ? submittedAuthMode : undefined,
           aspectRatio,
           steps: supportsTogetherSteps ? steps : undefined,
           imageSize: supportsResolutionSelector ? imageSize : undefined,
           resizeWidth: resolvedResize?.width,
           resizeHeight: resolvedResize?.height,
-          aiUpscale,
+          aiUpscale: aiUpscale > 0 ? aiUpscale : undefined,
           referenceImages: refs
         })
       });
@@ -1419,13 +1436,15 @@ export default function HomePage() {
             let runItems: HistoryItem[] = [];
             if (outputResults.length > 0) {
               const createdAt = new Date().toISOString();
-              runItems = outputResults.map((entry) =>
-                createHistoryItemFromGenerationResult(entry, {
-                  id: makeId(),
-                  createdAt,
-                  isNew: true,
-                  generationConfig: historyConfig
-                })
+              runItems = await Promise.all(
+                outputResults.map((entry) =>
+                  createHistoryItemFromGenerationResult(entry, {
+                    id: makeId(),
+                    createdAt,
+                    isNew: true,
+                    generationConfig: historyConfig
+                  })
+                )
               );
 
               setHistoryItems((previous) => {
@@ -1521,16 +1540,18 @@ export default function HomePage() {
 
         if (outputResults.length > 0) {
           const createdAt = new Date().toISOString();
-          setHistoryItems((previous) => {
-            const olderItems = previous.map((entry) => ({ ...entry, isNew: false }));
-            const latestItems = outputResults.map((entry) =>
+          const latestItems = await Promise.all(
+            outputResults.map((entry) =>
               createHistoryItemFromGenerationResult(entry, {
                 id: makeId(),
                 createdAt,
                 isNew: true,
                 generationConfig: historyConfig
               })
-            );
+            )
+          );
+          setHistoryItems((previous) => {
+            const olderItems = previous.map((entry) => ({ ...entry, isNew: false }));
             return [...latestItems, ...olderItems].slice(0, MAX_HISTORY_ITEMS);
           });
         }
@@ -1825,6 +1846,24 @@ export default function HomePage() {
                 <p className="reference-note">{t('selectedModelTextOnlyWarning')}</p>
               ) : null}
             </label>
+
+            {selectedModelIsVertex ? (
+              <label htmlFor="auth-mode-selector">
+                <span className="field-head">
+                  <span>{t('authMode')}</span>
+                  <InfoHint text={t('fieldInfo.authMode')} />
+                </span>
+                <select
+                  id="auth-mode-selector"
+                  value={authMode}
+                  onChange={(event) => setAuthMode(event.target.value as AuthModeOption)}
+                >
+                  <option value="service_account">{t('authModeServiceAccount')}</option>
+                  <option value="api_key">{t('authModeApiKey')}</option>
+                </select>
+                {authMode === 'api_key' ? <p className="reference-note">{t('authModeApiKeyHint')}</p> : null}
+              </label>
+            ) : null}
 
             <section className="reference-block">
               <div className="field-head">
@@ -2184,14 +2223,25 @@ export default function HomePage() {
               <input
                 id="ai-upscale"
                 type="checkbox"
-                checked={aiUpscale}
-                onChange={(event) => setAiUpscale(event.target.checked)}
+                checked={aiUpscale > 0}
+                onChange={(event) => setAiUpscale(event.target.checked ? 2 : 0)}
               />
               <span className="field-head">
                 <ResizeIcon />
                 <span>{t('aiUpscale')}</span>
                 <InfoHint text={t('fieldInfo.aiUpscale')} />
               </span>
+              {aiUpscale > 0 && (
+                <select
+                  className="field-select"
+                  value={aiUpscale}
+                  onChange={(event) => setAiUpscale(Number(event.target.value))}
+                  style={{ marginLeft: 8 }}
+                >
+                  <option value={2}>2x</option>
+                  <option value={3}>3x</option>
+                </select>
+              )}
             </label>
 
             <motion.button
@@ -2235,7 +2285,7 @@ export default function HomePage() {
                   <>
                     <span className="generate-btn-spinner" aria-hidden="true" />
                     <span className="generate-btn-loading-wrap">
-                      <span>{t('generating')}</span>
+                      <span>{aiUpscale > 0 ? t('upscaling') : t('generating')}</span>
                       {statusText ? <span className="generate-btn-sub-label">{statusText}</span> : null}
                     </span>
                   </>
@@ -2367,11 +2417,24 @@ function base64ToBlob(base64: string, mimeType: string): Blob {
   return new Blob(bytes, { type: mimeType });
 }
 
-function createHistoryItemFromGenerationResult(
+async function createHistoryItemFromGenerationResult(
   result: GenerationResult,
   metadata: Pick<HistoryItem, 'id' | 'createdAt' | 'isNew' | 'generationConfig'>
-): HistoryItem {
-  const imageBlob = base64ToBlob(result.imageBase64, result.mimeType);
+): Promise<HistoryItem> {
+  let imageBlob: Blob;
+  if (result.blobUrl) {
+    // Download from Vercel Blob CDN instead of decoding base64.
+    const response = await fetch(result.blobUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to download image from blob storage: ${response.status}`);
+    }
+    imageBlob = await response.blob();
+  } else if (result.imageBase64) {
+    imageBlob = base64ToBlob(result.imageBase64, result.mimeType);
+  } else {
+    throw new Error('Generation result has neither blobUrl nor imageBase64.');
+  }
+
   return {
     id: metadata.id,
     createdAt: metadata.createdAt,
@@ -2580,7 +2643,7 @@ function isGenerationConfigSnapshot(value: unknown): value is GenerationConfigSn
   const hasResizeWidth = typeof record.resizeWidth === 'number';
   const hasResizeHeight = typeof record.resizeHeight === 'number';
   const hasValidResizePair = (!hasResizeWidth && !hasResizeHeight) || (hasResizeWidth && hasResizeHeight);
-  const hasValidAiUpscale = typeof record.aiUpscale === 'undefined' || typeof record.aiUpscale === 'boolean';
+  const hasValidAiUpscale = typeof record.aiUpscale === 'undefined' || typeof record.aiUpscale === 'number';
   return (
     typeof record.basePrompt === 'string' &&
     typeof record.model === 'string' &&

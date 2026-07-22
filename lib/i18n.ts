@@ -23,6 +23,11 @@ const resources = {
       darkMode: 'Dark Mode',
       switchLanguage: 'Switch language',
       model: 'Model',
+      authMode: 'Auth Method',
+      authModeServiceAccount: 'Service Account (Vertex AI)',
+      authModeApiKey: 'API Key (GEMINI_API_KEY)',
+      authModeApiKeyHint:
+        'Uses GEMINI_API_KEY from the server env. Prefer vertex/gemini-2.5-flash-image on free tiers (3.1 is often blocked). Imagen still needs Service Account.',
       selectedModelTextOnlyWarning: 'Selected model may return text-only output for this image workflow.',
       referenceImages: 'Reference Images',
       addReferenceImage: 'Add reference image',
@@ -68,9 +73,10 @@ const resources = {
       resizePreset2048x2048: '2048 x 2048',
       resizeWidth: 'Width (px)',
       resizeHeight: 'Height (px)',
-      aiUpscale: 'AI Upscale 2x',
+      aiUpscale: 'AI Upscale',
       generate: 'Generate',
       generating: 'Generating...',
+      upscaling: 'Upscaling image...',
       failedVariants: 'Failed Variants',
       statusSubmitting: 'Submitting {{count}} variant(s)...',
       statusBatchSubmitted: 'Batch job submitted, waiting for processing...',
@@ -168,6 +174,8 @@ const resources = {
       },
       fieldInfo: {
         model: 'Select the image model provider/engine used for generation.',
+        authMode:
+          'How to authenticate with Google for Vertex-listed models. Service Account uses Vertex credentials; API Key uses GEMINI_API_KEY from the server env.',
         referenceImages: 'Upload one or more reference images to preserve identity/composition.',
         basePrompt: 'Main instruction used to generate all variants.',
         negativePrompt: 'Describe what the model should avoid in outputs.',
@@ -176,7 +184,7 @@ const resources = {
         steps: 'Higher steps can improve detail but may be slower.',
         resolution: 'Controls pixel dimensions/output quality preset.',
         resizeOutput: 'Optionally resize generated images to export-friendly dimensions. For marketplaces like Trendyol and Hepsiburada, 2000x3000 is recommended.',
-        aiUpscale: 'Runs ESRGAN Thick 2x after generation, then applies the selected resize/export size. Uses more CPU/RAM and takes longer per image.',
+        aiUpscale: 'Runs ESRGAN Thick upscale (selectable 2x or 3x) after generation, then applies the selected resize/export size. Uses more CPU/RAM and takes longer per image.',
         batchRateLimit: 'Seconds to wait between each batch generation run. Set to 0 for no delay. Recommended: 120s (2 min) to avoid API exhaustion.'
       }
     }
@@ -202,6 +210,11 @@ const resources = {
       darkMode: 'Karanlık Mod',
       switchLanguage: 'Dili değiştir',
       model: 'Model',
+      authMode: 'Kimlik Doğrulama',
+      authModeServiceAccount: 'Service Account (Vertex AI)',
+      authModeApiKey: 'API Key (GEMINI_API_KEY)',
+      authModeApiKeyHint:
+        'Sunucudaki GEMINI_API_KEY kullanılır. Free hesaplarda vertex/gemini-2.5-flash-image tercih edin (3.1 genelde yasaklı). Imagen için Service Account gerekir.',
       selectedModelTextOnlyWarning: 'Seçili model bu görsel iş akışında yalnızca metin döndürebilir.',
       referenceImages: 'Referans Görseller',
       addReferenceImage: 'Referans görsel ekle',
@@ -247,9 +260,10 @@ const resources = {
       resizePreset2048x2048: '2048 x 2048',
       resizeWidth: 'Genişlik (px)',
       resizeHeight: 'Yükseklik (px)',
-      aiUpscale: 'AI Upscale 2x',
+      aiUpscale: 'AI Upscale',
       generate: 'Üret',
       generating: 'Üretiliyor...',
+      upscaling: 'Görsel büyütülüyor...',
       failedVariants: 'Başarısız Varyantlar',
       statusSubmitting: '{{count}} varyant gönderiliyor...',
       statusBatchSubmitted: 'Toplu iş gönderildi, işleme bekleniyor...',
@@ -346,6 +360,8 @@ const resources = {
       },
       fieldInfo: {
         model: 'Görsel üretiminde kullanılacak model sağlayıcısını/motorunu seçin.',
+        authMode:
+          'Vertex listesindeki modeller için Google kimlik doğrulama yöntemi. Service Account Vertex kimlik bilgilerini kullanır; API Key sunucudaki GEMINI_API_KEY değerini kullanır.',
         referenceImages: 'Kimlik/kompozisyonu korumak için bir veya daha fazla referans görsel yükleyin.',
         basePrompt: 'Tüm varyantların üretiminde kullanılan ana istem.',
         negativePrompt: 'Çıktılarda modelin kaçınması gereken öğeleri yazın.',
@@ -354,7 +370,7 @@ const resources = {
         steps: 'Adım sayısı arttıkça detay artabilir, ancak süre uzayabilir.',
         resolution: 'Piksel boyutunu/çıktı kalite önayarını belirler.',
         resizeOutput: 'Üretilen görselleri dışa aktarıma uygun boyutlara yeniden ölçekler. Özellikle Trendyol, Hepsiburada gibi sitelere 2000x3000 boyutlandırması önerilir.',
-        aiUpscale: 'Uretimden sonra ESRGAN Thick 2x calistirir, ardindan secili yeniden boyutlandirma/dis aktarim boyutunu uygular. Daha fazla CPU/RAM kullanir ve gorsel basina daha uzun surer.',
+        aiUpscale: 'Uretimden sonra ESRGAN Thick (2x veya 3x) calistirir, ardindan secili yeniden boyutlandirma/dis aktarim boyutunu uygular. Daha fazla CPU/RAM kullanir ve gorsel basina daha uzun surer.',
         batchRateLimit: 'Her toplu üretim turu arasındaki bekleme süresi (saniye). Gecikme istemiyorsanız 0 girin. Önerilen: 120s (2 dk) — API limitinin aşılmaması için.'
       }
     }
