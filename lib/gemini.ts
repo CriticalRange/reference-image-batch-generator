@@ -927,10 +927,12 @@ async function upscaleGeneratedImage(result: BatchResult, scale: number): Promis
   const inputBuffer = await sharp(Buffer.from(result.imageBase64, 'base64'))
     .removeAlpha()
     .toBuffer();
-  // upscaler.upscale() returns a Tensor, not a Data URL string.
+  // upscaler.upscale() returns a TF Tensor3D (typed loosely via UpscalerConstructor).
   const tensor = await upscaler.upscale(inputBuffer);
   const { node: tfnode } = await getTfjsNode();
-  const upscaledPng = await tfnode.encodePng(tensor as unknown as Uint8Array);
+  // encodePng expects Tensor3D; UpscalerConstructor only exposes dispose on the return type.
+  const encodePng = tfnode.encodePng as (image: unknown) => Promise<Uint8Array>;
+  const upscaledPng = await encodePng(tensor);
   tensor.dispose?.();
 
   return {
@@ -942,13 +944,20 @@ async function upscaleGeneratedImage(result: BatchResult, scale: number): Promis
 
 let tfjsNodePromise: Promise<typeof import('@tensorflow/tfjs-node')> | undefined;
 
+/** Resolve a Node require that works outside the Next webpack bundle. */
+function getRuntimeRequire(): NodeRequire {
+  const globalRequire = (globalThis as typeof globalThis & { __non_webpack_require__?: NodeRequire })
+    .__non_webpack_require__;
+  if (typeof globalRequire === 'function') {
+    return globalRequire;
+  }
+  return Function('return require')() as NodeRequire;
+}
+
 async function getTfjsNode(): Promise<typeof import('@tensorflow/tfjs-node')> {
   tfjsNodePromise ??= (async () => {
     // Dynamic require keeps tfjs-node out of the Next.js webpack graph (Vercel size limits).
-    const runtimeRequire = typeof __non_webpack_require__ !== 'undefined'
-      ? __non_webpack_require__
-      : (Function('return require')() as NodeRequire);
-    return runtimeRequire('@tensorflow/tfjs-node') as typeof import('@tensorflow/tfjs-node');
+    return getRuntimeRequire()('@tensorflow/tfjs-node') as typeof import('@tensorflow/tfjs-node');
   })();
   return tfjsNodePromise;
 }
@@ -960,9 +969,7 @@ async function getEsrganUpscaler(scale: number): Promise<InstanceType<UpscalerCo
   const promise = (async () => {
     try {
       // Dynamic require keeps Upscaler/ESRGAN out of the Next.js webpack graph (Vercel size limits).
-      const runtimeRequire = typeof __non_webpack_require__ !== 'undefined'
-        ? __non_webpack_require__
-        : (Function('return require')() as NodeRequire);
+      const runtimeRequire = getRuntimeRequire();
       const upscalerModule = runtimeRequire('upscaler/node') as { default?: unknown };
       const modelModule = runtimeRequire(`@upscalerjs/esrgan-thick/${scale}x`) as { default?: unknown };
       const Upscaler = (upscalerModule.default ?? upscalerModule) as unknown as UpscalerConstructor;
@@ -1200,9 +1207,12 @@ function findResizeFromMetadata(inlinedResponses: InlinedResponse[]): { width: n
   return undefined;
 }
 
-function findAiUpscaleFromMetadata(inlinedResponses: InlinedResponse[]): boolean {
+function findAiUpscaleFromMetadata(inlinedResponses: InlinedResponse[]): number {
   return inlinedResponses.reduce((maxScale, response) => {
     const val = Number(response.metadata?.aiUpscale);
+    if (!Number.isFinite(val) || val <= 0) {
+      return maxScale;
+    }
     return val > maxScale ? val : maxScale;
   }, 0);
 }
