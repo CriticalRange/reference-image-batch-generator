@@ -23,11 +23,128 @@ A standalone desktop app is better only if you need tight OS integration, offlin
 
 This project only supports compliant generation flows. It does not implement watermark/provenance removal or bypassing provider safeguards.
 
+## HTTP API (UI parity)
+
+The UI is a thin client over these routes. External scripts and websites can call the same endpoints and perform the same generation work (prompt, references, model, auth mode, resize, upscale, polling).
+
+| Method | Path | Purpose |
+| ------ | ---- | ------- |
+| `POST` | `/api/generate` | Submit a generation job (same body as the UI) |
+| `GET` | `/api/generate?job=<id>` | Poll async Gemini batch jobs until results are ready |
+| `GET` | `/api/models` | List available models + default model |
+| `OPTIONS` | above routes | CORS preflight when `API_CORS_ORIGINS` is set |
+
+History, archive, zip download, and batch-mode looping are **client-side only** (IndexedDB / browser). Re-implement those in your script if needed by calling `POST /api/generate` once per reference.
+
+### Auth & CORS
+
+- **Local UI / trusted scripts:** leave `APP_ACCESS_TOKEN` unset.
+- **External callers:** set `APP_ACCESS_TOKEN` and send `Authorization: Bearer <token>` on every request.
+- **Browser sites on another origin:** set `API_CORS_ORIGINS` (e.g. `https://app.example.com` or `*`). Prefer a token when using `*`.
+- Rate limit: `API_RATE_LIMIT` / `API_RATE_WINDOW_MS` (per client IP).
+
+### `POST /api/generate` body
+
+```json
+{
+  "prompt": "Studio product photo, soft light…",
+  "negativePrompt": "blurry, watermark",
+  "count": 5,
+  "model": "vertex/gemini-2.5-flash-image",
+  "authMode": "service_account",
+  "aspectRatio": "2:3",
+  "imageSize": "1K",
+  "steps": 28,
+  "resizeWidth": 2000,
+  "resizeHeight": 3000,
+  "aiUpscale": 2,
+  "referenceImages": [
+    { "base64": "<base64-without-data-url-prefix>", "mimeType": "image/jpeg" }
+  ]
+}
+```
+
+| Field | Notes |
+| ----- | ----- |
+| `prompt` | Required |
+| `count` | Variant count (clamped by `MAX_BATCH_SIZE`) |
+| `model` | e.g. `vertex/gemini-2.5-flash-image`, Together, fal codes |
+| `authMode` | Vertex only: `service_account` (default) or `api_key` (`GEMINI_API_KEY`) |
+| `referenceImages` | Preferred multi-ref array; or legacy `referenceImageBase64` + `referenceMimeType` |
+| `aspectRatio` / `imageSize` / `steps` | Provider-dependent |
+| `resizeWidth` + `resizeHeight` | Both required if resizing |
+| `aiUpscale` | `2` or `3` (not supported on Vercel serverless) |
+
+### Response shapes
+
+**Sync providers** (Vertex, Together, fal) return results immediately:
+
+```json
+{
+  "jobId": "…",
+  "provider": "vertex",
+  "results": {
+    "usedModel": "vertex/gemini-2.5-flash-image",
+    "requestedCount": 5,
+    "succeededCount": 5,
+    "failedCount": 0,
+    "results": [
+      {
+        "promptVariant": "…",
+        "mimeType": "image/png",
+        "imageBase64": "…",
+        "blobUrl": "https://….blob.vercel-storage.com/…"
+      }
+    ],
+    "failures": []
+  }
+}
+```
+
+Prefer `blobUrl` when present (Vercel Blob). Otherwise decode `imageBase64`.
+
+**Async Gemini batch** returns `{ jobId, provider: "gemini" }` without `results`. Poll:
+
+```http
+GET /api/generate?job=<jobId>
+```
+
+until `state` is `succeeded` and `results` is populated (or `failed` / `cancelled` / `expired`).
+
+### Example (Node)
+
+```bash
+# Server running on :3000
+node scripts/generate-example.mjs ./reference.jpg "Clean studio product shot"
+```
+
+Optional env: `API_BASE_URL`, `APP_ACCESS_TOKEN`.
+
+### Example (curl)
+
+```bash
+# Encode a local JPEG (PowerShell)
+$b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("reference.jpg"))
+
+curl -s -X POST http://localhost:3000/api/generate `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer $env:APP_ACCESS_TOKEN" `
+  -d "{
+    \"prompt\": \"Studio product photo\",
+    \"count\": 2,
+    \"model\": \"vertex/gemini-2.5-flash-image\",
+    \"authMode\": \"service_account\",
+    \"aspectRatio\": \"2:3\",
+    \"referenceImages\": [{ \"base64\": \"$b64\", \"mimeType\": \"image/jpeg\" }]
+  }"
+```
+
 ## Security notes
 
 - Keep `.env.local` and provider credential JSON files out of git. If a service account key is ever exposed, revoke it and create a new key.
 - `POST /api/generate` enforces request size, reference image MIME/base64 validation, and a basic IP rate limit.
-- For server-to-server usage, set `APP_ACCESS_TOKEN` and send `Authorization: Bearer <token>`.
+- For server-to-server / external API usage, set `APP_ACCESS_TOKEN` and send `Authorization: Bearer <token>`.
+- For browser clients on other origins, set `API_CORS_ORIGINS` and prefer a strong access token.
 - Before public hosting, put the app behind real user auth and provider-budget controls.
 
 ## Vercel Vertex AI credentials

@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
+import { corsPreflightResponse, jsonWithCors } from '@/lib/security';
 
 export const revalidate = 3600;
 import {
@@ -27,14 +28,22 @@ function buildDefaultModelOption(model: string): UiModelOption {
   };
 }
 
-export async function GET() {
+export async function OPTIONS(req: NextRequest) {
+  const preflight = corsPreflightResponse(req);
+  if (preflight) {
+    return preflight;
+  }
+  return new NextResponse(null, { status: 204 });
+}
+
+export async function GET(req: NextRequest) {
   const configuredDefault = process.env.NEXT_PUBLIC_GEMINI_IMAGE_MODEL ?? process.env.GEMINI_IMAGE_MODEL ?? DEFAULT_MODEL;
   const defaultModel = normalizeModelCode(configuredDefault);
   const fallback = sortModelOptions(mergeModelOptions(CURATED_MODEL_OPTIONS, [buildDefaultModelOption(defaultModel)]));
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
-    return NextResponse.json({ models: fallback, defaultModel, source: 'catalog' }, { status: 200 });
+    return jsonWithCors(req, { models: fallback, defaultModel, source: 'catalog' }, { status: 200 });
   }
 
   try {
@@ -72,8 +81,8 @@ export async function GET() {
     }
 
     const models = sortModelOptions(mergeModelOptions(fallback, discovered));
-    return NextResponse.json({ models, defaultModel, source: 'api' }, { status: 200 });
+    return jsonWithCors(req, { models, defaultModel, source: 'api' }, { status: 200 });
   } catch {
-    return NextResponse.json({ models: fallback, defaultModel, source: 'catalog' }, { status: 200 });
+    return jsonWithCors(req, { models: fallback, defaultModel, source: 'catalog' }, { status: 200 });
   }
 }

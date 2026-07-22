@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { submitBatch, getBatchStatus, type BatchOutput, type BatchResult, type SubmitBatchResult } from '@/lib/gemini';
-import { enforceRateLimit, requireApiAccess } from '@/lib/security';
+import { applyCorsHeaders, corsPreflightResponse, enforceRateLimit, jsonWithCors, requireApiAccess } from '@/lib/security';
 import { uploadBatchToBlob } from '@/lib/blob';
 
 type RequestBody = {
@@ -40,6 +40,14 @@ const ALLOWED_REFERENCE_MIME_TYPES = new Set([
   'image/heif'
 ]);
 
+export async function OPTIONS(req: NextRequest) {
+  const preflight = corsPreflightResponse(req);
+  if (preflight) {
+    return preflight;
+  }
+  return new NextResponse(null, { status: 204 });
+}
+
 export async function POST(req: NextRequest) {
   try {
     const accessDenied = requireApiAccess(req);
@@ -54,7 +62,7 @@ export async function POST(req: NextRequest) {
 
     const bodyTooLarge = rejectLargeRequest(req);
     if (bodyTooLarge) {
-      return bodyTooLarge;
+      return applyCorsHeaders(req, bodyTooLarge);
     }
 
     const body = (await req.json()) as RequestBody;
@@ -80,23 +88,24 @@ export async function POST(req: NextRequest) {
         .filter((image) => image.base64 && image.mimeType) ?? [];
 
     if (!prompt) {
-      return NextResponse.json({ error: 'Prompt is required.' }, { status: 400 });
+      return jsonWithCors(req, { error: 'Prompt is required.' }, { status: 400 });
     }
 
     if (prompt.length > MAX_PROMPT_LENGTH) {
-      return NextResponse.json({ error: `Prompt must be ${MAX_PROMPT_LENGTH} characters or fewer.` }, { status: 400 });
+      return jsonWithCors(req, { error: `Prompt must be ${MAX_PROMPT_LENGTH} characters or fewer.` }, { status: 400 });
     }
 
     if (negativePrompt && negativePrompt.length > MAX_NEGATIVE_PROMPT_LENGTH) {
-      return NextResponse.json({ error: `Negative prompt must be ${MAX_NEGATIVE_PROMPT_LENGTH} characters or fewer.` }, { status: 400 });
+      return jsonWithCors(req, { error: `Negative prompt must be ${MAX_NEGATIVE_PROMPT_LENGTH} characters or fewer.` }, { status: 400 });
     }
 
     if ((typeof resizeWidth === 'number' && typeof resizeHeight !== 'number') || (typeof resizeHeight === 'number' && typeof resizeWidth !== 'number')) {
-      return NextResponse.json({ error: 'Resize width and height must both be provided.' }, { status: 400 });
+      return jsonWithCors(req, { error: 'Resize width and height must both be provided.' }, { status: 400 });
     }
 
     if (aiUpscale > 0 && process.env.VERCEL === '1') {
-      return NextResponse.json(
+      return jsonWithCors(
+        req,
         {
           error:
             'AI Upscale is not supported on Vercel Serverless because the TensorFlow/ESRGAN runtime exceeds function size limits. Use normal resize on Vercel, or deploy this app on VPS/Docker for AI Upscale.'
@@ -119,7 +128,7 @@ export async function POST(req: NextRequest) {
     });
     const referenceValidationError = validateReferenceImages(normalizedReferences);
     if (referenceValidationError) {
-      return NextResponse.json({ error: referenceValidationError }, { status: 400 });
+      return jsonWithCors(req, { error: referenceValidationError }, { status: 400 });
     }
 
     const resizeTo =
@@ -150,9 +159,9 @@ export async function POST(req: NextRequest) {
       submission.results = await transformBatchOutputForBlob(submission.results, submission.jobId);
     }
 
-    return NextResponse.json(submission, { status: 200 });
+    return jsonWithCors(req, submission, { status: 200 });
   } catch (error) {
-    return createErrorResponse(error);
+    return createErrorResponse(req, error);
   }
 }
 
@@ -172,11 +181,11 @@ export async function GET(req: NextRequest) {
     const jobId = searchParams.get('job');
 
     if (!jobId) {
-      return NextResponse.json({ error: 'Missing job parameter.' }, { status: 400 });
+      return jsonWithCors(req, { error: 'Missing job parameter.' }, { status: 400 });
     }
 
     if (jobId.length > MAX_JOB_ID_LENGTH || !JOB_ID_PATTERN.test(jobId)) {
-      return NextResponse.json({ error: 'Invalid job parameter.' }, { status: 400 });
+      return jsonWithCors(req, { error: 'Invalid job parameter.' }, { status: 400 });
     }
 
     const status = await getBatchStatus(jobId);
@@ -186,9 +195,9 @@ export async function GET(req: NextRequest) {
       status.results = await transformBatchOutputForBlob(status.results, status.jobId);
     }
 
-    return NextResponse.json(status, { status: 200 });
+    return jsonWithCors(req, status, { status: 200 });
   } catch (error) {
-    return createErrorResponse(error);
+    return createErrorResponse(req, error);
   }
 }
 
@@ -322,7 +331,7 @@ function validateReferenceImages(images: Array<{ base64: string; mimeType: strin
   return undefined;
 }
 
-function createErrorResponse(error: unknown) {
+function createErrorResponse(req: NextRequest, error: unknown) {
   const status = resolveHttpStatus(error);
   const message = safeClientErrorMessage(error, status);
   console.error('[api/generate] request failed', {
@@ -330,7 +339,7 @@ function createErrorResponse(error: unknown) {
     message: formatApiError(error),
     error
   });
-  return NextResponse.json({ error: message }, { status });
+  return jsonWithCors(req, { error: message }, { status });
 }
 
 function safeClientErrorMessage(error: unknown, status: number): string {

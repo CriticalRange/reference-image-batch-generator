@@ -144,7 +144,6 @@ type ResizePresetOption = 'none' | '2000x3000' | '1536x2048' | '1696x2528' | '20
 type ProductTypeOption = 'console' | 'dressing-table' | 'tv-dressing-table' | 'tv-shelf';
 type ProductColorOption = 'travertine' | 'anthracite' | 'white' | 'sapphire-oak';
 type RoomStyleOption = 'minimalist' | 'modern' | 'classic' | 'industrial';
-type FalPricingMap = Record<string, string>;
 
 const DEFAULT_COUNT = 1;
 const DEFAULT_BATCH_RATE_LIMIT_SEC = 120;
@@ -167,8 +166,6 @@ const AUTH_MODE_STORAGE_KEY = 'reference-batch-auth-mode-v1';
 const BATCH_MODE_STORAGE_KEY = 'reference-batch-batchmode-v1';
 const BATCH_RATE_LIMIT_STORAGE_KEY = 'reference-batch-ratelimit-v1';
 const LAST_PROMPT_STORAGE_KEY = 'reference-batch-last-prompt-v1';
-const FAL_PRICING_STORAGE_KEY = 'reference-batch-fal-pricing-v1';
-const FAL_PRICING_TTL_MS = 10 * 24 * 60 * 60 * 1000;
 const DEFAULT_MODEL = 'vertex/gemini-2.5-flash-image';
 const ASPECT_RATIO_OPTIONS: AspectRatioOption[] = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
 const RESOLUTION_OPTIONS: ResolutionOption[] = ['512', '1K', '2K', '4K'];
@@ -367,7 +364,6 @@ export default function HomePage() {
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [authMode, setAuthMode] = useState<AuthModeOption>('service_account');
   const [modelOptions, setModelOptions] = useState<UiModelOption[]>(INITIAL_MODEL_OPTIONS);
-  const [falPricingByModel, setFalPricingByModel] = useState<FalPricingMap>({});
   const [activeTab, setActiveTab] = useState<'generator' | 'history'>('generator');
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
@@ -616,70 +612,6 @@ export default function HomePage() {
       historyObjectUrlsRef.current.clear();
     };
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function hydrateFalPricing() {
-      const falModelCodes = Array.from(
-        new Set(
-          modelOptions
-            .map((option) => normalizeModelCode(option.code))
-            .filter((code) => code.toLowerCase().startsWith('fal-ai/'))
-        )
-      );
-
-      if (falModelCodes.length === 0) {
-        return;
-      }
-
-      try {
-        const cachedRaw = await get<unknown>(FAL_PRICING_STORAGE_KEY);
-        const cached = normalizeFalPricingCache(cachedRaw);
-        if (cached && cached.expiresAt > Date.now() && falModelCodes.every((code) => typeof cached.prices[code] === 'string')) {
-          if (!cancelled) {
-            setFalPricingByModel(cached.prices);
-          }
-          return;
-        }
-      } catch {
-        // Ignore cache read failures.
-      }
-
-      try {
-        const query = falModelCodes.map((code) => `endpoint_id=${encodeURIComponent(code)}`).join('&');
-        const response = await fetch(`/api/fal-pricing?${query}`, { cache: 'no-store' });
-        const payload = (await response.json()) as { prices?: unknown };
-        if (!response.ok || !Array.isArray(payload.prices)) {
-          return;
-        }
-
-        const nextPrices: FalPricingMap = {};
-        for (const entry of payload.prices) {
-          const normalized = normalizeFalPriceResponseEntry(entry);
-          if (!normalized) {
-            continue;
-          }
-          nextPrices[normalized.endpointId] = normalized.label;
-        }
-
-        if (!cancelled) {
-          setFalPricingByModel(nextPrices);
-        }
-        await set(FAL_PRICING_STORAGE_KEY, {
-          expiresAt: Date.now() + FAL_PRICING_TTL_MS,
-          prices: nextPrices
-        });
-      } catch {
-        // Ignore pricing fetch failures; model selector still works without labels.
-      }
-    }
-
-    void hydrateFalPricing();
-    return () => {
-      cancelled = true;
-    };
-  }, [modelOptions]);
 
   // Archive: hydrate, purge expired, persist, and manage object URLs
   useEffect(() => {
@@ -1836,7 +1768,7 @@ export default function HomePage() {
                   <optgroup key={group.group} label={translateModelGroup(group.group, t)}>
                     {group.options.map((option) => (
                       <option key={option.code} value={option.code}>
-                        {renderModelOptionLabel(option, falPricingByModel)}
+                        {renderModelOptionLabel(option)}
                       </option>
                     ))}
                   </optgroup>
@@ -3138,73 +3070,8 @@ function translateModelGroup(group: string, t: (key: string, options?: Record<st
   return group;
 }
 
-function renderModelOptionLabel(option: UiModelOption, falPricingByModel: FalPricingMap): string {
-  const code = normalizeModelCode(option.code);
-  const price = falPricingByModel[code];
-  if (price) {
-    return `${option.name} (${code}) • ${price}`;
-  }
-
-  return `${option.name} (${code})`;
-}
-
-function normalizeFalPricingCache(value: unknown): { expiresAt: number; prices: FalPricingMap } | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  const record = value as Record<string, unknown>;
-  const expiresAtRaw = record.expiresAt;
-  const pricesRaw = record.prices;
-  const expiresAt = typeof expiresAtRaw === 'number' ? expiresAtRaw : Number.parseInt(String(expiresAtRaw), 10);
-  if (!Number.isFinite(expiresAt) || !pricesRaw || typeof pricesRaw !== 'object') {
-    return null;
-  }
-
-  const prices: FalPricingMap = {};
-  for (const [key, row] of Object.entries(pricesRaw as Record<string, unknown>)) {
-    if (typeof row !== 'string' || !row.trim()) {
-      continue;
-    }
-    prices[normalizeModelCode(key)] = row.trim();
-  }
-
-  return { expiresAt, prices };
-}
-
-function normalizeFalPriceResponseEntry(value: unknown): { endpointId: string; label: string } | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  const row = value as Record<string, unknown>;
-  const endpointIdRaw = row.endpointId;
-  const unitPriceRaw = row.unitPrice;
-  if (typeof endpointIdRaw !== 'string' || !endpointIdRaw.trim()) {
-    return null;
-  }
-
-  const unitPrice = typeof unitPriceRaw === 'number' ? unitPriceRaw : Number.parseFloat(String(unitPriceRaw));
-  if (!Number.isFinite(unitPrice)) {
-    return null;
-  }
-
-  const unit = typeof row.unit === 'string' && row.unit.trim() ? row.unit.trim() : 'image';
-  const currency = typeof row.currency === 'string' && row.currency.trim() ? row.currency.trim().toUpperCase() : 'USD';
-  const endpointId = normalizeModelCode(endpointIdRaw);
-  const label = `${currency} ${formatUnitPrice(unitPrice)}/${unit}`;
-  return { endpointId, label };
-}
-
-function formatUnitPrice(value: number): string {
-  if (value >= 1) {
-    return value.toFixed(2);
-  }
-  if (value >= 0.01) {
-    return value.toFixed(3);
-  }
-
-  return value.toFixed(5);
+function renderModelOptionLabel(option: UiModelOption): string {
+  return `${option.name} (${normalizeModelCode(option.code)})`;
 }
 
 function InfoHint({ text }: { text: string }) {
