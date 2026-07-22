@@ -944,7 +944,7 @@ let tfjsNodePromise: Promise<typeof import('@tensorflow/tfjs-node')> | undefined
 
 async function getTfjsNode(): Promise<typeof import('@tensorflow/tfjs-node')> {
   tfjsNodePromise ??= (async () => {
-    /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+    // Dynamic require keeps tfjs-node out of the Next.js webpack graph (Vercel size limits).
     const runtimeRequire = typeof __non_webpack_require__ !== 'undefined'
       ? __non_webpack_require__
       : (Function('return require')() as NodeRequire);
@@ -959,7 +959,7 @@ async function getEsrganUpscaler(scale: number): Promise<InstanceType<UpscalerCo
 
   const promise = (async () => {
     try {
-      /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+      // Dynamic require keeps Upscaler/ESRGAN out of the Next.js webpack graph (Vercel size limits).
       const runtimeRequire = typeof __non_webpack_require__ !== 'undefined'
         ? __non_webpack_require__
         : (Function('return require')() as NodeRequire);
