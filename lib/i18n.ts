@@ -38,6 +38,7 @@ const resources = {
       basePrompt: 'Base Prompt',
       productColorPlaceholder: 'Product color variant',
       plexiglassPlaceholder: 'Decorative plexiglass',
+      mountingPlaceholder: 'Mounting type',
       roomStylePlaceholder: 'Room style',
       accentColorPlaceholder: 'Accent color',
       handlePlaceholder: 'Handle design and color (optional — defaults to reference match)',
@@ -54,6 +55,10 @@ const resources = {
         none: 'Plexiglass: none',
         'gold-mirror': 'Gold mirror plexiglass',
         'silver-mirror': 'Silver mirror plexiglass'
+      },
+      mountingOptions: {
+        'floor-standing': 'Floor-standing (with legs)',
+        'wall-mounted': 'Wall-mounted'
       },
       roomStyleOptions: {
         minimalist: 'Minimalist',
@@ -238,6 +243,7 @@ const resources = {
       basePrompt: 'Ana İstem',
       productColorPlaceholder: 'Ürün renk varyantı',
       plexiglassPlaceholder: 'Dekoratif pleksi',
+      mountingPlaceholder: 'Montaj tipi',
       roomStylePlaceholder: 'Oda stili',
       accentColorPlaceholder: 'Aksan rengi',
       handlePlaceholder: 'Kulp tasarımı ve rengi (opsiyonel — boşsa referansa uy)',
@@ -254,6 +260,10 @@ const resources = {
         none: 'Pleksi: yok',
         'gold-mirror': 'Altın ayna pleksi',
         'silver-mirror': 'Gümüş ayna pleksi'
+      },
+      mountingOptions: {
+        'floor-standing': 'Ayaklı (yere oturan)',
+        'wall-mounted': 'Duvara monte'
       },
       roomStyleOptions: {
         minimalist: 'Minimalist',

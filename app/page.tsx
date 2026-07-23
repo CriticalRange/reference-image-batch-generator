@@ -148,6 +148,7 @@ type ProductColorOption =
   | 'anthracite-body-travertine-doors'
   | 'sapphire-oak-body-white-doors';
 type PlexiglassOption = 'none' | 'gold-mirror' | 'silver-mirror';
+type MountingOption = 'floor-standing' | 'wall-mounted';
 type RoomStyleOption = 'minimalist' | 'modern' | 'classic' | 'industrial';
 type AccentColorOption = 'warm-beige' | 'soft-olive' | 'muted-terracotta' | 'slate-blue' | 'champagne-gold' | 'charcoal-grey';
 
@@ -197,6 +198,7 @@ const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = [
   'sapphire-oak-body-white-doors'
 ];
 const PLEXIGLASS_OPTIONS: PlexiglassOption[] = ['none', 'gold-mirror', 'silver-mirror'];
+const MOUNTING_OPTIONS: MountingOption[] = ['floor-standing', 'wall-mounted'];
 const ROOM_STYLE_OPTIONS: RoomStyleOption[] = ['minimalist', 'modern', 'classic', 'industrial'];
 const ACCENT_COLOR_OPTIONS: AccentColorOption[] = [
   'warm-beige',
@@ -625,6 +627,7 @@ export default function HomePage() {
   const [prompt, setPrompt] = useState('');
   const [selectedProductColor, setSelectedProductColor] = useState<ProductColorOption | ''>('');
   const [selectedPlexiglass, setSelectedPlexiglass] = useState<PlexiglassOption>('none');
+  const [selectedMounting, setSelectedMounting] = useState<MountingOption>('floor-standing');
   const [selectedRoomStyle, setSelectedRoomStyle] = useState<RoomStyleOption>('minimalist');
   const [selectedAccentColor, setSelectedAccentColor] = useState<AccentColorOption>('warm-beige');
   const [handleDescription, setHandleDescription] = useState('');
@@ -772,12 +775,20 @@ export default function HomePage() {
       buildCommercialCataloguePrompt({
         color: selectedProductColor,
         plexiglass: selectedPlexiglass,
+        mounting: selectedMounting,
         handle: handleDescription.trim() || DEFAULT_HANDLE_DESCRIPTION,
         roomStyle: selectedRoomStyle,
         accentColor: selectedAccentColor
       })
     );
-  }, [selectedProductColor, selectedPlexiglass, selectedRoomStyle, selectedAccentColor, handleDescription]);
+  }, [
+    selectedProductColor,
+    selectedPlexiglass,
+    selectedMounting,
+    selectedRoomStyle,
+    selectedAccentColor,
+    handleDescription
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -2231,6 +2242,18 @@ export default function HomePage() {
                   ))}
                 </select>
                 <select
+                  id="mounting-option"
+                  value={selectedMounting}
+                  onChange={(event) => setSelectedMounting(event.target.value as MountingOption)}
+                  aria-label={t('mountingPlaceholder')}
+                >
+                  {MOUNTING_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {t(`mountingOptions.${option}`)}
+                    </option>
+                  ))}
+                </select>
+                <select
                   id="room-style"
                   value={selectedRoomStyle}
                   onChange={(event) => setSelectedRoomStyle(event.target.value as RoomStyleOption)}
@@ -2274,6 +2297,7 @@ export default function HomePage() {
                     onClick={() => {
                       setSelectedProductColor('');
                       setSelectedPlexiglass('none');
+                      setSelectedMounting('floor-standing');
                       setSelectedAccentColor('warm-beige');
                       setHandleDescription('');
                       setPrompt(preset.prompt);
@@ -3268,12 +3292,17 @@ function getBatchPromptForReference(submittedPrompt: string, referenceIndex: num
 function buildCommercialCataloguePrompt(input: {
   color: ProductColorOption;
   plexiglass: PlexiglassOption;
+  mounting: MountingOption;
   handle: string;
   roomStyle: RoomStyleOption;
   accentColor: AccentColorOption;
 }): string {
   const productColorVariant = resolveProductColorVariantText(input.color);
   const decorativePlexiglass = resolvePlexiglassText(input.plexiglass);
+  const mountingType = resolveMountingTypeText(input.mounting);
+  const mountingPlacement = resolveMountingPlacementText(input.mounting);
+  const mountingVisibility = resolveMountingVisibilityText(input.mounting);
+  const mountingAvoid = resolveMountingAvoidText(input.mounting);
   const handleDesign = input.handle.trim() || DEFAULT_HANDLE_DESCRIPTION;
   const roomStyle = resolveRoomStyleDescription(input.roomStyle);
   const accentColor = resolveAccentColorText(input.accentColor);
@@ -3285,6 +3314,10 @@ Use the reference image strictly for the product’s geometry, proportions, cons
 Product color variant: ${productColorVariant}
 
 Decorative plexiglass option: ${decorativePlexiglass}
+
+Mounting / installation: ${mountingType}
+
+${mountingPlacement}
 
 Handle design and color: ${handleDesign}
 
@@ -3308,7 +3341,7 @@ Use decorative plexiglass only when the selected product option includes it. Do 
 
 Do not use glass anywhere on the furniture.
 
-Use a natural full-frame commercial photography look with an approximately 42 mm lens. Position the camera at human eye level, keep architectural vertical lines straight and avoid wide-angle distortion. Show the complete product clearly, including all legs, handles, doors and outer edges. Leave comfortable negative space around the product and create natural foreground, midground and background depth.
+Use a natural full-frame commercial photography look with an approximately 42 mm lens. Position the camera at human eye level, keep architectural vertical lines straight and avoid wide-angle distortion. Show the complete product clearly, including ${mountingVisibility}, handles, doors and outer edges. Leave comfortable negative space around the product and create natural foreground, midground and background depth.
 
 Illuminate the interior with soft, diffused skylight. Use portal lighting at the windows or openings to guide naturally reflected and surface-bounced daylight into the room. Allow the daylight to spread indirectly after reflecting from the walls, floor and surrounding surfaces, creating soft illumination, realistic ambient depth and a calm atmospheric effect.
 
@@ -3326,9 +3359,9 @@ Place the product in a professionally styled, premium neutral interior resemblin
 
 Include subtle realism through natural material variation, soft contact shadows and minor surface imperfections. Nothing should look overly smooth, artificial, distorted or factory-generated.
 
-Avoid incorrect proportions, changed door divisions, altered laser patterns, additional patterns, extra handles, detached handles, floating legs, thick circular ornaments, raised laser lines, automatic plexiglass additions, glass panels, plastic-looking surfaces, excessive reflections, texture stretching, oversaturated colors, harsh lighting, excessive bloom, strong vignette, rendering noise and unrealistic decoration.
+Avoid incorrect proportions, changed door divisions, altered laser patterns, additional patterns, extra handles, detached handles, ${mountingAvoid}, thick circular ornaments, raised laser lines, automatic plexiglass additions, glass panels, plastic-looking surfaces, excessive reflections, texture stretching, oversaturated colors, harsh lighting, excessive bloom, strong vignette, rendering noise and unrealistic decoration.
 
-The final image must resemble a professionally photographed premium furniture catalogue image, with accurate product geometry, clearly visible 1 mm recessed laser engraving, correct handle construction, optional flat mirror plexiglass details, natural indirect daylight and a refined atmospheric interior.`;
+The final image must resemble a professionally photographed premium furniture catalogue image, with accurate product geometry, clearly visible 1 mm recessed laser engraving, correct handle construction, correct ${mountingType.toLowerCase()} installation, optional flat mirror plexiglass details, natural indirect daylight and a refined atmospheric interior.`;
 }
 
 function resolveProductColorVariantText(color: ProductColorOption): string {
@@ -3354,6 +3387,42 @@ function resolvePlexiglassText(option: PlexiglassOption): string {
       return 'GOLD MIRROR PLEXIGLASS';
     case 'silver-mirror':
       return 'SILVER MIRROR PLEXIGLASS';
+  }
+}
+
+function resolveMountingTypeText(mounting: MountingOption): string {
+  switch (mounting) {
+    case 'floor-standing':
+      return 'FLOOR-STANDING WITH LEGS';
+    case 'wall-mounted':
+      return 'WALL-MOUNTED';
+  }
+}
+
+function resolveMountingPlacementText(mounting: MountingOption): string {
+  switch (mounting) {
+    case 'floor-standing':
+      return 'Installation: The product is freestanding / floor-standing on its own legs. All legs must rest firmly on the floor with realistic contact shadows. Do not mount the product on the wall. Do not hide, crop, or remove the legs.';
+    case 'wall-mounted':
+      return 'Installation: The product is wall-mounted, fixed flat against the wall at a realistic height. It must not rest on the floor and must not appear freestanding. Keep a clear gap between the product underside and the floor. Do not invent freestanding legs if the reference is wall-mounted.';
+  }
+}
+
+function resolveMountingVisibilityText(mounting: MountingOption): string {
+  switch (mounting) {
+    case 'floor-standing':
+      return 'all legs';
+    case 'wall-mounted':
+      return 'the full wall-mounted body and underside clearance';
+  }
+}
+
+function resolveMountingAvoidText(mounting: MountingOption): string {
+  switch (mounting) {
+    case 'floor-standing':
+      return 'floating legs, wall-mounted installation, missing legs, legs that do not touch the floor';
+    case 'wall-mounted':
+      return 'freestanding placement, floor-standing legs that rest on the floor, floating without wall attachment, incorrect wall height';
   }
 }
 
