@@ -660,8 +660,11 @@ async function runGeminiApiKeyBatch(
 }
 
 /**
- * Vertex Express Mode REST call — avoids project/location coupling that causes regional 404s.
- * @see https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/start/express-mode/overview
+ * Vertex Express / API-key image call.
+ * Express signup region (e.g. asia-southeast1) often 404s for flash-image models.
+ * Prefer the global endpoint when a project id is known; fall back to publishers path.
+ *
+ * @see https://docs.cloud.google.com/gemini-enterprise-agent-platform/resources/locations
  */
 async function generateVertexExpressImage(input: {
   apiKey: string;
@@ -671,7 +674,6 @@ async function generateVertexExpressImage(input: {
   aspectRatio: string;
   imageSize: string | undefined;
 }): Promise<BatchResult> {
-  const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(input.modelName)}:generateContent`;
   const parts: unknown[] = [{ text: input.promptVariant }];
   for (const ref of input.references) {
     parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
@@ -681,7 +683,6 @@ async function generateVertexExpressImage(input: {
     contents: [{ role: 'user', parts }],
     generationConfig: {
       responseModalities: ['IMAGE', 'TEXT'],
-      // Express / Vertex image config (aspect ratio when supported by the model).
       ...(input.aspectRatio || input.imageSize
         ? {
             imageConfig: {
@@ -693,32 +694,135 @@ async function generateVertexExpressImage(input: {
     }
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': input.apiKey
-    },
-    body: JSON.stringify(payload)
-  });
+  const projectId = await resolveVertexProjectIdForApiKey();
+  const modelCandidates = expandVertexImageModelAliases(input.modelName);
+  const urlCandidates: Array<{ label: string; url: string }> = [];
 
-  const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!response.ok) {
-    const errDetail = (data.error as Record<string, unknown> | undefined)?.message;
-    const errMsg =
-      firstStringValue([errDetail, data.message]) ?? `Vertex Express request failed (${response.status}) for model ${input.modelName}`;
-    throw new Error(`[${response.status}] ${String(errMsg)}`);
+  for (const candidateModel of modelCandidates) {
+    // 1) Global endpoint (required for many Gemini image models)
+    if (projectId) {
+      urlCandidates.push({
+        label: `global/${candidateModel}`,
+        url: buildVertexModelUrl(projectId, 'global', candidateModel, 'generateContent')
+      });
+    }
+    // 2) Classic Express publishers path (Google may still pin signup region)
+    urlCandidates.push({
+      label: `publishers/${candidateModel}`,
+      url: `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(candidateModel)}:generateContent`
+    });
   }
 
-  const extracted = extractVertexImageFromResponse(data);
-  if (!extracted) {
-    const textResponse = extractVertexTextFromResponse(data);
-    throw getNoImageReturnedError(
-      `Vertex Express returned no image for model ${input.modelName}.${textResponse ? ` Model said: "${textResponse.slice(0, 150)}"` : ''}`
-    );
+  const errors: string[] = [];
+  let discoveredProjectId = projectId;
+
+  for (const candidate of urlCandidates) {
+    console.error('[gemini-api-key] trying', candidate.label, candidate.url.replace(input.apiKey, '[redacted]'));
+
+    const response = await fetch(candidate.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': input.apiKey
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok) {
+      const errDetail = (data.error as Record<string, unknown> | undefined)?.message;
+      const errMsg =
+        firstStringValue([errDetail, data.message]) ??
+        `Vertex Express request failed (${response.status}) for ${candidate.label}`;
+      const full = `[${response.status}] ${String(errMsg)}`;
+      errors.push(`${candidate.label}: ${full}`);
+
+      // If Google expands the error with a project id, retry global with that project next.
+      const projectFromError = extractProjectIdFromText(full);
+      if (projectFromError && projectFromError !== discoveredProjectId) {
+        discoveredProjectId = projectFromError;
+        for (const candidateModel of modelCandidates) {
+          const globalUrl = buildVertexModelUrl(projectFromError, 'global', candidateModel, 'generateContent');
+          if (!urlCandidates.some((entry) => entry.url === globalUrl)) {
+            urlCandidates.push({ label: `global-from-error/${candidateModel}`, url: globalUrl });
+          }
+        }
+      }
+      continue;
+    }
+
+    const extracted = extractVertexImageFromResponse(data);
+    if (!extracted) {
+      const textResponse = extractVertexTextFromResponse(data);
+      errors.push(
+        `${candidate.label}: no image${textResponse ? ` (model text: "${textResponse.slice(0, 120)}")` : ''}`
+      );
+      continue;
+    }
+
+    return extracted;
   }
 
-  return extracted;
+  throw new Error(
+    `Vertex Express failed for model ${input.modelName}. ` +
+      `Flash-image models need locations/global (not regional signup locations like asia-southeast1). ` +
+      `Set GOOGLE_CLOUD_PROJECT or VERTEX_AI_PROJECT to your GCP project id/number, or use Auth Method = Service Account. ` +
+      `Attempts: ${errors.join(' || ')}`
+  );
+}
+
+/** Optional project id for API-key global endpoint (env or service-account JSON). */
+async function resolveVertexProjectIdForApiKey(): Promise<string | undefined> {
+  const fromEnv = (
+    process.env.GOOGLE_CLOUD_PROJECT ??
+    process.env.VERTEX_AI_PROJECT ??
+    process.env.GCLOUD_PROJECT ??
+    process.env.GCP_PROJECT
+  )?.trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+
+  try {
+    const credentialsPath = process.env.VERTEX_AI_CREDENTIALS_PATH;
+    const credentialsJson = process.env.VERTEX_AI_CREDENTIALS;
+    const credentialsBase64 = process.env.VERTEX_AI_CREDENTIALS_BASE64;
+    let credentialsText: string | undefined;
+    if (credentialsPath) {
+      credentialsText = await fs.readFile(credentialsPath, 'utf8');
+    } else if (credentialsBase64) {
+      credentialsText = Buffer.from(credentialsBase64, 'base64').toString('utf8');
+    } else if (credentialsJson) {
+      credentialsText = credentialsJson;
+    }
+    if (credentialsText) {
+      const credentials = JSON.parse(credentialsText) as { project_id?: string };
+      if (credentials.project_id?.trim()) {
+        return credentials.project_id.trim();
+      }
+    }
+  } catch {
+    // Optional — Express can still try publishers path.
+  }
+
+  return undefined;
+}
+
+function expandVertexImageModelAliases(modelName: string): string[] {
+  const names = [modelName];
+  // Some catalogs use -preview suffix; try both when requesting the stable id.
+  if (/^gemini-2\.5-flash-image$/i.test(modelName)) {
+    names.push('gemini-2.5-flash-image-preview');
+  }
+  if (/^gemini-2\.5-flash-image-preview$/i.test(modelName)) {
+    names.push('gemini-2.5-flash-image');
+  }
+  return [...new Set(names)];
+}
+
+function extractProjectIdFromText(text: string): string | null {
+  const match = text.match(/projects\/([a-zA-Z0-9-]+)\//);
+  return match?.[1] ?? null;
 }
 
 /** Vertex Express / Google Cloud API keys commonly start with "AQ." */
@@ -728,7 +832,7 @@ function isVertexExpressApiKey(apiKey: string): boolean {
 
 function modelRequiresGlobalVertexEndpoint(modelName: string): boolean {
   // Gemini 3 family + flash-image models are published on the global endpoint.
-  return /^(gemini-3|gemini-2\.5-flash-image)/i.test(modelName) || /image-preview/i.test(modelName);
+  return /^(gemini-3|gemini-2\.5-flash-image)/i.test(modelName) || /image-preview|flash-image/i.test(modelName);
 }
 
 function resolveVertexServiceAccountLocation(modelName: string): string {
@@ -746,9 +850,9 @@ function resolveVertexServiceAccountLocation(modelName: string): string {
 
 function buildVertexModelUrl(projectId: string, location: string, modelName: string, apiEndpoint: string): string {
   if (location.toLowerCase() === 'global') {
-    return `https://aiplatform.googleapis.com/v1/projects/${projectId}/locations/global/publishers/google/models/${modelName}:${apiEndpoint}`;
+    return `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/locations/global/publishers/google/models/${encodeURIComponent(modelName)}:${apiEndpoint}`;
   }
-  return `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelName}:${apiEndpoint}`;
+  return `https://${location}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/publishers/google/models/${encodeURIComponent(modelName)}:${apiEndpoint}`;
 }
 
 function formatApiKeyAuthError(error: unknown, usedVertexExpress: boolean, modelName: string): string {
