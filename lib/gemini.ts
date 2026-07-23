@@ -661,10 +661,10 @@ async function runGeminiApiKeyBatch(
 
 /**
  * Vertex Express / API-key image call.
- * Express signup region (e.g. asia-southeast1) often 404s for flash-image models.
- * Prefer the global endpoint when a project id is known; fall back to publishers path.
  *
- * @see https://docs.cloud.google.com/gemini-enterprise-agent-platform/resources/locations
+ * Important: Express API keys belong to the Express project (e.g. numeric 7465…).
+ * Do NOT send them against the service-account project (e.g. free-494923) — that yields 403.
+ * Flash-image models require locations/global; regional signup locations (asia-southeast1) 404.
  */
 async function generateVertexExpressImage(input: {
   apiKey: string;
@@ -694,32 +694,20 @@ async function generateVertexExpressImage(input: {
     }
   };
 
-  const projectId = await resolveVertexProjectIdForApiKey();
+  // Only env / Express-specific project — never service-account project_id (different GCP project).
+  let expressProjectId = resolveExpressProjectIdFromEnv();
   const modelCandidates = expandVertexImageModelAliases(input.modelName);
-  const urlCandidates: Array<{ label: string; url: string }> = [];
-
-  for (const candidateModel of modelCandidates) {
-    // 1) Global endpoint (required for many Gemini image models)
-    if (projectId) {
-      urlCandidates.push({
-        label: `global/${candidateModel}`,
-        url: buildVertexModelUrl(projectId, 'global', candidateModel, 'generateContent')
-      });
-    }
-    // 2) Classic Express publishers path (Google may still pin signup region)
-    urlCandidates.push({
-      label: `publishers/${candidateModel}`,
-      url: `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(candidateModel)}:generateContent`
-    });
-  }
-
   const errors: string[] = [];
-  let discoveredProjectId = projectId;
+  const triedUrls = new Set<string>();
 
-  for (const candidate of urlCandidates) {
-    console.error('[gemini-api-key] trying', candidate.label, candidate.url.replace(input.apiKey, '[redacted]'));
+  const tryUrl = async (label: string, url: string): Promise<BatchResult | null> => {
+    if (triedUrls.has(url)) {
+      return null;
+    }
+    triedUrls.add(url);
+    console.error('[gemini-api-key] trying', label);
 
-    const response = await fetch(candidate.url, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -733,88 +721,100 @@ async function generateVertexExpressImage(input: {
       const errDetail = (data.error as Record<string, unknown> | undefined)?.message;
       const errMsg =
         firstStringValue([errDetail, data.message]) ??
-        `Vertex Express request failed (${response.status}) for ${candidate.label}`;
+        `Vertex Express request failed (${response.status}) for ${label}`;
       const full = `[${response.status}] ${String(errMsg)}`;
-      errors.push(`${candidate.label}: ${full}`);
+      errors.push(`${label}: ${full}`);
 
-      // If Google expands the error with a project id, retry global with that project next.
-      const projectFromError = extractProjectIdFromText(full);
-      if (projectFromError && projectFromError !== discoveredProjectId) {
-        discoveredProjectId = projectFromError;
-        for (const candidateModel of modelCandidates) {
-          const globalUrl = buildVertexModelUrl(projectFromError, 'global', candidateModel, 'generateContent');
-          if (!urlCandidates.some((entry) => entry.url === globalUrl)) {
-            urlCandidates.push({ label: `global-from-error/${candidateModel}`, url: globalUrl });
-          }
-        }
+      // Quota exhausted — fail fast (retrying aliases only wastes quota).
+      if (response.status === 429 || /resource has been exhausted|quota/i.test(full)) {
+        throw new Error(
+          `[429] Vertex Express quota exhausted for model ${input.modelName} ` +
+            `(project ${expressProjectId ?? extractProjectIdFromText(full) ?? 'unknown'}). ` +
+            `Wait for quota reset, reduce count/parallelism, or switch Auth Method to Service Account ` +
+            `(service account project free-494923 / your paid Vertex project).`
+        );
       }
-      continue;
+
+      const projectFromError = extractProjectIdFromText(full);
+      if (projectFromError && !expressProjectId) {
+        expressProjectId = projectFromError;
+        console.error('[gemini-api-key] discovered Express project from error:', expressProjectId);
+      }
+      return null;
     }
 
     const extracted = extractVertexImageFromResponse(data);
     if (!extracted) {
       const textResponse = extractVertexTextFromResponse(data);
       errors.push(
-        `${candidate.label}: no image${textResponse ? ` (model text: "${textResponse.slice(0, 120)}")` : ''}`
+        `${label}: no image${textResponse ? ` (model text: "${textResponse.slice(0, 120)}")` : ''}`
       );
-      continue;
+      return null;
     }
-
     return extracted;
+  };
+
+  // 1) If we already know Express project, hit global first (correct region for flash-image).
+  if (expressProjectId) {
+    for (const candidateModel of modelCandidates) {
+      const hit = await tryUrl(
+        `global/${expressProjectId}/${candidateModel}`,
+        buildVertexModelUrl(expressProjectId, 'global', candidateModel, 'generateContent')
+      );
+      if (hit) return hit;
+    }
+  }
+
+  // 2) Publishers path — usually 404 in signup region but reveals Express project number.
+  for (const candidateModel of modelCandidates) {
+    const hit = await tryUrl(
+      `publishers/${candidateModel}`,
+      `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(candidateModel)}:generateContent`
+    );
+    if (hit) return hit;
+  }
+
+  // 3) After discovery, global with Express project (not SA project).
+  if (expressProjectId) {
+    for (const candidateModel of modelCandidates) {
+      const hit = await tryUrl(
+        `global-discovered/${expressProjectId}/${candidateModel}`,
+        buildVertexModelUrl(expressProjectId, 'global', candidateModel, 'generateContent')
+      );
+      if (hit) return hit;
+    }
   }
 
   throw new Error(
     `Vertex Express failed for model ${input.modelName}. ` +
-      `Flash-image models need locations/global (not regional signup locations like asia-southeast1). ` +
-      `Set GOOGLE_CLOUD_PROJECT or VERTEX_AI_PROJECT to your GCP project id/number, or use Auth Method = Service Account. ` +
+      `Use the Express project id (from the API key / 404 path, e.g. 746556696967) via VERTEX_EXPRESS_PROJECT ` +
+      `or GOOGLE_CLOUD_PROJECT — do not point the API key at the service-account project (free-494923). ` +
+      `If you see 429, Express quota is exhausted: wait or switch Auth Method to Service Account. ` +
       `Attempts: ${errors.join(' || ')}`
   );
 }
 
-/** Optional project id for API-key global endpoint (env or service-account JSON). */
-async function resolveVertexProjectIdForApiKey(): Promise<string | undefined> {
+/**
+ * Express project id/number for API-key global calls.
+ * Never read service-account JSON here — that project is for SA auth only.
+ */
+function resolveExpressProjectIdFromEnv(): string | undefined {
   const fromEnv = (
+    process.env.VERTEX_EXPRESS_PROJECT ??
     process.env.GOOGLE_CLOUD_PROJECT ??
     process.env.VERTEX_AI_PROJECT ??
     process.env.GCLOUD_PROJECT ??
     process.env.GCP_PROJECT
   )?.trim();
-  if (fromEnv) {
-    return fromEnv;
-  }
-
-  try {
-    const credentialsPath = process.env.VERTEX_AI_CREDENTIALS_PATH;
-    const credentialsJson = process.env.VERTEX_AI_CREDENTIALS;
-    const credentialsBase64 = process.env.VERTEX_AI_CREDENTIALS_BASE64;
-    let credentialsText: string | undefined;
-    if (credentialsPath) {
-      credentialsText = await fs.readFile(credentialsPath, 'utf8');
-    } else if (credentialsBase64) {
-      credentialsText = Buffer.from(credentialsBase64, 'base64').toString('utf8');
-    } else if (credentialsJson) {
-      credentialsText = credentialsJson;
-    }
-    if (credentialsText) {
-      const credentials = JSON.parse(credentialsText) as { project_id?: string };
-      if (credentials.project_id?.trim()) {
-        return credentials.project_id.trim();
-      }
-    }
-  } catch {
-    // Optional — Express can still try publishers path.
-  }
-
-  return undefined;
+  return fromEnv || undefined;
 }
 
 function expandVertexImageModelAliases(modelName: string): string[] {
+  // Prefer the requested id only first; add preview alias as secondary.
   const names = [modelName];
-  // Some catalogs use -preview suffix; try both when requesting the stable id.
   if (/^gemini-2\.5-flash-image$/i.test(modelName)) {
     names.push('gemini-2.5-flash-image-preview');
-  }
-  if (/^gemini-2\.5-flash-image-preview$/i.test(modelName)) {
+  } else if (/^gemini-2\.5-flash-image-preview$/i.test(modelName)) {
     names.push('gemini-2.5-flash-image');
   }
   return [...new Set(names)];
@@ -858,6 +858,12 @@ function buildVertexModelUrl(projectId: string, location: string, modelName: str
 function formatApiKeyAuthError(error: unknown, usedVertexExpress: boolean, modelName: string): string {
   const raw = formatError(error);
   const modelHint = `Requested model: ${modelName}.`;
+  if (/429|resource has been exhausted|quota/i.test(raw)) {
+    return (
+      `${raw} | ${modelHint} Express/API-key quota is exhausted. Wait for reset, lower count, ` +
+      `or switch Auth Method to Service Account (uses free-494923 / your Vertex SA project).`
+    );
+  }
   if (/generativelanguage\.googleapis\.com|SERVICE_DISABLED|Gemini API has not been used/i.test(raw)) {
     return (
       `${raw} | ${modelHint} Hint: Gemini Developer API (AI Studio) permission error. ` +
@@ -865,19 +871,24 @@ function formatApiKeyAuthError(error: unknown, usedVertexExpress: boolean, model
       `For AI Studio keys (AIza…), enable Gemini API, or switch Auth Method to Service Account.`
     );
   }
-  if (/404|NOT_FOUND|was not found or your project does not have access/i.test(raw)) {
-    const threeOne = /gemini-3\.1|image-preview/i.test(modelName);
+  if (/free-494923|Permission 'aiplatform.endpoints.predict' denied/i.test(raw)) {
     return (
-      `${raw} | ${modelHint} Hint: model not found or not enabled for this key/project` +
-      (threeOne
-        ? '. Free/Express tiers often block Gemini 3.1 image — switch to vertex/gemini-2.5-flash-image.'
-        : '. Try Auth Method = Service Account, or confirm the model ID is available for your key (Express free tier model list).')
+      `${raw} | ${modelHint} Hint: API key was pointed at the service-account project. ` +
+      `Set VERTEX_EXPRESS_PROJECT to the Express project number (e.g. 746556696967), ` +
+      `or use Auth Method = Service Account with the free-494923 credentials.`
+    );
+  }
+  if (/404|NOT_FOUND|was not found or your project does not have access/i.test(raw)) {
+    return (
+      `${raw} | ${modelHint} Hint: model missing in this region/project. ` +
+      `Express signup regions (asia-southeast1) often 404 flash-image — need locations/global + Express project id. ` +
+      `Or switch to Service Account.`
     );
   }
   if (/PERMISSION_DENIED|not available|not allowed|403/i.test(raw)) {
     return (
-      `${raw} | ${modelHint} Hint: no access to this model with current credentials. ` +
-      `Prefer vertex/gemini-2.5-flash-image + Service Account on free tiers.`
+      `${raw} | ${modelHint} Hint: no access with current credentials. ` +
+      `API Key → VERTEX_EXPRESS_PROJECT=<express project number>. SA → Vertex AI User on free-494923.`
     );
   }
   if (!usedVertexExpress && /^\[403\]/i.test(raw)) {
