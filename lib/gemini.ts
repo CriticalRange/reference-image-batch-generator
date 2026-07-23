@@ -162,12 +162,66 @@ function parseMaxResponseBytes(): number {
 
 function formatError(error: unknown): string {
   if (error instanceof Error) {
-    const maybeApiError = error as Error & { status?: number; details?: unknown };
-    const statusPrefix = maybeApiError.status ? `[${maybeApiError.status}] ` : '';
-    return `${statusPrefix}${error.message}`.trim();
+    const maybeApiError = error as Error & { status?: number; code?: number | string; details?: unknown; error?: unknown };
+    const status = maybeApiError.status ?? maybeApiError.code;
+    const statusPrefix = status !== undefined && status !== '' ? `[${status}] ` : '';
+    const nestedMessage = extractNestedErrorMessage(error);
+    const message = nestedMessage || error.message;
+    return `${statusPrefix}${message}`.trim();
+  }
+
+  if (error && typeof error === 'object') {
+    const nestedMessage = extractNestedErrorMessage(error);
+    if (nestedMessage) {
+      return nestedMessage;
+    }
   }
 
   return String(error);
+}
+
+function extractNestedErrorMessage(value: unknown): string | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const direct = firstStringValue([record.message, record.statusText]);
+  if (direct && !/^\[?\d+\]?$/.test(direct.trim())) {
+    // Prefer real messages over bare status codes like "404"
+    if (!/^\[0:\s*\d+\]/.test(direct)) {
+      const asError = record.error;
+      if (asError && typeof asError === 'object') {
+        const nested = extractNestedErrorMessage(asError);
+        if (nested) return nested;
+      }
+      if (direct.length > 8) {
+        return direct;
+      }
+    }
+  }
+
+  if (record.error && typeof record.error === 'object') {
+    const nested = extractNestedErrorMessage(record.error);
+    if (nested) return nested;
+  }
+
+  if (Array.isArray(record.details)) {
+    for (const detail of record.details) {
+      const nested = extractNestedErrorMessage(detail);
+      if (nested) return nested;
+    }
+  }
+
+  // @google/genai sometimes stringifies as "[0: 404]\n{\nerror: {…}\n}"
+  if (typeof record.message === 'string') {
+    const match = record.message.match(/"message"\s*:\s*"([^"]+)"/);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return typeof record.message === 'string' ? record.message : null;
 }
 
 function isTogetherUnsupportedStepsError(error: unknown): boolean {
@@ -511,11 +565,9 @@ function extractAllImagenVertexImagesFromResponse(response: Record<string, unkno
 /**
  * Generate via API key auth for Vertex-listed models.
  *
- * - Vertex Express keys (AQ.…): `new GoogleGenAI({ vertexai: true, apiKey })`
- *   Note: SDK forbids passing project/location together with apiKey.
+ * - Vertex Express keys (AQ.…): REST Express Mode URL (no project/location).
+ *   https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent?key=...
  * - AI Studio keys (AIza…): Gemini Developer API via `new GoogleGenAI({ apiKey })`
- *
- * Free-tier / Express accounts often only allow Gemini 2.5 Flash Image (not 3.1).
  */
 async function runGeminiApiKeyBatch(
   model: string,
@@ -539,17 +591,12 @@ async function runGeminiApiKeyBatch(
     );
   }
 
-  // Express keys: vertexai + apiKey only (no project/location — SDK rejects that combo).
-  // AI Studio keys: plain apiKey → Gemini Developer API.
   const useVertexExpress = isVertexExpressApiKey(apiKey);
-  const ai = useVertexExpress
-    ? new GoogleGenAI({ vertexai: true, apiKey })
-    : new GoogleGenAI({ apiKey });
   const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
 
   console.error('[gemini-api-key] runGeminiApiKeyBatch:', {
     model: modelName,
-    mode: useVertexExpress ? 'vertex-express' : 'gemini-developer-api',
+    mode: useVertexExpress ? 'vertex-express-rest' : 'gemini-developer-api',
     referenceCount: references.length,
     promptCount: prompts.length,
     aspectRatio,
@@ -559,6 +606,20 @@ async function runGeminiApiKeyBatch(
   const jobs = prompts.map((promptVariant) => {
     return async () => {
       try {
+        if (useVertexExpress) {
+          const extracted = await generateVertexExpressImage({
+            apiKey,
+            modelName,
+            promptVariant,
+            references,
+            aspectRatio,
+            imageSize
+          });
+          const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
+          return { ...processed, promptVariant } satisfies BatchResult;
+        }
+
+        const ai = new GoogleGenAI({ apiKey });
         const response = await ai.models.generateContent({
           model: modelName,
           contents: [
@@ -589,7 +650,7 @@ async function runGeminiApiKeyBatch(
         const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
         return { ...processed, promptVariant } satisfies BatchResult;
       } catch (error) {
-        throw new Error(formatApiKeyAuthError(error, useVertexExpress));
+        throw new Error(formatApiKeyAuthError(error, useVertexExpress, modelName));
       }
     };
   });
@@ -598,30 +659,127 @@ async function runGeminiApiKeyBatch(
   return buildBatchOutput(model, requestedCount, prompts, settled);
 }
 
+/**
+ * Vertex Express Mode REST call — avoids project/location coupling that causes regional 404s.
+ * @see https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/start/express-mode/overview
+ */
+async function generateVertexExpressImage(input: {
+  apiKey: string;
+  modelName: string;
+  promptVariant: string;
+  references: Array<{ base64: string; mimeType: string }>;
+  aspectRatio: string;
+  imageSize: string | undefined;
+}): Promise<BatchResult> {
+  const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(input.modelName)}:generateContent`;
+  const parts: unknown[] = [{ text: input.promptVariant }];
+  for (const ref of input.references) {
+    parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
+  }
+
+  const payload: Record<string, unknown> = {
+    contents: [{ role: 'user', parts }],
+    generationConfig: {
+      responseModalities: ['IMAGE', 'TEXT'],
+      // Express / Vertex image config (aspect ratio when supported by the model).
+      ...(input.aspectRatio || input.imageSize
+        ? {
+            imageConfig: {
+              ...(input.aspectRatio ? { aspectRatio: input.aspectRatio } : {}),
+              ...(input.imageSize ? { imageSize: input.imageSize } : {})
+            }
+          }
+        : {})
+    }
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': input.apiKey
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!response.ok) {
+    const errDetail = (data.error as Record<string, unknown> | undefined)?.message;
+    const errMsg =
+      firstStringValue([errDetail, data.message]) ?? `Vertex Express request failed (${response.status}) for model ${input.modelName}`;
+    throw new Error(`[${response.status}] ${String(errMsg)}`);
+  }
+
+  const extracted = extractVertexImageFromResponse(data);
+  if (!extracted) {
+    const textResponse = extractVertexTextFromResponse(data);
+    throw getNoImageReturnedError(
+      `Vertex Express returned no image for model ${input.modelName}.${textResponse ? ` Model said: "${textResponse.slice(0, 150)}"` : ''}`
+    );
+  }
+
+  return extracted;
+}
+
 /** Vertex Express / Google Cloud API keys commonly start with "AQ." */
 function isVertexExpressApiKey(apiKey: string): boolean {
   return /^AQ\./i.test(apiKey.trim());
 }
 
-function formatApiKeyAuthError(error: unknown, usedVertexExpress: boolean): string {
+function modelRequiresGlobalVertexEndpoint(modelName: string): boolean {
+  // Gemini 3 family + flash-image models are published on the global endpoint.
+  return /^(gemini-3|gemini-2\.5-flash-image)/i.test(modelName) || /image-preview/i.test(modelName);
+}
+
+function resolveVertexServiceAccountLocation(modelName: string): string {
+  const configured = (process.env.VERTEX_AI_REGION ?? process.env.GOOGLE_CLOUD_LOCATION ?? '').trim();
+  if (modelRequiresGlobalVertexEndpoint(modelName)) {
+    if (configured && configured.toLowerCase() !== 'global') {
+      console.error(
+        `[vertex] model "${modelName}" requires the global endpoint; overriding VERTEX_AI_REGION="${configured}" → "global"`
+      );
+    }
+    return 'global';
+  }
+  return configured || 'us-central1';
+}
+
+function buildVertexModelUrl(projectId: string, location: string, modelName: string, apiEndpoint: string): string {
+  if (location.toLowerCase() === 'global') {
+    return `https://aiplatform.googleapis.com/v1/projects/${projectId}/locations/global/publishers/google/models/${modelName}:${apiEndpoint}`;
+  }
+  return `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelName}:${apiEndpoint}`;
+}
+
+function formatApiKeyAuthError(error: unknown, usedVertexExpress: boolean, modelName: string): string {
   const raw = formatError(error);
+  const modelHint = `Requested model: ${modelName}.`;
   if (/generativelanguage\.googleapis\.com|SERVICE_DISABLED|Gemini API has not been used/i.test(raw)) {
     return (
-      `${raw} | Hint: this looks like a Gemini Developer API (AI Studio) permission error. ` +
-      `If your key is a Vertex Express key (AQ.…), ensure the app uses vertexai:true. ` +
-      `If it is an AI Studio key (AIza…), enable Gemini API for that project, or use Service Account auth.`
+      `${raw} | ${modelHint} Hint: Gemini Developer API (AI Studio) permission error. ` +
+      `For Vertex Express keys (AQ.…) the app uses Express REST. ` +
+      `For AI Studio keys (AIza…), enable Gemini API, or switch Auth Method to Service Account.`
     );
   }
-  if (/NOT_FOUND|was not found or your project does not have access|PERMISSION_DENIED|not available|not allowed/i.test(raw)) {
+  if (/404|NOT_FOUND|was not found or your project does not have access/i.test(raw)) {
+    const threeOne = /gemini-3\.1|image-preview/i.test(modelName);
     return (
-      `${raw} | Hint: free / Express tiers often cannot use Gemini 3.1 image models. ` +
-      `Use vertex/gemini-2.5-flash-image instead.`
+      `${raw} | ${modelHint} Hint: model not found or not enabled for this key/project` +
+      (threeOne
+        ? '. Free/Express tiers often block Gemini 3.1 image — switch to vertex/gemini-2.5-flash-image.'
+        : '. Try Auth Method = Service Account, or confirm the model ID is available for your key (Express free tier model list).')
+    );
+  }
+  if (/PERMISSION_DENIED|not available|not allowed|403/i.test(raw)) {
+    return (
+      `${raw} | ${modelHint} Hint: no access to this model with current credentials. ` +
+      `Prefer vertex/gemini-2.5-flash-image + Service Account on free tiers.`
     );
   }
   if (!usedVertexExpress && /^\[403\]/i.test(raw)) {
-    return `${raw} | Hint: for Vertex Express API keys use GEMINI_API_KEY from Google Cloud express mode (AQ.…).`;
+    return `${raw} | ${modelHint} Hint: for Vertex Express API keys use a Google Cloud express mode key (AQ.…).`;
   }
-  return raw;
+  return `${raw} | ${modelHint}`;
 }
 
 async function runVertexBatch(
@@ -633,17 +791,18 @@ async function runVertexBatch(
   aiUpscale: number
 ): Promise<BatchOutput> {
   const { token, projectId } = await getVertexAccessToken();
-  const region = process.env.VERTEX_AI_REGION ?? 'us-central1';
   const modelName = model.replace(VERTEX_MODEL_PATTERN, '');
+  const region = resolveVertexServiceAccountLocation(modelName);
   const useImagenApi = isVertexImagenModel(modelName);
   const apiEndpoint = useImagenApi ? 'predict' : 'generateContent';
-  const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${modelName}:${apiEndpoint}`;
+  const url = buildVertexModelUrl(projectId, region, modelName, apiEndpoint);
 
   console.error('[vertex] runVertexBatch:', {
     model: modelName,
     region,
     projectId,
     endpoint: apiEndpoint,
+    urlHost: new URL(url).host,
     referenceCount: references.length,
     referenceSizesKb: references.map(r => (r.base64.length / 1024).toFixed(1)),
     promptCount: prompts.length,
@@ -680,7 +839,7 @@ async function runVertexBatch(
         if (!response.ok) {
           const errDetail = (data.error as Record<string, unknown> | undefined)?.message;
           const errMsg = firstStringValue([errDetail, data.message]) ?? `Vertex AI request failed (${response.status})`;
-          throw new Error(String(errMsg));
+          throw new Error(`[${response.status}] ${String(errMsg)} (model=${modelName}, location=${region})`);
         }
 
         const extracted = extractAllImagenVertexImagesFromResponse(data);
@@ -758,7 +917,7 @@ async function runVertexBatch(
       if (!response.ok) {
         const errDetail = (data.error as Record<string, unknown> | undefined)?.message;
         const errMsg = firstStringValue([errDetail, data.message]) ?? `Vertex AI request failed (${response.status})`;
-        throw new Error(String(errMsg));
+        throw new Error(`[${response.status}] ${String(errMsg)} (model=${modelName}, location=${region})`);
       }
 
       const extracted = extractVertexImageFromResponse(data);
@@ -766,6 +925,8 @@ async function runVertexBatch(
         const textResponse = extractVertexTextFromResponse(data);
         console.error('[vertex] no image in response:', {
           status: response.status,
+          model: modelName,
+          location: region,
           hasTextResponse: !!textResponse,
           textPreview: textResponse?.substring(0, 200),
           responseKeys: Object.keys(data),
