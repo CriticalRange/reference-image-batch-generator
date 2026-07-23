@@ -141,9 +141,15 @@ type ResolutionOption =  | '512'
   | '1344x768'
   | '1536x672';
 type ResizePresetOption = 'none' | '2000x3000' | '1536x2048' | '1696x2528' | '2048x2048' | 'custom';
-type ProductTypeOption = 'console' | 'dressing-table' | 'tv-dressing-table' | 'tv-shelf';
-type ProductColorOption = 'travertine' | 'anthracite' | 'white' | 'sapphire-oak';
+type ProductColorOption =
+  | 'white'
+  | 'white-body-travertine-doors'
+  | 'anthracite'
+  | 'anthracite-body-travertine-doors'
+  | 'sapphire-oak-body-white-doors';
+type PlexiglassOption = 'none' | 'gold-mirror' | 'silver-mirror';
 type RoomStyleOption = 'minimalist' | 'modern' | 'classic' | 'industrial';
+type AccentColorOption = 'warm-beige' | 'soft-olive' | 'muted-terracotta' | 'slate-blue' | 'champagne-gold' | 'charcoal-grey';
 
 const DEFAULT_COUNT = 1;
 const DEFAULT_BATCH_RATE_LIMIT_SEC = 120;
@@ -183,9 +189,25 @@ const TOGETHER_RESOLUTION_OPTIONS: ResolutionOption[] = [
 ];
 const ALL_RESOLUTION_OPTIONS: ResolutionOption[] = [...RESOLUTION_OPTIONS, ...TOGETHER_RESOLUTION_OPTIONS];
 const RESIZE_PRESET_OPTIONS: Array<Exclude<ResizePresetOption, 'custom'>> = ['none', '2000x3000', '1536x2048', '1696x2528', '2048x2048'];
-const PRODUCT_TYPE_OPTIONS: ProductTypeOption[] = ['console', 'dressing-table', 'tv-dressing-table', 'tv-shelf'];
-const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = ['travertine', 'anthracite', 'white', 'sapphire-oak'];
+const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = [
+  'white',
+  'white-body-travertine-doors',
+  'anthracite',
+  'anthracite-body-travertine-doors',
+  'sapphire-oak-body-white-doors'
+];
+const PLEXIGLASS_OPTIONS: PlexiglassOption[] = ['none', 'gold-mirror', 'silver-mirror'];
 const ROOM_STYLE_OPTIONS: RoomStyleOption[] = ['minimalist', 'modern', 'classic', 'industrial'];
+const ACCENT_COLOR_OPTIONS: AccentColorOption[] = [
+  'warm-beige',
+  'soft-olive',
+  'muted-terracotta',
+  'slate-blue',
+  'champagne-gold',
+  'charcoal-grey'
+];
+const DEFAULT_HANDLE_DESCRIPTION =
+  'Match the handle design, scale, finish and mounting position exactly as shown in the product reference.';
 const ALLOWED_REFERENCE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
 const BATCH_PROMPT_PRESETS = [
   {
@@ -601,9 +623,11 @@ const INITIAL_MODEL_OPTIONS = sortModelOptions(
 export default function HomePage() {
   const { t, i18n } = useTranslation();
   const [prompt, setPrompt] = useState('');
-  const [selectedProductType, setSelectedProductType] = useState<ProductTypeOption | ''>('');
   const [selectedProductColor, setSelectedProductColor] = useState<ProductColorOption | ''>('');
+  const [selectedPlexiglass, setSelectedPlexiglass] = useState<PlexiglassOption>('none');
   const [selectedRoomStyle, setSelectedRoomStyle] = useState<RoomStyleOption>('minimalist');
+  const [selectedAccentColor, setSelectedAccentColor] = useState<AccentColorOption>('warm-beige');
+  const [handleDescription, setHandleDescription] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
   const [count, setCount] = useState(DEFAULT_COUNT);
   const [countInput, setCountInput] = useState(String(DEFAULT_COUNT));
@@ -739,12 +763,21 @@ export default function HomePage() {
   }, [prompt, isLoading, countError, resizeWidthError, resizeHeightError, batchRateLimitError]);
 
   useEffect(() => {
-    if (!selectedProductType || !selectedProductColor) {
+    // Selecting product options overwrites the base prompt with the commercial catalogue template.
+    if (!selectedProductColor) {
       return;
     }
 
-    setPrompt(buildPresetPrompt(selectedProductType, selectedProductColor, selectedRoomStyle));
-  }, [selectedProductColor, selectedProductType, selectedRoomStyle]);
+    setPrompt(
+      buildCommercialCataloguePrompt({
+        color: selectedProductColor,
+        plexiglass: selectedPlexiglass,
+        handle: handleDescription.trim() || DEFAULT_HANDLE_DESCRIPTION,
+        roomStyle: selectedRoomStyle,
+        accentColor: selectedAccentColor
+      })
+    );
+  }, [selectedProductColor, selectedPlexiglass, selectedRoomStyle, selectedAccentColor, handleDescription]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -2171,23 +2204,12 @@ export default function HomePage() {
                 <span>{t('basePrompt')}</span>
                 <InfoHint text={t('fieldInfo.basePrompt')} />
               </span>
-              <div className="inline-select-grid">
-                <select
-                  id="product-type"
-                  value={selectedProductType}
-                  onChange={(event) => setSelectedProductType(event.target.value as ProductTypeOption | '')}
-                >
-                  <option value="">{t('productTypePlaceholder')}</option>
-                  {PRODUCT_TYPE_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {t(`productTypeOptions.${option}`)}
-                    </option>
-                  ))}
-                </select>
+              <div className="inline-select-grid product-option-grid">
                 <select
                   id="product-color"
                   value={selectedProductColor}
                   onChange={(event) => setSelectedProductColor(event.target.value as ProductColorOption | '')}
+                  aria-label={t('productColorPlaceholder')}
                 >
                   <option value="">{t('productColorPlaceholder')}</option>
                   {PRODUCT_COLOR_OPTIONS.map((option) => (
@@ -2197,9 +2219,22 @@ export default function HomePage() {
                   ))}
                 </select>
                 <select
+                  id="plexiglass-option"
+                  value={selectedPlexiglass}
+                  onChange={(event) => setSelectedPlexiglass(event.target.value as PlexiglassOption)}
+                  aria-label={t('plexiglassPlaceholder')}
+                >
+                  {PLEXIGLASS_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {t(`plexiglassOptions.${option}`)}
+                    </option>
+                  ))}
+                </select>
+                <select
                   id="room-style"
                   value={selectedRoomStyle}
                   onChange={(event) => setSelectedRoomStyle(event.target.value as RoomStyleOption)}
+                  aria-label={t('roomStylePlaceholder')}
                 >
                   {ROOM_STYLE_OPTIONS.map((option) => (
                     <option key={option} value={option}>
@@ -2207,7 +2242,29 @@ export default function HomePage() {
                     </option>
                   ))}
                 </select>
+                <select
+                  id="accent-color"
+                  value={selectedAccentColor}
+                  onChange={(event) => setSelectedAccentColor(event.target.value as AccentColorOption)}
+                  aria-label={t('accentColorPlaceholder')}
+                >
+                  {ACCENT_COLOR_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {t(`accentColorOptions.${option}`)}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  id="handle-description"
+                  type="text"
+                  className="product-handle-input"
+                  value={handleDescription}
+                  onChange={(event) => setHandleDescription(event.target.value)}
+                  placeholder={t('handlePlaceholder')}
+                  aria-label={t('handlePlaceholder')}
+                />
               </div>
+              <p className="reference-note">{t('productOptionsPromptHint')}</p>
               <div className="prompt-preset-row">
                 {BATCH_PROMPT_PRESETS.map((preset) => (
                   <button
@@ -2215,8 +2272,10 @@ export default function HomePage() {
                     type="button"
                     className="prompt-preset-btn"
                     onClick={() => {
-                      setSelectedProductType('');
                       setSelectedProductColor('');
+                      setSelectedPlexiglass('none');
+                      setSelectedAccentColor('warm-beige');
+                      setHandleDescription('');
                       setPrompt(preset.prompt);
                     }}
                   >
@@ -3206,75 +3265,125 @@ function getBatchPromptForReference(submittedPrompt: string, referenceIndex: num
   return BATCH_PROMPT_ROTATION[(selectedPresetIndex + referenceIndex) % BATCH_PROMPT_ROTATION.length];
 }
 
-function buildPresetPrompt(type: ProductTypeOption, color: ProductColorOption, scene: RoomStyleOption): string {
-  const colorText = resolveProductColorText(color);
-  const productText = resolveProductTypeText(type);
-  const topElementText = resolveTopElementText(type);
-  const stylingText = resolveStylingText(type);
-  const sceneText = resolveSceneText(scene);
+function buildCommercialCataloguePrompt(input: {
+  color: ProductColorOption;
+  plexiglass: PlexiglassOption;
+  handle: string;
+  roomStyle: RoomStyleOption;
+  accentColor: AccentColorOption;
+}): string {
+  const productColorVariant = resolveProductColorVariantText(input.color);
+  const decorativePlexiglass = resolvePlexiglassText(input.plexiglass);
+  const handleDesign = input.handle.trim() || DEFAULT_HANDLE_DESCRIPTION;
+  const roomStyle = resolveRoomStyleDescription(input.roomStyle);
+  const accentColor = resolveAccentColorText(input.accentColor);
 
-  return `A professional e-commerce product photography of a wall-mounted ${colorText} ${productText} with ${topElementText}. The ${productText} is mounted on a clean, minimalist wall. Only the plexiglass must show realistic, crisp reflections of the surroundings. The ${productText} remains exactly as designed with its original hardware and laser-etched line details from the reference image. ${stylingText} The floor features a rug of any kind. ${sceneText}`;
+  return `Create a photorealistic, high-end commercial interior image featuring the provided furniture product.
+
+Use the reference image strictly for the product’s geometry, proportions, construction and decorative placement. Preserve the original body dimensions, door count, panel divisions, top surface, legs, handles, laser patterns and all pattern positions exactly as shown. Do not redesign, simplify, reinterpret or add new details to the product.
+
+Product color variant: ${productColorVariant}
+
+Decorative plexiglass option: ${decorativePlexiglass}
+
+Handle design and color: ${handleDesign}
+
+Room style: ${roomStyle}
+
+Accent color: ${accentColor}
+
+Apply each specified color and material only to its assigned furniture part. Do not transfer the door color or texture to the body, top surface, legs or other components. Preserve the product’s true color under all lighting conditions.
+
+Reproduce all laser patterns exactly as shown in the product reference. Every laser line must be engraved exactly 1 mm into the door surface. The lines must appear as narrow, precise recessed grooves physically integrated into the material. They must not appear raised, embossed, printed, painted, attached, floating, excessively wide or excessively deep.
+
+The handle must match the reference design, scale and position. It must be physically attached to the door, correctly aligned with the decorative pattern and shown without gaps or intersecting geometry.
+
+Any circular design surrounding the handle must remain flat and parallel to the door surface. Do not interpret it as a convex bump, dome, thick disk, raised rosette, inflated shape or protruding ornament.
+
+When the circular design is part of the laser pattern, engrave it 1 mm into the door surface.
+
+When the selected product includes gold or silver mirror plexiglass, create it as a thin, flat mirrored plexiglass detail closely fitted to the door surface. Keep its thickness visually minimal. Do not make it rounded, inflated, heavily bevelled or excessively raised.
+
+Use decorative plexiglass only when the selected product option includes it. Do not automatically add plexiglass to circular patterns, laser lines, handles or other product areas.
+
+Do not use glass anywhere on the furniture.
+
+Use a natural full-frame commercial photography look with an approximately 42 mm lens. Position the camera at human eye level, keep architectural vertical lines straight and avoid wide-angle distortion. Show the complete product clearly, including all legs, handles, doors and outer edges. Leave comfortable negative space around the product and create natural foreground, midground and background depth.
+
+Illuminate the interior with soft, diffused skylight. Use portal lighting at the windows or openings to guide naturally reflected and surface-bounced daylight into the room. Allow the daylight to spread indirectly after reflecting from the walls, floor and surrounding surfaces, creating soft illumination, realistic ambient depth and a calm atmospheric effect.
+
+Use a subtle sky-toned ambient fill in the room and background without creating an artificial blue cast on the furniture. Add a warm floor lamp as a low-intensity fill light to gently lift dark areas and soften shadows around the product.
+
+Balance the cool skylight, neutral bounced daylight and warm floor-lamp illumination naturally. The lighting must create a welcoming ambience while remaining physically believable and visually unobtrusive. Avoid harsh direct sunlight, hard shadows, clipped highlights and dramatic studio lighting.
+
+Keep the indirect daylight neutral and preserve the exact product colors and material appearance. Do not allow strong blue, yellow or orange color casts to alter the furniture.
+
+Use realistic contact shadows, soft shadow transitions, natural indirect illumination and physically believable reflections. The lighting should feel atmospheric and naturally present rather than visibly staged.
+
+Use realistic furniture materials with subtle surface texture. White and anthracite surfaces must look like premium furniture finishes rather than plastic. Sapphire oak surfaces must show correctly oriented natural wood grain and slight tonal variation. Travertine doors must show restrained natural pores, veins and mineral variation without exaggerated contrast. Gold and silver mirror plexiglass must show controlled reflections without looking like glass, chrome or liquid metal.
+
+Place the product in a professionally styled, premium neutral interior resembling a high-end furniture catalogue photograph. Add a limited number of intentionally placed decorative elements such as plants, books, ceramics, artwork, textiles, a rug or a floor lamp. Keep the room elegant, balanced and uncluttered so the furniture remains the main subject.
+
+Include subtle realism through natural material variation, soft contact shadows and minor surface imperfections. Nothing should look overly smooth, artificial, distorted or factory-generated.
+
+Avoid incorrect proportions, changed door divisions, altered laser patterns, additional patterns, extra handles, detached handles, floating legs, thick circular ornaments, raised laser lines, automatic plexiglass additions, glass panels, plastic-looking surfaces, excessive reflections, texture stretching, oversaturated colors, harsh lighting, excessive bloom, strong vignette, rendering noise and unrealistic decoration.
+
+The final image must resemble a professionally photographed premium furniture catalogue image, with accurate product geometry, clearly visible 1 mm recessed laser engraving, correct handle construction, optional flat mirror plexiglass details, natural indirect daylight and a refined atmospheric interior.`;
 }
 
-function resolveSceneText(scene: RoomStyleOption): string {
+function resolveProductColorVariantText(color: ProductColorOption): string {
+  switch (color) {
+    case 'white':
+      return 'WHITE';
+    case 'white-body-travertine-doors':
+      return 'WHITE BODY WITH TRAVERTINE DOORS';
+    case 'anthracite':
+      return 'ANTHRACITE';
+    case 'anthracite-body-travertine-doors':
+      return 'ANTHRACITE BODY WITH TRAVERTINE DOORS';
+    case 'sapphire-oak-body-white-doors':
+      return 'SAPPHIRE OAK BODY WITH WHITE DOORS';
+  }
+}
+
+function resolvePlexiglassText(option: PlexiglassOption): string {
+  switch (option) {
+    case 'none':
+      return 'NONE';
+    case 'gold-mirror':
+      return 'GOLD MIRROR PLEXIGLASS';
+    case 'silver-mirror':
+      return 'SILVER MIRROR PLEXIGLASS';
+  }
+}
+
+function resolveRoomStyleDescription(scene: RoomStyleOption): string {
   switch (scene) {
     case 'minimalist':
-      return 'The room has a minimalist interior design with soft, natural daylight coming from the side.';
+      return 'a calm minimalist interior with clean lines, soft daylight, uncluttered composition and refined negative space';
     case 'modern':
-      return 'The room features a modern interior design with bold geometric elements, polished concrete textures, and dramatic indirect lighting from recessed ceiling lights.';
+      return 'a refined modern interior with geometric balance, polished contemporary surfaces and elegant understated styling';
     case 'classic':
-      return 'The room has a classic, traditional interior design with warm wood tones, elegant decorative moldings, and soft ambient lighting from ornate wall sconces.';
+      return 'a classic elegant interior with warm traditional detailing, soft ambient light and timeless refined proportions';
     case 'industrial':
-      return 'The room features an industrial interior design with exposed brick walls, raw metal accents, Edison bulb pendant lighting, and dark weathered wooden floors.';
+      return 'an industrial loft interior with raw textures, metal accents, weathered materials and understated contemporary character';
   }
 }
 
-function resolveProductTypeText(type: ProductTypeOption): string {
-  switch (type) {
-    case 'console':
-      return 'console';
-    case 'dressing-table':
-      return 'dressing table';
-    case 'tv-dressing-table':
-      return 'TV dressing table';
-    case 'tv-shelf':
-      return 'TV shelf';
-  }
-}
-
-function resolveProductColorText(color: ProductColorOption): string {
-  switch (color) {
-    case 'travertine':
-      return 'travertine colored';
-    case 'anthracite':
-      return 'anthracite colored';
-    case 'white':
-      return 'white colored';
-    case 'sapphire-oak':
-      return 'sapphire oak colored';
-  }
-}
-
-function resolveTopElementText(type: ProductTypeOption): string {
-  switch (type) {
-    case 'console':
-    case 'dressing-table':
-      return 'a large circular mirror above it';
-    case 'tv-dressing-table':
-    case 'tv-shelf':
-      return 'a large flat-screen TV above it';
-  }
-}
-
-function resolveStylingText(type: ProductTypeOption): string {
-  switch (type) {
-    case 'console':
-    case 'dressing-table':
-      return 'Directly above the unit, there is a large, circular mirror with a thin, elegant gold frame. The surface is styled with a few modern books and a small minimalist sculpture.';
-    case 'tv-dressing-table':
-      return 'Directly above the unit, there is a large flat-screen TV mounted neatly on the wall. The surface is styled with a few modern books and a small minimalist sculpture.';
-    case 'tv-shelf':
-      return 'Directly above the shelf, there is a large flat-screen TV mounted neatly on the wall. The shelf is styled with a few modern books and a small minimalist sculpture.';
+function resolveAccentColorText(accent: AccentColorOption): string {
+  switch (accent) {
+    case 'warm-beige':
+      return 'warm beige';
+    case 'soft-olive':
+      return 'soft olive';
+    case 'muted-terracotta':
+      return 'muted terracotta';
+    case 'slate-blue':
+      return 'slate blue';
+    case 'champagne-gold':
+      return 'champagne gold';
+    case 'charcoal-grey':
+      return 'charcoal grey';
   }
 }
 

@@ -416,6 +416,22 @@ label {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.inline-select-grid.product-option-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.product-handle-input {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 2.55rem;
+  border-radius: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  background: color-mix(in srgb, var(--surface) 88%, var(--bg));
+  color: var(--text);
+  padding: 0.55rem 0.75rem;
+  font: inherit;
+}
+
 .prompt-preset-row {
   display: flex;
   flex-wrap: wrap;
@@ -1753,7 +1769,8 @@ button:disabled {
     width: 100%;
   }
 
-  .inline-select-grid {
+  .inline-select-grid,
+  .inline-select-grid.product-option-grid {
     grid-template-columns: 1fr;
   }
 

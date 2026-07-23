@@ -36,25 +36,38 @@ const resources = {
       referenceSelectedCount: '{{selected}}/{{max}} selected. Click + or drop images here.',
       referenceSelectedCountBatch: '{{selected}} selected. Click + or drop images here.',
       basePrompt: 'Base Prompt',
-      productTypePlaceholder: 'Select product type',
-      productColorPlaceholder: 'Select color',
-      productTypeOptions: {
-        console: 'Console',
-        'dressing-table': 'Dressing Table',
-        'tv-dressing-table': 'TV Dressing Table',
-        'tv-shelf': 'TV Shelf'
-      },
+      productColorPlaceholder: 'Product color variant',
+      plexiglassPlaceholder: 'Decorative plexiglass',
+      roomStylePlaceholder: 'Room style',
+      accentColorPlaceholder: 'Accent color',
+      handlePlaceholder: 'Handle design and color (optional — defaults to reference match)',
+      productOptionsPromptHint:
+        'Choosing a product color fills/overwrites the prompt with the commercial catalogue template. Other fields update the filled slots.',
       productColorOptions: {
-        travertine: 'Travertine',
-        anthracite: 'Anthracite',
         white: 'White',
-        'sapphire-oak': 'Sapphire Oak'
+        'white-body-travertine-doors': 'White body + travertine doors',
+        anthracite: 'Anthracite',
+        'anthracite-body-travertine-doors': 'Anthracite body + travertine doors',
+        'sapphire-oak-body-white-doors': 'Sapphire oak body + white doors'
+      },
+      plexiglassOptions: {
+        none: 'Plexiglass: none',
+        'gold-mirror': 'Gold mirror plexiglass',
+        'silver-mirror': 'Silver mirror plexiglass'
       },
       roomStyleOptions: {
         minimalist: 'Minimalist',
         modern: 'Modern',
         classic: 'Classic',
         industrial: 'Industrial'
+      },
+      accentColorOptions: {
+        'warm-beige': 'Accent: warm beige',
+        'soft-olive': 'Accent: soft olive',
+        'muted-terracotta': 'Accent: muted terracotta',
+        'slate-blue': 'Accent: slate blue',
+        'champagne-gold': 'Accent: champagne gold',
+        'charcoal-grey': 'Accent: charcoal grey'
       },
       negativePrompt: 'Negative Prompt',
       promptPlaceholder: 'Describe the image you want while keeping the reference identity/style...',
@@ -223,25 +236,38 @@ const resources = {
       referenceSelectedCount: '{{selected}}/{{max}} seçili. + ile ekleyin veya görselleri buraya bırakın.',
       referenceSelectedCountBatch: '{{selected}} seçili. + ile ekleyin veya görselleri buraya bırakın.',
       basePrompt: 'Ana İstem',
-      productTypePlaceholder: 'Ürün tipini seçin',
-      productColorPlaceholder: 'Renk seçin',
-      productTypeOptions: {
-        console: 'Konsol',
-        'dressing-table': 'Dresuar',
-        'tv-dressing-table': 'TV Dresuar',
-        'tv-shelf': 'TV Raf'
-      },
+      productColorPlaceholder: 'Ürün renk varyantı',
+      plexiglassPlaceholder: 'Dekoratif pleksi',
+      roomStylePlaceholder: 'Oda stili',
+      accentColorPlaceholder: 'Aksan rengi',
+      handlePlaceholder: 'Kulp tasarımı ve rengi (opsiyonel — boşsa referansa uy)',
+      productOptionsPromptHint:
+        'Ürün rengi seçilince prompt, katalog şablonuyla üzerine yazılır. Diğer alanlar şablondaki slotları günceller.',
       productColorOptions: {
-        travertine: 'Traverten',
-        anthracite: 'Antrasit',
         white: 'Beyaz',
-        'sapphire-oak': 'Safir Meşe'
+        'white-body-travertine-doors': 'Beyaz gövde + traverten kapak',
+        anthracite: 'Antrasit',
+        'anthracite-body-travertine-doors': 'Antrasit gövde + traverten kapak',
+        'sapphire-oak-body-white-doors': 'Safir meşe gövde + beyaz kapak'
+      },
+      plexiglassOptions: {
+        none: 'Pleksi: yok',
+        'gold-mirror': 'Altın ayna pleksi',
+        'silver-mirror': 'Gümüş ayna pleksi'
       },
       roomStyleOptions: {
         minimalist: 'Minimalist',
         modern: 'Modern',
         classic: 'Klasik',
         industrial: 'Endüstriyel'
+      },
+      accentColorOptions: {
+        'warm-beige': 'Aksan: sıcak bej',
+        'soft-olive': 'Aksan: yumuşak zeytin',
+        'muted-terracotta': 'Aksan: soft terracotta',
+        'slate-blue': 'Aksan: arduvaz mavisi',
+        'champagne-gold': 'Aksan: şampanya altın',
+        'charcoal-grey': 'Aksan: antrasit gri'
       },
       negativePrompt: 'Negatif İstem',
       promptPlaceholder: 'Referans kimliğini/stilini koruyarak istediğiniz görseli tanımlayın...',
