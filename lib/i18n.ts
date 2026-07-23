@@ -39,6 +39,7 @@ const resources = {
       productColorPlaceholder: 'Product color variant',
       plexiglassPlaceholder: 'Decorative plexiglass',
       mountingPlaceholder: 'Mounting type',
+      handlePresencePlaceholder: 'Handle',
       roomStylePlaceholder: 'Room style',
       accentColorPlaceholder: 'Accent color',
       handlePlaceholder: 'Handle design and color (optional — defaults to reference match)',
@@ -59,6 +60,10 @@ const resources = {
       mountingOptions: {
         'floor-standing': 'Floor-standing (with legs)',
         'wall-mounted': 'Wall-mounted'
+      },
+      handlePresenceOptions: {
+        'with-handle': 'With handle',
+        'no-handle': 'No handle'
       },
       roomStyleOptions: {
         minimalist: 'Minimalist',
@@ -244,6 +249,7 @@ const resources = {
       productColorPlaceholder: 'Ürün renk varyantı',
       plexiglassPlaceholder: 'Dekoratif pleksi',
       mountingPlaceholder: 'Montaj tipi',
+      handlePresencePlaceholder: 'Kulp',
       roomStylePlaceholder: 'Oda stili',
       accentColorPlaceholder: 'Aksan rengi',
       handlePlaceholder: 'Kulp tasarımı ve rengi (opsiyonel — boşsa referansa uy)',
@@ -264,6 +270,10 @@ const resources = {
       mountingOptions: {
         'floor-standing': 'Ayaklı (yere oturan)',
         'wall-mounted': 'Duvara monte'
+      },
+      handlePresenceOptions: {
+        'with-handle': 'Kulp var',
+        'no-handle': 'Kulp yok'
       },
       roomStyleOptions: {
         minimalist: 'Minimalist',

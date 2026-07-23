@@ -149,6 +149,7 @@ type ProductColorOption =
   | 'sapphire-oak-body-white-doors';
 type PlexiglassOption = 'none' | 'gold-mirror' | 'silver-mirror';
 type MountingOption = 'floor-standing' | 'wall-mounted';
+type HandlePresenceOption = 'with-handle' | 'no-handle';
 type RoomStyleOption = 'minimalist' | 'modern' | 'classic' | 'industrial';
 type AccentColorOption = 'warm-beige' | 'soft-olive' | 'muted-terracotta' | 'slate-blue' | 'champagne-gold' | 'charcoal-grey';
 
@@ -199,6 +200,7 @@ const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = [
 ];
 const PLEXIGLASS_OPTIONS: PlexiglassOption[] = ['none', 'gold-mirror', 'silver-mirror'];
 const MOUNTING_OPTIONS: MountingOption[] = ['floor-standing', 'wall-mounted'];
+const HANDLE_PRESENCE_OPTIONS: HandlePresenceOption[] = ['with-handle', 'no-handle'];
 const ROOM_STYLE_OPTIONS: RoomStyleOption[] = ['minimalist', 'modern', 'classic', 'industrial'];
 const ACCENT_COLOR_OPTIONS: AccentColorOption[] = [
   'warm-beige',
@@ -628,6 +630,7 @@ export default function HomePage() {
   const [selectedProductColor, setSelectedProductColor] = useState<ProductColorOption | ''>('');
   const [selectedPlexiglass, setSelectedPlexiglass] = useState<PlexiglassOption>('none');
   const [selectedMounting, setSelectedMounting] = useState<MountingOption>('floor-standing');
+  const [selectedHandlePresence, setSelectedHandlePresence] = useState<HandlePresenceOption>('with-handle');
   const [selectedRoomStyle, setSelectedRoomStyle] = useState<RoomStyleOption>('minimalist');
   const [selectedAccentColor, setSelectedAccentColor] = useState<AccentColorOption>('warm-beige');
   const [handleDescription, setHandleDescription] = useState('');
@@ -776,6 +779,7 @@ export default function HomePage() {
         color: selectedProductColor,
         plexiglass: selectedPlexiglass,
         mounting: selectedMounting,
+        handlePresence: selectedHandlePresence,
         handle: handleDescription.trim() || DEFAULT_HANDLE_DESCRIPTION,
         roomStyle: selectedRoomStyle,
         accentColor: selectedAccentColor
@@ -785,6 +789,7 @@ export default function HomePage() {
     selectedProductColor,
     selectedPlexiglass,
     selectedMounting,
+    selectedHandlePresence,
     selectedRoomStyle,
     selectedAccentColor,
     handleDescription
@@ -2254,6 +2259,18 @@ export default function HomePage() {
                   ))}
                 </select>
                 <select
+                  id="handle-presence"
+                  value={selectedHandlePresence}
+                  onChange={(event) => setSelectedHandlePresence(event.target.value as HandlePresenceOption)}
+                  aria-label={t('handlePresencePlaceholder')}
+                >
+                  {HANDLE_PRESENCE_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {t(`handlePresenceOptions.${option}`)}
+                    </option>
+                  ))}
+                </select>
+                <select
                   id="room-style"
                   value={selectedRoomStyle}
                   onChange={(event) => setSelectedRoomStyle(event.target.value as RoomStyleOption)}
@@ -2277,15 +2294,17 @@ export default function HomePage() {
                     </option>
                   ))}
                 </select>
-                <input
-                  id="handle-description"
-                  type="text"
-                  className="product-handle-input"
-                  value={handleDescription}
-                  onChange={(event) => setHandleDescription(event.target.value)}
-                  placeholder={t('handlePlaceholder')}
-                  aria-label={t('handlePlaceholder')}
-                />
+                {selectedHandlePresence === 'with-handle' ? (
+                  <input
+                    id="handle-description"
+                    type="text"
+                    className="product-handle-input"
+                    value={handleDescription}
+                    onChange={(event) => setHandleDescription(event.target.value)}
+                    placeholder={t('handlePlaceholder')}
+                    aria-label={t('handlePlaceholder')}
+                  />
+                ) : null}
               </div>
               <p className="reference-note">{t('productOptionsPromptHint')}</p>
               <div className="prompt-preset-row">
@@ -2298,6 +2317,7 @@ export default function HomePage() {
                       setSelectedProductColor('');
                       setSelectedPlexiglass('none');
                       setSelectedMounting('floor-standing');
+                      setSelectedHandlePresence('with-handle');
                       setSelectedAccentColor('warm-beige');
                       setHandleDescription('');
                       setPrompt(preset.prompt);
@@ -3293,6 +3313,7 @@ function buildCommercialCataloguePrompt(input: {
   color: ProductColorOption;
   plexiglass: PlexiglassOption;
   mounting: MountingOption;
+  handlePresence: HandlePresenceOption;
   handle: string;
   roomStyle: RoomStyleOption;
   accentColor: AccentColorOption;
@@ -3303,13 +3324,34 @@ function buildCommercialCataloguePrompt(input: {
   const mountingPlacement = resolveMountingPlacementText(input.mounting);
   const mountingVisibility = resolveMountingVisibilityText(input.mounting);
   const mountingAvoid = resolveMountingAvoidText(input.mounting);
-  const handleDesign = input.handle.trim() || DEFAULT_HANDLE_DESCRIPTION;
+  const hasHandle = input.handlePresence === 'with-handle';
+  const handlePresenceLabel = hasHandle ? 'WITH HANDLE' : 'NO HANDLE';
+  const handleDesign = hasHandle ? input.handle.trim() || DEFAULT_HANDLE_DESCRIPTION : 'NONE — this product has no handle';
+  const handleInstructions = hasHandle
+    ? `The handle must match the reference design, scale and position. It must be physically attached to the door, correctly aligned with the decorative pattern and shown without gaps or intersecting geometry.
+
+Any circular design surrounding the handle must remain flat and parallel to the door surface. Do not interpret it as a convex bump, dome, thick disk, raised rosette, inflated shape or protruding ornament.
+
+When the circular design is part of the laser pattern, engrave it 1 mm into the door surface.`
+    : `This product has NO handle. Do not invent, add, attach or imply any handle, pull, knob, bar, recessed grip or handle hardware. Keep doors clean according to the reference without hardware additions.`;
+  const productPartsVisibility = hasHandle
+    ? `${mountingVisibility}, handles, doors and outer edges`
+    : `${mountingVisibility}, doors and outer edges (no handles)`;
+  const handleAvoid = hasHandle
+    ? 'extra handles, detached handles'
+    : 'any invented handles, knobs, pulls, handle hardware, recessed grips that are not in the reference';
+  const handleClosing = hasHandle
+    ? 'correct handle construction'
+    : 'no handles (handleless product)';
   const roomStyle = resolveRoomStyleDescription(input.roomStyle);
   const accentColor = resolveAccentColorText(input.accentColor);
+  const preserveParts = hasHandle
+    ? 'top surface, legs, handles, laser patterns'
+    : 'top surface, legs, laser patterns (and no handles)';
 
   return `Create a photorealistic, high-end commercial interior image featuring the provided furniture product.
 
-Use the reference image strictly for the product’s geometry, proportions, construction and decorative placement. Preserve the original body dimensions, door count, panel divisions, top surface, legs, handles, laser patterns and all pattern positions exactly as shown. Do not redesign, simplify, reinterpret or add new details to the product.
+Use the reference image strictly for the product’s geometry, proportions, construction and decorative placement. Preserve the original body dimensions, door count, panel divisions, ${preserveParts} and all pattern positions exactly as shown. Do not redesign, simplify, reinterpret or add new details to the product.
 
 Product color variant: ${productColorVariant}
 
@@ -3318,6 +3360,8 @@ Decorative plexiglass option: ${decorativePlexiglass}
 Mounting / installation: ${mountingType}
 
 ${mountingPlacement}
+
+Handle presence: ${handlePresenceLabel}
 
 Handle design and color: ${handleDesign}
 
@@ -3329,11 +3373,7 @@ Apply each specified color and material only to its assigned furniture part. Do 
 
 Reproduce all laser patterns exactly as shown in the product reference. Every laser line must be engraved exactly 1 mm into the door surface. The lines must appear as narrow, precise recessed grooves physically integrated into the material. They must not appear raised, embossed, printed, painted, attached, floating, excessively wide or excessively deep.
 
-The handle must match the reference design, scale and position. It must be physically attached to the door, correctly aligned with the decorative pattern and shown without gaps or intersecting geometry.
-
-Any circular design surrounding the handle must remain flat and parallel to the door surface. Do not interpret it as a convex bump, dome, thick disk, raised rosette, inflated shape or protruding ornament.
-
-When the circular design is part of the laser pattern, engrave it 1 mm into the door surface.
+${handleInstructions}
 
 When the selected product includes gold or silver mirror plexiglass, create it as a thin, flat mirrored plexiglass detail closely fitted to the door surface. Keep its thickness visually minimal. Do not make it rounded, inflated, heavily bevelled or excessively raised.
 
@@ -3341,7 +3381,7 @@ Use decorative plexiglass only when the selected product option includes it. Do 
 
 Do not use glass anywhere on the furniture.
 
-Use a natural full-frame commercial photography look with an approximately 42 mm lens. Position the camera at human eye level, keep architectural vertical lines straight and avoid wide-angle distortion. Show the complete product clearly, including ${mountingVisibility}, handles, doors and outer edges. Leave comfortable negative space around the product and create natural foreground, midground and background depth.
+Use a natural full-frame commercial photography look with an approximately 42 mm lens. Position the camera at human eye level, keep architectural vertical lines straight and avoid wide-angle distortion. Show the complete product clearly, including ${productPartsVisibility}. Leave comfortable negative space around the product and create natural foreground, midground and background depth.
 
 Illuminate the interior with soft, diffused skylight. Use portal lighting at the windows or openings to guide naturally reflected and surface-bounced daylight into the room. Allow the daylight to spread indirectly after reflecting from the walls, floor and surrounding surfaces, creating soft illumination, realistic ambient depth and a calm atmospheric effect.
 
@@ -3359,9 +3399,9 @@ Place the product in a professionally styled, premium neutral interior resemblin
 
 Include subtle realism through natural material variation, soft contact shadows and minor surface imperfections. Nothing should look overly smooth, artificial, distorted or factory-generated.
 
-Avoid incorrect proportions, changed door divisions, altered laser patterns, additional patterns, extra handles, detached handles, ${mountingAvoid}, thick circular ornaments, raised laser lines, automatic plexiglass additions, glass panels, plastic-looking surfaces, excessive reflections, texture stretching, oversaturated colors, harsh lighting, excessive bloom, strong vignette, rendering noise and unrealistic decoration.
+Avoid incorrect proportions, changed door divisions, altered laser patterns, additional patterns, ${handleAvoid}, ${mountingAvoid}, thick circular ornaments, raised laser lines, automatic plexiglass additions, glass panels, plastic-looking surfaces, excessive reflections, texture stretching, oversaturated colors, harsh lighting, excessive bloom, strong vignette, rendering noise and unrealistic decoration.
 
-The final image must resemble a professionally photographed premium furniture catalogue image, with accurate product geometry, clearly visible 1 mm recessed laser engraving, correct handle construction, correct ${mountingType.toLowerCase()} installation, optional flat mirror plexiglass details, natural indirect daylight and a refined atmospheric interior.`;
+The final image must resemble a professionally photographed premium furniture catalogue image, with accurate product geometry, clearly visible 1 mm recessed laser engraving, ${handleClosing}, correct ${mountingType.toLowerCase()} installation, optional flat mirror plexiglass details, natural indirect daylight and a refined atmospheric interior.`;
 }
 
 function resolveProductColorVariantText(color: ProductColorOption): string {
