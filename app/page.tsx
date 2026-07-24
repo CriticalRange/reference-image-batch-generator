@@ -3309,7 +3309,7 @@ function getBatchPromptForReference(submittedPrompt: string, referenceIndex: num
   return BATCH_PROMPT_ROTATION[(selectedPresetIndex + referenceIndex) % BATCH_PROMPT_ROTATION.length];
 }
 
-function buildCommercialCataloguePrompt(input: {
+function buildCommercialCataloguePrompt(_input: {
   color: ProductColorOption;
   plexiglass: PlexiglassOption;
   mounting: MountingOption;
@@ -3318,62 +3318,21 @@ function buildCommercialCataloguePrompt(input: {
   roomStyle: RoomStyleOption;
   accentColor: AccentColorOption;
 }): string {
-  const productColorVariant = resolveProductColorVariantText(input.color);
-  const decorativePlexiglass = resolvePlexiglassText(input.plexiglass);
-  const mountingType = resolveMountingTypeText(input.mounting);
-  const mountingPlacement = resolveMountingPlacementText(input.mounting);
-  const mountingVisibility = resolveMountingVisibilityText(input.mounting);
-  const mountingAvoid = resolveMountingAvoidText(input.mounting);
-  const hasHandle = input.handlePresence === 'with-handle';
-  const handlePresenceLabel = hasHandle ? 'WITH HANDLE' : 'NO HANDLE';
-  const handleDesign = hasHandle ? input.handle.trim() || DEFAULT_HANDLE_DESCRIPTION : 'NONE — this product has no handle';
-  const handleInstructions = hasHandle
-    ? `The handle must match the reference design, scale and position. It must be physically attached to the door, correctly aligned with the decorative pattern and shown without gaps or intersecting geometry.
-
-Any circular design surrounding the handle must remain flat and parallel to the door surface. Do not interpret it as a convex bump, dome, thick disk, raised rosette, inflated shape or protruding ornament.
-
-When the circular design is part of the laser pattern, engrave it 1 mm into the door surface.`
-    : `This product has NO handle. Do not invent, add, attach or imply any handle, pull, knob, bar, recessed grip or handle hardware. Keep doors clean according to the reference without hardware additions.`;
-  const productPartsVisibility = hasHandle
-    ? `${mountingVisibility}, handles, doors and outer edges`
-    : `${mountingVisibility}, doors and outer edges (no handles)`;
-  const handleAvoid = hasHandle
-    ? 'extra handles, detached handles'
-    : 'any invented handles, knobs, pulls, handle hardware, recessed grips that are not in the reference';
-  const handleClosing = hasHandle
-    ? 'correct handle construction'
-    : 'no handles (handleless product)';
-  const roomStyle = resolveRoomStyleDescription(input.roomStyle);
-  const accentColor = resolveAccentColorText(input.accentColor);
-  const preserveParts = hasHandle
-    ? 'top surface, legs, handles, laser patterns'
-    : 'top surface, legs, laser patterns (and no handles)';
-
   return `Create a photorealistic, high-end commercial interior image featuring the provided furniture product.
+Do not start until you see the GENERATE command inside this prompt (or make sure it's ready to be generated).
 
-Use the reference image strictly for the product’s geometry, proportions, construction and decorative placement. Preserve the original body dimensions, door count, panel divisions, ${preserveParts} and all pattern positions exactly as shown. Do not redesign, simplify, reinterpret or add new details to the product.
+<main>
+Use the reference image strictly for the product’s geometry, proportions, construction and decorative placement. Preserve the original body dimensions, door count, panel divisions, top surface, legs, laser patterns (and no handles) and all pattern positions exactly as shown. Do not redesign, simplify, reinterpret or add new details to the product.
+</main>
 
-Product color variant: ${productColorVariant}
+<info>
+Room style: a refined modern interior with geometric balance, polished contemporary surfaces and elegant understated styling
+</info>
 
-Decorative plexiglass option: ${decorativePlexiglass}
-
-Mounting / installation: ${mountingType}
-
-${mountingPlacement}
-
-Handle presence: ${handlePresenceLabel}
-
-Handle design and color: ${handleDesign}
-
-Room style: ${roomStyle}
-
-Accent color: ${accentColor}
-
-Apply each specified color and material only to its assigned furniture part. Do not transfer the door color or texture to the body, top surface, legs or other components. Preserve the product’s true color under all lighting conditions.
+<rules>
+NEVER transfer the door color or texture to the body, top surface, legs or other components. Preserve the product’s true color under all lighting conditions.
 
 Reproduce all laser patterns exactly as shown in the product reference. Every laser line must be engraved exactly 1 mm into the door surface. The lines must appear as narrow, precise recessed grooves physically integrated into the material. They must not appear raised, embossed, printed, painted, attached, floating, excessively wide or excessively deep.
-
-${handleInstructions}
 
 When the selected product includes gold or silver mirror plexiglass, create it as a thin, flat mirrored plexiglass detail closely fitted to the door surface. Keep its thickness visually minimal. Do not make it rounded, inflated, heavily bevelled or excessively raised.
 
@@ -3381,7 +3340,7 @@ Use decorative plexiglass only when the selected product option includes it. Do 
 
 Do not use glass anywhere on the furniture.
 
-Use a natural full-frame commercial photography look with an approximately 42 mm lens. Position the camera at human eye level, keep architectural vertical lines straight and avoid wide-angle distortion. Show the complete product clearly, including ${productPartsVisibility}. Leave comfortable negative space around the product and create natural foreground, midground and background depth.
+Use a natural full-frame commercial photography look with an approximately 42 mm lens. Position the camera at human eye level, keep architectural vertical lines straight and avoid wide-angle distortion. Show the complete product clearly, including the full wall-mounted body and underside clearance, doors and outer edges (no handles). Leave comfortable negative space around the product and create natural foreground, midground and background depth.
 
 Illuminate the interior with soft, diffused skylight. Use portal lighting at the windows or openings to guide naturally reflected and surface-bounced daylight into the room. Allow the daylight to spread indirectly after reflecting from the walls, floor and surrounding surfaces, creating soft illumination, realistic ambient depth and a calm atmospheric effect.
 
@@ -3399,101 +3358,17 @@ Place the product in a professionally styled, premium neutral interior resemblin
 
 Include subtle realism through natural material variation, soft contact shadows and minor surface imperfections. Nothing should look overly smooth, artificial, distorted or factory-generated.
 
-Avoid incorrect proportions, changed door divisions, altered laser patterns, additional patterns, ${handleAvoid}, ${mountingAvoid}, thick circular ornaments, raised laser lines, automatic plexiglass additions, glass panels, plastic-looking surfaces, excessive reflections, texture stretching, oversaturated colors, harsh lighting, excessive bloom, strong vignette, rendering noise and unrealistic decoration.
+Avoid incorrect proportions, changed door divisions, altered laser patterns, additional patterns, any invented handles, knobs, pulls, handle hardware, recessed grips that are not in the reference, freestanding placement, floor-standing legs that rest on the floor, floating without wall attachment, incorrect wall height, thick circular ornaments, raised laser lines, automatic plexiglass additions, glass panels, plastic-looking surfaces, excessive reflections, texture stretching, oversaturated colors, harsh lighting, excessive bloom, strong vignette, rendering noise and unrealistic decoration.
 
-The final image must resemble a professionally photographed premium furniture catalogue image, with accurate product geometry, clearly visible 1 mm recessed laser engraving, ${handleClosing}, correct ${mountingType.toLowerCase()} installation, optional flat mirror plexiglass details, natural indirect daylight and a refined atmospheric interior.`;
-}
+Comply with premium Wayfair-style furniture photography standards for e-commerce: accurate geometry, realistic scale, true material representation, balanced natural lighting, clean staging, no visual distractions, and catalog-ready composition.
+</rules>
 
-function resolveProductColorVariantText(color: ProductColorOption): string {
-  switch (color) {
-    case 'white':
-      return 'WHITE';
-    case 'white-body-travertine-doors':
-      return 'WHITE BODY WITH TRAVERTINE DOORS';
-    case 'anthracite':
-      return 'ANTHRACITE';
-    case 'anthracite-body-travertine-doors':
-      return 'ANTHRACITE BODY WITH TRAVERTINE DOORS';
-    case 'sapphire-oak-body-white-doors':
-      return 'SAPPHIRE OAK BODY WITH WHITE DOORS';
-  }
-}
+<check>
+Before generating the image make sure:
+The final image must resemble a professionally photographed premium furniture catalogue image, with accurate product geometry, clearly visible 1 mm recessed laser engraving, no handles (handleless product), correct wall-mounted installation, optional flat mirror plexiglass details, natural indirect daylight and a refined atmospheric interior.
+</check>
 
-function resolvePlexiglassText(option: PlexiglassOption): string {
-  switch (option) {
-    case 'none':
-      return 'NONE';
-    case 'gold-mirror':
-      return 'GOLD MIRROR PLEXIGLASS';
-    case 'silver-mirror':
-      return 'SILVER MIRROR PLEXIGLASS';
-  }
-}
-
-function resolveMountingTypeText(mounting: MountingOption): string {
-  switch (mounting) {
-    case 'floor-standing':
-      return 'FLOOR-STANDING WITH LEGS';
-    case 'wall-mounted':
-      return 'WALL-MOUNTED';
-  }
-}
-
-function resolveMountingPlacementText(mounting: MountingOption): string {
-  switch (mounting) {
-    case 'floor-standing':
-      return 'Installation: The product is freestanding / floor-standing on its own legs. All legs must rest firmly on the floor with realistic contact shadows. Do not mount the product on the wall. Do not hide, crop, or remove the legs.';
-    case 'wall-mounted':
-      return 'Installation: The product is wall-mounted, fixed flat against the wall at a realistic height. It must not rest on the floor and must not appear freestanding. Keep a clear gap between the product underside and the floor. Do not invent freestanding legs if the reference is wall-mounted.';
-  }
-}
-
-function resolveMountingVisibilityText(mounting: MountingOption): string {
-  switch (mounting) {
-    case 'floor-standing':
-      return 'all legs';
-    case 'wall-mounted':
-      return 'the full wall-mounted body and underside clearance';
-  }
-}
-
-function resolveMountingAvoidText(mounting: MountingOption): string {
-  switch (mounting) {
-    case 'floor-standing':
-      return 'floating legs, wall-mounted installation, missing legs, legs that do not touch the floor';
-    case 'wall-mounted':
-      return 'freestanding placement, floor-standing legs that rest on the floor, floating without wall attachment, incorrect wall height';
-  }
-}
-
-function resolveRoomStyleDescription(scene: RoomStyleOption): string {
-  switch (scene) {
-    case 'minimalist':
-      return 'a calm minimalist interior with clean lines, soft daylight, uncluttered composition and refined negative space';
-    case 'modern':
-      return 'a refined modern interior with geometric balance, polished contemporary surfaces and elegant understated styling';
-    case 'classic':
-      return 'a classic elegant interior with warm traditional detailing, soft ambient light and timeless refined proportions';
-    case 'industrial':
-      return 'an industrial loft interior with raw textures, metal accents, weathered materials and understated contemporary character';
-  }
-}
-
-function resolveAccentColorText(accent: AccentColorOption): string {
-  switch (accent) {
-    case 'warm-beige':
-      return 'warm beige';
-    case 'soft-olive':
-      return 'soft olive';
-    case 'muted-terracotta':
-      return 'muted terracotta';
-    case 'slate-blue':
-      return 'slate blue';
-    case 'champagne-gold':
-      return 'champagne gold';
-    case 'charcoal-grey':
-      return 'charcoal grey';
-  }
+GENERATE`;
 }
 
 function isTerminalBatchState(state: string): boolean {
