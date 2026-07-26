@@ -68,7 +68,7 @@ History, archive, zip download, and batch-mode looping are **client-side only** 
 | ----- | ----- |
 | `prompt` | Required |
 | `count` | Variant count (clamped by `MAX_BATCH_SIZE`) |
-| `model` | e.g. `vertex/gemini-2.5-flash-image`, Together, fal codes |
+| `model` | e.g. `vertex/gemini-2.5-flash-image`, `fal-ai/nano-banana/edit`, `fal-ai/nano-banana-2/edit`, `fal-ai/nano-banana-pro/edit`, Together codes |
 | `authMode` | Vertex only: `service_account` (default) or `api_key` (`GEMINI_API_KEY`) |
 | `referenceImages` | Preferred multi-ref array; or legacy `referenceImageBase64` + `referenceMimeType` |
 | `aspectRatio` / `imageSize` / `steps` | Provider-dependent |

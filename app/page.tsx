@@ -3011,6 +3011,9 @@ function isUiModelOption(value: unknown): value is UiModelOption {
 
 function groupModelOptions(options: UiModelOption[]): Array<{ group: string; options: UiModelOption[] }> {
   const recommendedCodes = [
+    'fal-ai/nano-banana/edit',
+    'fal-ai/nano-banana-2/edit',
+    'fal-ai/nano-banana-pro/edit',
     'google/flash-image-2.5',
     'google/flash-image-3.1',
     'qwen/qwen-image-2.0-pro',
@@ -3024,7 +3027,8 @@ function groupModelOptions(options: UiModelOption[]): Array<{ group: string; opt
   const recommendedRank = new Map<string, number>(recommendedCodes.map((code, index) => [code, index]));
   const isRecommended = (option: UiModelOption): boolean => {
     const code = option.code.toLowerCase();
-    if (!option.group.toLowerCase().includes('together')) {
+    const group = option.group.toLowerCase();
+    if (!group.includes('together') && !group.includes('fal')) {
       return false;
     }
 

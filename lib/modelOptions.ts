@@ -22,6 +22,9 @@ export const CURATED_MODEL_OPTIONS: UiModelOption[] = [
   { name: 'Nano Banana', code: 'google/flash-image-2.5', group: 'Together AI' },
   { name: 'Nano Banana 2', code: 'google/flash-image-3.1', group: 'Together AI' },
   { name: 'Ideogram 3.0', code: 'ideogram/ideogram-v3.0', group: 'Together AI' },
+  { name: 'Nano Banana Edit (Gemini 2.5 Flash · fal)', code: 'fal-ai/nano-banana/edit', group: 'Fal AI' },
+  { name: 'Nano Banana 2 Edit (Gemini 3.1 Flash · fal)', code: 'fal-ai/nano-banana-2/edit', group: 'Fal AI' },
+  { name: 'Nano Banana Pro Edit (fal)', code: 'fal-ai/nano-banana-pro/edit', group: 'Fal AI' },
   { name: 'FLUX Pro Kontext Max (fal)', code: 'fal-ai/flux-pro/kontext/max', group: 'Fal AI' },
   { name: 'FLUX Pro Kontext (fal)', code: 'fal-ai/flux-pro/kontext', group: 'Fal AI' },
   { name: 'FLUX.1 Dev (fal)', code: 'fal-ai/flux/dev', group: 'Fal AI' },
@@ -167,8 +170,22 @@ export function humanizeModelCode(code: string): string {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+/** Models that accept a discrete resolution selector (1K / 2K / 4K …). */
 export function modelSupportsImageSize(model: string): boolean {
-  return /^gemini-3/i.test(model);
+  const code = normalizeModelCode(model);
+  if (/^gemini-3/i.test(code)) {
+    return true;
+  }
+  // fal Nano Banana 2 / Pro edit support resolution enum (0.5K–4K / 1K–4K).
+  if (/^fal-ai\/nano-banana-(?:2|pro)\/edit$/i.test(code)) {
+    return true;
+  }
+  return false;
+}
+
+/** fal.ai Google Nano Banana edit endpoints (multi-image via image_urls). */
+export function isFalNanoBananaEditModel(model: string): boolean {
+  return /^fal-ai\/nano-banana(?:-2|-pro)?\/edit$/i.test(normalizeModelCode(model));
 }
 
 export function isTogetherImageModelCode(model: string): boolean {
@@ -186,5 +203,5 @@ export function modelSupportsTogetherSteps(model: string): boolean {
 }
 
 export function modelLooksImageCapable(model: string): boolean {
-  return /^imagen-/i.test(model) || /image|imagen|flux/i.test(model);
+  return /^imagen-/i.test(model) || /image|imagen|flux|nano-banana/i.test(model);
 }

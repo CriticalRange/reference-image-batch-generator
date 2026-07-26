@@ -7,7 +7,7 @@ import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { modelSupportsImageSize, normalizeModelCode } from '@/lib/modelOptions';
+import { isFalNanoBananaEditModel, modelSupportsImageSize, normalizeModelCode } from '@/lib/modelOptions';
 import { buildPromptVariants } from '@/lib/promptVariants';
 
 export type AuthMode = 'service_account' | 'api_key';
@@ -1059,6 +1059,48 @@ async function runVertexBatch(
   return buildBatchOutput(model, requestedCount, prompts, settled);
 }
 
+/** Map app resolution tokens to fal Nano Banana edit `resolution` enum. */
+function mapFalNanoBananaResolution(imageSize: string | undefined, model: string): string | undefined {
+  if (!imageSize) {
+    return undefined;
+  }
+  // nano-banana (2.5) edit has no resolution field — only aspect_ratio.
+  if (!/^fal-ai\/nano-banana-(?:2|pro)\/edit$/i.test(model)) {
+    return undefined;
+  }
+  if (imageSize === '512') {
+    // Pro: 1K/2K/4K only → clamp; Nano Banana 2: 0.5K available.
+    return /^fal-ai\/nano-banana-2\/edit$/i.test(model) ? '0.5K' : '1K';
+  }
+  if (imageSize === '1K' || imageSize === '2K' || imageSize === '4K') {
+    return imageSize;
+  }
+  return undefined;
+}
+
+function formatFalErrorDetail(payload: Record<string, unknown>, status: number): string {
+  const detail = payload.detail;
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail.trim();
+  }
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((entry) => {
+        if (typeof entry === 'string') return entry;
+        if (entry && typeof entry === 'object') {
+          const rec = entry as Record<string, unknown>;
+          return firstStringValue([rec.msg, rec.message, rec.type]) ?? JSON.stringify(entry);
+        }
+        return String(entry);
+      })
+      .filter(Boolean);
+    if (parts.length > 0) {
+      return parts.join('; ');
+    }
+  }
+  return firstStringValue([payload.error, payload.message]) || `fal.ai request failed (${status})`;
+}
+
 async function runFalBatch(
   model: string,
   requestedCount: number,
@@ -1067,7 +1109,8 @@ async function runFalBatch(
   references: Array<{ base64: string; mimeType: string }>,
   aspectRatio: string,
   resizeTo: { width: number; height: number } | undefined,
-  aiUpscale: number
+  aiUpscale: number,
+  imageSize?: string
 ): Promise<BatchOutput> {
   const apiKey = process.env.FAL_AI_API_KEY;
   if (!apiKey) {
@@ -1076,7 +1119,15 @@ async function runFalBatch(
 
   const endpoint = `https://fal.run/${model}`;
   const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
-  const referenceImageUrl = references[0] ? buildReferenceDataUrl(references[0]) : undefined;
+  const referenceImageUrls = references.map((ref) => buildReferenceDataUrl(ref));
+  const isNanoBananaEdit = isFalNanoBananaEditModel(model);
+  const falResolution = mapFalNanoBananaResolution(imageSize, model);
+
+  if (isNanoBananaEdit && referenceImageUrls.length === 0) {
+    throw new Error(
+      `Model ${model} requires at least one reference image (fal image_urls). Upload 1–N product photos.`
+    );
+  }
 
   const jobs = prompts.map((promptVariant) => {
     return async () => {
@@ -1085,11 +1136,23 @@ async function runFalBatch(
         aspect_ratio: aspectRatio
       };
 
-      if (negativePrompt) {
+      if (negativePrompt && !isNanoBananaEdit) {
+        // Nano Banana edit schema has no negative_prompt field.
         requestBody.negative_prompt = negativePrompt;
       }
-      if (referenceImageUrl) {
-        requestBody.image_url = referenceImageUrl;
+
+      if (isNanoBananaEdit) {
+        // Official schema: image_urls (list), multi-ref product editing.
+        requestBody.image_urls = referenceImageUrls;
+        requestBody.num_images = 1;
+        requestBody.output_format = 'png';
+        requestBody.limit_generations = true;
+        if (falResolution) {
+          requestBody.resolution = falResolution;
+        }
+      } else if (referenceImageUrls[0]) {
+        // Flux Kontext / legacy edit models: single image_url.
+        requestBody.image_url = referenceImageUrls[0];
       }
 
       const response = await fetch(endpoint, {
@@ -1103,8 +1166,7 @@ async function runFalBatch(
       const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
 
       if (!response.ok) {
-        const detail = firstStringValue([payload.detail, payload.error, payload.message]) || `fal.ai request failed (${response.status})`;
-        throw new Error(detail);
+        throw new Error(formatFalErrorDetail(payload, response.status));
       }
 
       const imageUrl = resolveFalImageUrl(payload);
@@ -1716,6 +1778,8 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
 
   if (isFalImageModel(model)) {
     const jobId = randomUUID();
+    // Pass raw imageSize for fal Nano Banana 2/Pro (resolution enum); normalizeImageSize is Gemini-3 oriented.
+    const falImageSize = input.imageSize?.trim() || imageSize;
     const result = await runFalBatch(
       model,
       clampedCount,
@@ -1724,7 +1788,8 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       references,
       aspectRatio,
       resizeTo,
-      aiUpscale
+      aiUpscale,
+      falImageSize
     );
     return { jobId, provider: 'fal', results: result };
   }
