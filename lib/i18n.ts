@@ -169,6 +169,11 @@ const resources = {
       errorRateLimitMin: 'Must be 0 or more.',
       errorRateLimitMax: 'Maximum is 600 seconds (10 min).',
       batchRateLimitWait: 'Rate limit: waiting {{seconds}}s before next run...',
+      batchRetrying:
+        'Retry {{attempt}}/{{max}} for “{{product}}” in {{seconds}}s… {{error}}',
+      batchRetryToast: 'Product failed — auto retry',
+      batchRetryToastDesc: '“{{product}}”: attempt {{attempt}}/{{max}}. {{error}}',
+      batchRetryExhausted: '“{{product}}” failed after {{max}} attempts: {{error}}',
       batchComplete: 'Batch done: {{total}} reference image(s) processed.',
       downloadBatchResults: 'Download All (organized by reference)',
       batchDownloadFailed: 'Batch download failed',
@@ -208,7 +213,7 @@ const resources = {
         resolution: 'Controls pixel dimensions/output quality preset.',
         resizeOutput: 'Optionally resize generated images to export-friendly dimensions. For marketplaces like Trendyol and Hepsiburada, 2000x3000 is recommended.',
         aiUpscale: 'Runs ESRGAN Thick upscale (selectable 2x or 3x) after generation, then applies the selected resize/export size. Uses more CPU/RAM and takes longer per image.',
-        batchRateLimit: 'Seconds to wait between each batch generation run. Set to 0 for no delay. Recommended: 120s (2 min) to avoid API exhaustion.'
+        batchRateLimit: 'Seconds to wait between each batch generation run. Set to 0 for no delay. Recommended: 120s (2 min) to avoid API exhaustion. Failed products also auto-retry up to 5 times with backoff (500/timeout/rate limit).'
       }
     }
   },
@@ -378,6 +383,11 @@ const resources = {
       errorRateLimitMin: '0 veya daha büyük olmalıdır.',
       errorRateLimitMax: 'En fazla 600 saniye (10 dk) olabilir.',
       batchRateLimitWait: 'Hız limiti: sonraki tur için {{seconds}} saniye bekleniyor...',
+      batchRetrying:
+        '“{{product}}” için yeniden deneme {{attempt}}/{{max}} — {{seconds}} sn… {{error}}',
+      batchRetryToast: 'Ürün hata verdi — otomatik tekrar',
+      batchRetryToastDesc: '“{{product}}”: deneme {{attempt}}/{{max}}. {{error}}',
+      batchRetryExhausted: '“{{product}}” {{max}} denemeden sonra başarısız: {{error}}',
       batchComplete: 'Toplu işlem bitti: {{total}} referans görsel işlendi.',
       downloadBatchResults: 'Tümünü İndir (referansa göre ayrılmış)',
       batchDownloadFailed: 'Toplu indirme başarısız',
@@ -417,7 +427,7 @@ const resources = {
         resolution: 'Piksel boyutunu/çıktı kalite önayarını belirler.',
         resizeOutput: 'Üretilen görselleri dışa aktarıma uygun boyutlara yeniden ölçekler. Özellikle Trendyol, Hepsiburada gibi sitelere 2000x3000 boyutlandırması önerilir.',
         aiUpscale: 'Uretimden sonra ESRGAN Thick (2x veya 3x) calistirir, ardindan secili yeniden boyutlandirma/dis aktarim boyutunu uygular. Daha fazla CPU/RAM kullanir ve gorsel basina daha uzun surer.',
-        batchRateLimit: 'Her toplu üretim turu arasındaki bekleme süresi (saniye). Gecikme istemiyorsanız 0 girin. Önerilen: 120s (2 dk) — API limitinin aşılmaması için.'
+        batchRateLimit: 'Her toplu üretim turu arasındaki bekleme süresi (saniye). Gecikme istemiyorsanız 0 girin. Önerilen: 120s (2 dk). Hata olursa ürün başına en fazla 5 deneme (500/timeout/rate limit için backoff ile otomatik tekrar).'
       }
     }
   }

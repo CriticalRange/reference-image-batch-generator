@@ -155,7 +155,9 @@ type AccentColorOption = 'warm-beige' | 'soft-olive' | 'muted-terracotta' | 'sla
 
 const DEFAULT_COUNT = 1;
 const DEFAULT_BATCH_RATE_LIMIT_SEC = 120;
-const MAX_BATCH_REFERENCE_RETRIES = 1;
+/** attempt 0 + N retries = N+1 total tries per product in batch mode */
+const MAX_BATCH_REFERENCE_RETRIES = 4;
+const BATCH_RETRY_BASE_DELAY_MS = 8_000;
 const MAX_BATCH_RATE_LIMIT_SEC = 600;
 const MAX_HISTORY_ITEMS = 120;
 const MAX_REFERENCE_IMAGES = 6;
@@ -1720,11 +1722,34 @@ export default function HomePage() {
             const rawMessage = stepError instanceof Error ? stepError.message : t('unexpectedError');
             console.error('[batch-generate] step failed', { refIndex, attempt, error: stepError });
             const message = formatGenerationError(rawMessage, t);
+            const nextAttempt = attempt + 1;
+            const maxAttempts = MAX_BATCH_REFERENCE_RETRIES + 1;
 
             if (attempt < MAX_BATCH_REFERENCE_RETRIES) {
-              queue.unshift({ ref, refIndex, attempt: attempt + 1 });
-              toast.error(t('errorGenerationFailed'), {
-                description: `${message} Retrying this product next.`,
+              const delayMs = getBatchRetryDelayMs(rawMessage, attempt);
+              let remaining = delayMs;
+              while (remaining > 0) {
+                setStatusText(
+                  t('batchRetrying', {
+                    product: ref.fileName?.trim() || String(refIndex + 1),
+                    attempt: nextAttempt + 1,
+                    max: maxAttempts,
+                    seconds: Math.ceil(remaining / 1000),
+                    error: message
+                  })
+                );
+                await new Promise<void>((r) => setTimeout(r, Math.min(1000, remaining)));
+                remaining = Math.max(0, remaining - 1000);
+              }
+              // Retry this product immediately after backoff (before later queue items).
+              queue.unshift({ ref, refIndex, attempt: nextAttempt });
+              toast.error(t('batchRetryToast'), {
+                description: t('batchRetryToastDesc', {
+                  product: ref.fileName?.trim() || String(refIndex + 1),
+                  attempt: nextAttempt + 1,
+                  max: maxAttempts,
+                  error: message
+                }),
                 duration: 4500
               });
             } else {
@@ -1733,7 +1758,11 @@ export default function HomePage() {
                 ...prev,
                 {
                   promptVariant: promptForRun,
-                  error: message
+                  error: t('batchRetryExhausted', {
+                    product: ref.fileName?.trim() || String(refIndex + 1),
+                    max: maxAttempts,
+                    error: message
+                  })
                 }
               ]);
               const failedRunResult: BatchRunResult = {
@@ -1744,7 +1773,14 @@ export default function HomePage() {
               };
               batchRunResultsRef.current = [...batchRunResultsRef.current, failedRunResult];
               setBatchRunResults([...batchRunResultsRef.current]);
-              toast.error(t('errorGenerationFailed'), { description: message, duration: 6000 });
+              toast.error(t('errorGenerationFailed'), {
+                description: t('batchRetryExhausted', {
+                  product: ref.fileName?.trim() || String(refIndex + 1),
+                  max: maxAttempts,
+                  error: message
+                }),
+                duration: 7000
+              });
             }
           } finally {
             setPendingHistoryIds([]);
@@ -2022,6 +2058,11 @@ export default function HomePage() {
       <section className="workspace">
         <div className="workspace-header">
           <h1>{t('appTitle')}</h1>
+          <p style={{ margin: '6px 0 0' }}>
+            <a href="/local-batch" style={{ color: 'var(--brand)', fontWeight: 600, fontSize: '0.9rem' }}>
+              KA Konsol Batch Panel →
+            </a>
+          </p>
           <div className="workspace-top">
             <button
               type="button"
@@ -3184,6 +3225,19 @@ function describeResize(width: number | undefined, height: number | undefined, t
   }
 
   return `${width}x${height}`;
+}
+
+/** Backoff before re-queueing a failed batch product. Longer for 429/5xx/timeouts. */
+function getBatchRetryDelayMs(message: string, attempt: number): number {
+  const m = message.toLowerCase();
+  const a = Math.max(0, attempt);
+  if (/429|rate.?limit|too many requests/.test(m)) {
+    return Math.min(180_000, 30_000 * 2 ** a);
+  }
+  if (/50[0-4]|timeout|timed out|network|econnreset|fetch failed|generation failed|server/.test(m)) {
+    return Math.min(120_000, BATCH_RETRY_BASE_DELAY_MS * 2 ** a);
+  }
+  return Math.min(60_000, BATCH_RETRY_BASE_DELAY_MS * (a + 1));
 }
 
 function formatGenerationError(message: string, t: (key: string, options?: Record<string, unknown>) => string): string {

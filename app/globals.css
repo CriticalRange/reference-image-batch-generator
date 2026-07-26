@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --bg: #f2f0e9;
   --bg-accent: #e0ecff;
   --ink: #1e232c;
@@ -2035,5 +2035,320 @@ button:disabled {
     box-shadow:
       0 16px 40px rgba(204, 18, 18, 0.52),
       inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  }
+}
+
+/* ===== Local KA batch dashboard (/local-batch) ===== */
+/* Override global main { max-width; padding } so this page owns spacing */
+main.local-batch-page {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  margin: 0;
+  padding: clamp(1.75rem, 4.5vw, 3.25rem) clamp(1.35rem, 4.5vw, 2.75rem) clamp(2.75rem, 6vw, 4.25rem);
+}
+
+.local-batch-inner {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.local-batch-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+
+.local-batch-header-text {
+  min-width: min(100%, 280px);
+  flex: 1 1 280px;
+}
+
+.local-batch-header h1 {
+  margin: 0;
+  font-size: clamp(1.75rem, 3.5vw, 2.4rem);
+  letter-spacing: -0.02em;
+}
+
+.local-batch-subtitle {
+  margin: 0.55rem 0 0 !important;
+  max-width: 60ch;
+}
+
+.local-batch-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.local-batch-nav-btn {
+  text-decoration: none;
+  padding: 0.55rem 0.9rem !important;
+  white-space: nowrap;
+}
+
+.local-batch-panel {
+  box-sizing: border-box;
+  padding: 1.15rem 1.25rem 1.25rem;
+}
+
+.local-batch-form {
+  padding: 0 !important;
+  margin-top: 0.35rem;
+}
+
+.local-batch-live-strip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.05rem 1.25rem !important;
+}
+
+.local-batch-live-strip.is-live {
+  border-color: color-mix(in srgb, var(--brand-2) 45%, var(--line));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand-2) 25%, transparent),
+    var(--panel-shadow);
+}
+
+.local-batch-live-left {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+.local-batch-pulse {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #8b929e;
+  flex-shrink: 0;
+}
+
+.local-batch-pulse.on {
+  background: #19bc99;
+  box-shadow: 0 0 0 0 rgba(25, 188, 153, 0.55);
+  animation: local-batch-pulse 1.4s ease-out infinite;
+}
+
+@keyframes local-batch-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(25, 188, 153, 0.55); }
+  70% { box-shadow: 0 0 0 12px rgba(25, 188, 153, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(25, 188, 153, 0); }
+}
+
+.local-batch-live-title {
+  display: block;
+  font-size: 1.05rem;
+}
+
+.local-batch-live-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+}
+
+.local-batch-live-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.local-batch-phase {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 0.32rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.local-batch-chip {
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0.32rem 0.65rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  color: var(--brand);
+}
+
+.local-batch-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 1.1rem;
+  width: 100%;
+}
+
+.local-batch-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem 1rem;
+  margin: 0.25rem 0 1rem;
+}
+
+.local-batch-metrics > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.local-batch-metrics strong {
+  font-size: clamp(1.35rem, 2.5vw, 1.65rem);
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.local-batch-metrics small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.local-batch-progress-track {
+  height: 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 85%, transparent);
+  overflow: hidden;
+  margin-bottom: 1.1rem;
+}
+
+.local-batch-progress-track.thin {
+  height: 6px;
+  margin: 0.4rem 0 0;
+}
+
+.local-batch-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--generate-grad-1), var(--generate-grad-4), var(--generate-grad-5));
+  transition: width 0.45s ease;
+}
+
+.local-batch-current {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem 1.15rem;
+  padding-top: 0.15rem;
+}
+
+.local-batch-current > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.local-batch-current .span-2 {
+  grid-column: 1 / -1;
+}
+
+.local-batch-current .muted {
+  font-size: 0.75rem;
+}
+
+.local-batch-mono {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  word-break: break-word;
+  font-weight: 600;
+}
+
+.local-batch-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin: 0.25rem 0 0.35rem;
+}
+
+.local-batch-actions-row .generate-btn {
+  min-width: min(100%, 200px);
+}
+
+.local-batch-partial-list {
+  margin: 0.35rem 0 0;
+  padding-left: 1.15rem;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.local-batch-partial-list .ok {
+  color: var(--brand-2);
+}
+
+.local-batch-log-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.local-batch-log {
+  box-sizing: border-box;
+  margin: 0;
+  max-height: min(42vh, 380px);
+  overflow: auto;
+  padding: 0.95rem 1.05rem;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  letter-spacing: normal;
+}
+
+@media (max-width: 900px) {
+  .local-batch-page {
+    padding: 1.25rem 1rem 2.5rem;
+  }
+
+  .local-batch-main-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .local-batch-live-strip {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .local-batch-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .local-batch-current {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .local-batch-page {
+    padding: 1rem 0.85rem 2rem;
+  }
+
+  .local-batch-panel {
+    padding: 1rem 0.95rem 1.05rem;
   }
 }
