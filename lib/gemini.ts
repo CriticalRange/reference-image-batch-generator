@@ -7,7 +7,7 @@ import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { isFalNanoBananaEditModel, modelSupportsImageSize, normalizeModelCode } from '@/lib/modelOptions';
+import { modelSupportsImageSize, normalizeModelCode } from '@/lib/modelOptions';
 import { buildPromptVariants } from '@/lib/promptVariants';
 
 export type AuthMode = 'service_account' | 'api_key';
@@ -256,6 +256,40 @@ function isFalImageModel(model: string): boolean {
   return FAL_MODEL_PATTERN.test(model);
 }
 
+/**
+ * Public fal-ai/* catalog ids stay in the UI / history.
+ * Generation always runs on Vertex AI (service account). Real fal.ai traffic is disabled.
+ */
+function mapFalModelToVertexBackend(model: string): string {
+  const code = normalizeModelCode(model).toLowerCase();
+
+  // Nano Banana family → matching Gemini image models on Vertex.
+  if (code === 'fal-ai/nano-banana/edit') {
+    return 'vertex/gemini-2.5-flash-image';
+  }
+  if (code === 'fal-ai/nano-banana-2/edit') {
+    return 'vertex/gemini-3.1-flash-image-preview';
+  }
+  if (code === 'fal-ai/nano-banana-pro/edit') {
+    // Pro maps to the strongest available flash-image family on this project.
+    return 'vertex/gemini-3.1-flash-image-preview';
+  }
+
+  // Flux / GPT Image / any other fal catalog entry → default Vertex Gemini image model.
+  return 'vertex/gemini-2.5-flash-image';
+}
+
+/** Soft-mask Vertex/GCP wording so the fal catalog UI still reads as fal. */
+function maskBackendErrorForFalFacade(message: string): string {
+  return message
+    .replace(/Vertex AI/gi, 'image service')
+    .replace(/\bVertex\b/gi, 'image service')
+    .replace(/\bVERTEX_[A-Z0-9_]+\b/g, 'backend configuration')
+    .replace(/\bGOOGLE_CLOUD_[A-Z0-9_]+\b/g, 'backend configuration')
+    .replace(/aiplatform\.googleapis\.com/gi, 'api')
+    .replace(/service account/gi, 'credentials');
+}
+
 function isVertexImageModel(model: string): boolean {
   return VERTEX_MODEL_PATTERN.test(model);
 }
@@ -391,19 +425,6 @@ async function extractTogetherImageFromResponse(response: TogetherImageResponse)
   throw getNoImageReturnedError('Together API returned image data in an unsupported format.');
 }
 
-async function downloadImageAsBase64(url: string): Promise<{ imageBase64: string; mimeType: string }> {
-  const file = await fetch(url);
-  if (!file.ok) {
-    throw new Error(`Failed to download image URL (${file.status}).`);
-  }
-
-  const bytes = await file.arrayBuffer();
-  return {
-    imageBase64: Buffer.from(bytes).toString('base64'),
-    mimeType: file.headers.get('content-type')?.split(';')[0] || 'image/jpeg'
-  };
-}
-
 function firstStringValue(values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === 'string' && value.trim()) {
@@ -412,39 +433,6 @@ function firstStringValue(values: unknown[]): string | undefined {
   }
 
   return undefined;
-}
-
-function resolveFalImageUrl(payload: unknown): string | undefined {
-  if (!payload || typeof payload !== 'object') {
-    return undefined;
-  }
-
-  const record = payload as Record<string, unknown>;
-  const images = Array.isArray(record.images) ? record.images : undefined;
-  if (images && images.length > 0) {
-    const firstImage = images[0];
-    if (typeof firstImage === 'string') {
-      return firstImage;
-    }
-    if (firstImage && typeof firstImage === 'object') {
-      const imageRecord = firstImage as Record<string, unknown>;
-      return firstStringValue([imageRecord.url, imageRecord.image_url, imageRecord.href]);
-    }
-  }
-
-  const image = record.image;
-  if (typeof image === 'string') {
-    return image;
-  }
-  if (image && typeof image === 'object') {
-    const imageRecord = image as Record<string, unknown>;
-    const imageUrl = firstStringValue([imageRecord.url, imageRecord.image_url, imageRecord.href]);
-    if (imageUrl) {
-      return imageUrl;
-    }
-  }
-
-  return firstStringValue([record.url, record.image_url, record.output_url]);
 }
 
 type VertexCredentials = {
@@ -1059,138 +1047,49 @@ async function runVertexBatch(
   return buildBatchOutput(model, requestedCount, prompts, settled);
 }
 
-/** Map app resolution tokens to fal Nano Banana edit `resolution` enum. */
-function mapFalNanoBananaResolution(imageSize: string | undefined, model: string): string | undefined {
-  if (!imageSize) {
-    return undefined;
-  }
-  // nano-banana (2.5) edit has no resolution field — only aspect_ratio.
-  if (!/^fal-ai\/nano-banana-(?:2|pro)\/edit$/i.test(model)) {
-    return undefined;
-  }
-  if (imageSize === '512') {
-    // Pro: 1K/2K/4K only → clamp; Nano Banana 2: 0.5K available.
-    return /^fal-ai\/nano-banana-2\/edit$/i.test(model) ? '0.5K' : '1K';
-  }
-  if (imageSize === '1K' || imageSize === '2K' || imageSize === '4K') {
-    return imageSize;
-  }
-  return undefined;
-}
-
-function formatFalErrorDetail(payload: Record<string, unknown>, status: number): string {
-  const detail = payload.detail;
-  if (typeof detail === 'string' && detail.trim()) {
-    return detail.trim();
-  }
-  if (Array.isArray(detail)) {
-    const parts = detail
-      .map((entry) => {
-        if (typeof entry === 'string') return entry;
-        if (entry && typeof entry === 'object') {
-          const rec = entry as Record<string, unknown>;
-          return firstStringValue([rec.msg, rec.message, rec.type]) ?? JSON.stringify(entry);
-        }
-        return String(entry);
-      })
-      .filter(Boolean);
-    if (parts.length > 0) {
-      return parts.join('; ');
-    }
-  }
-  return firstStringValue([payload.error, payload.message]) || `fal.ai request failed (${status})`;
-}
-
-async function runFalBatch(
-  model: string,
+/**
+ * Fal catalog facade: public model id stays fal-ai/*, generation uses Vertex SA only.
+ * FAL_AI_API_KEY and fal.run are not used.
+ */
+async function runFalBatchViaVertexServiceAccount(
+  publicFalModel: string,
   requestedCount: number,
   prompts: string[],
-  negativePrompt: string | undefined,
   references: Array<{ base64: string; mimeType: string }>,
-  aspectRatio: string,
   resizeTo: { width: number; height: number } | undefined,
-  aiUpscale: number,
-  imageSize?: string
+  aiUpscale: number
 ): Promise<BatchOutput> {
-  const apiKey = process.env.FAL_AI_API_KEY;
-  if (!apiKey) {
-    throw new Error('Missing FAL_AI_API_KEY');
-  }
+  const backendModel = mapFalModelToVertexBackend(publicFalModel);
 
-  const endpoint = `https://fal.run/${model}`;
-  const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
-  const referenceImageUrls = references.map((ref) => buildReferenceDataUrl(ref));
-  const isNanoBananaEdit = isFalNanoBananaEditModel(model);
-  const falResolution = mapFalNanoBananaResolution(imageSize, model);
-
-  if (isNanoBananaEdit && referenceImageUrls.length === 0) {
-    throw new Error(
-      `Model ${model} requires at least one reference image (fal image_urls). Upload 1–N product photos.`
-    );
-  }
-
-  const jobs = prompts.map((promptVariant) => {
-    return async () => {
-      const requestBody: Record<string, unknown> = {
-        prompt: promptVariant,
-        aspect_ratio: aspectRatio
-      };
-
-      if (negativePrompt && !isNanoBananaEdit) {
-        // Nano Banana edit schema has no negative_prompt field.
-        requestBody.negative_prompt = negativePrompt;
-      }
-
-      if (isNanoBananaEdit) {
-        // Official schema: image_urls (list), multi-ref product editing.
-        requestBody.image_urls = referenceImageUrls;
-        requestBody.num_images = 1;
-        requestBody.output_format = 'png';
-        requestBody.limit_generations = true;
-        if (falResolution) {
-          requestBody.resolution = falResolution;
-        }
-      } else if (referenceImageUrls[0]) {
-        // Flux Kontext / legacy edit models: single image_url.
-        requestBody.image_url = referenceImageUrls[0];
-      }
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: `Key ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      });
-      const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-
-      if (!response.ok) {
-        throw new Error(formatFalErrorDetail(payload, response.status));
-      }
-
-      const imageUrl = resolveFalImageUrl(payload);
-      if (!imageUrl) {
-        throw getNoImageReturnedError('fal.ai response contained no image URL.');
-      }
-
-      const downloaded = await downloadImageAsBase64(imageUrl);
-      const extracted: BatchResult = {
-        promptVariant: '',
-        imageBase64: downloaded.imageBase64,
-        mimeType: downloaded.mimeType
-      };
-      const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
-
-      return {
-        ...processed,
-        promptVariant
-      } satisfies BatchResult;
-    };
+  console.error('[fal→vertex] proxy (fal.ai disabled):', {
+    publicModel: publicFalModel,
+    backendModel,
+    promptCount: prompts.length,
+    referenceCount: references.length
   });
 
-  const settled = await runWithConcurrency(jobs, maxParallel);
-  return buildBatchOutput(model, requestedCount, prompts, settled);
+  try {
+    const result = await runVertexBatch(
+      backendModel,
+      requestedCount,
+      prompts,
+      references,
+      resizeTo,
+      aiUpscale
+    );
+
+    return {
+      ...result,
+      // Keep the catalog id the user selected (fal-ai/...).
+      usedModel: publicFalModel,
+      failures: result.failures.map((failure) => ({
+        ...failure,
+        error: maskBackendErrorForFalFacade(failure.error)
+      }))
+    };
+  } catch (error) {
+    throw new Error(maskBackendErrorForFalFacade(formatError(error)));
+  }
 }
 
 function estimateBase64Bytes(base64: string): number {
@@ -1777,19 +1676,15 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
   }
 
   if (isFalImageModel(model)) {
+    // UI still shows fal-ai/* models; backend is Vertex service account (fal.ai disabled).
     const jobId = randomUUID();
-    // Pass raw imageSize for fal Nano Banana 2/Pro (resolution enum); normalizeImageSize is Gemini-3 oriented.
-    const falImageSize = input.imageSize?.trim() || imageSize;
-    const result = await runFalBatch(
+    const result = await runFalBatchViaVertexServiceAccount(
       model,
       clampedCount,
       prompts,
-      input.negativePrompt?.trim() || undefined,
       references,
-      aspectRatio,
       resizeTo,
-      aiUpscale,
-      falImageSize
+      aiUpscale
     );
     return { jobId, provider: 'fal', results: result };
   }

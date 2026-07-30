@@ -109,9 +109,11 @@ const resources = {
       statusModelSummary: 'Model: {{model}} | {{success}} succeeded, {{fail}} failed.',
       statusGenerationFailed: 'Generation failed.',
       toastHistoryLoadFailed: 'History load failed',
-      toastHistoryLoadFailedDesc: 'Could not read local history cache.',
+      toastHistoryLoadFailedDesc:
+        'Could not read the browser history cache (often full or corrupted). Download any open images first, then clear this site’s data or reset browser storage and try again.',
       toastHistorySaveFailed: 'History save failed',
-      toastHistorySaveFailedDesc: 'Could not write local history cache.',
+      toastHistorySaveFailedDesc:
+        'Could not write the local history cache — storage is likely full. Download your images now, then clear this site’s data (or reset browser storage) and try again.',
       toastRegenerateUnavailable: 'Re-generate unavailable',
       toastRegenerateUnavailableDesc: 'This older history item has no stored generation configuration.',
       toastReferenceUnavailable: 'Reference images unavailable',
@@ -324,9 +326,11 @@ const resources = {
       statusModelSummary: 'Model: {{model}} | {{success}} başarılı, {{fail}} başarısız.',
       statusGenerationFailed: 'Üretim başarısız oldu.',
       toastHistoryLoadFailed: 'Geçmiş yüklenemedi',
-      toastHistoryLoadFailedDesc: 'Yerel geçmiş önbelleği okunamadı.',
+      toastHistoryLoadFailedDesc:
+        'Tarayıcı geçmiş önbelleği okunamadı (genelde dolu veya bozulmuş). Açık görselleri hemen indirin; ardından bu sitenin verilerini temizleyin veya tarayıcı depolamasını sıfırlayıp yeniden deneyin.',
       toastHistorySaveFailed: 'Geçmiş kaydedilemedi',
-      toastHistorySaveFailedDesc: 'Yerel geçmiş önbelleğine yazılamadı.',
+      toastHistorySaveFailedDesc:
+        'Yerel geçmiş önbelleğine yazılamadı — depolama büyük olasılıkla dolu. Görselleri şimdi indirin; sonra bu sitenin verilerini temizleyin (veya tarayıcı depolamasını sıfırlayın) ve tekrar deneyin.',
       toastRegenerateUnavailable: 'Yeniden üretim kullanılamıyor',
       toastRegenerateUnavailableDesc: 'Bu eski geçmiş öğesinde kayıtlı üretim yapılandırması yok.',
       toastReferenceUnavailable: 'Referans görseller kullanılamıyor',

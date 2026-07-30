@@ -519,9 +519,16 @@ input[type='file']::file-selector-button {
 
 textarea {
   resize: none;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   min-height: 120px;
-  transition: height 140ms ease;
+  /* Cap growth so very long prompts stay editable without page scroll thrashing. */
+  max-height: min(50vh, 28rem);
+  /* Height is set imperatively; animating it fights scroll restoration while typing. */
+  transition:
+    background 220ms ease,
+    border-color 220ms ease,
+    color 220ms ease;
 }
 
 select {

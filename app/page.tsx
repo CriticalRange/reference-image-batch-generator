@@ -880,7 +880,7 @@ export default function HomePage() {
       } catch {
         toast.error(t('toastHistoryLoadFailed'), {
           description: t('toastHistoryLoadFailedDesc'),
-          duration: 4500
+          duration: 10_000
         });
       } finally {
         if (!cancelled) {
@@ -905,7 +905,7 @@ export default function HomePage() {
     void set(HISTORY_STORAGE_KEY, payload).catch(() => {
       toast.error(t('toastHistorySaveFailed'), {
         description: t('toastHistorySaveFailedDesc'),
-        duration: 4500
+        duration: 10_000
       });
     });
   }, [historyItems, isHistoryHydrated, t]);
@@ -3173,14 +3173,40 @@ function autoResizeTextarea(element: HTMLTextAreaElement | null) {
     return;
   }
 
-  const currentHeight = element.offsetHeight;
-  element.style.height = 'auto';
-  const targetHeight = element.scrollHeight;
-  element.style.height = `${currentHeight}px`;
+  // Growing/shrinking a focused textarea often makes the browser scroll the field
+  // (or its top) into view — which feels like the caret/text jumps to the top.
+  const pageX = window.scrollX;
+  const pageY = window.scrollY;
+  const selectionStart = element.selectionStart;
+  const selectionEnd = element.selectionEnd;
+  const hadInternalOverflow = element.scrollHeight > element.clientHeight + 1;
+  const innerScrollTop = element.scrollTop;
 
-  requestAnimationFrame(() => {
-    element.style.height = `${targetHeight}px`;
-  });
+  // Disable height transition for this measure so layout settles in one frame.
+  const previousTransition = element.style.transition;
+  element.style.transition = 'none';
+  element.style.height = 'auto';
+  element.style.height = `${element.scrollHeight}px`;
+  // Force reflow before restoring transition so the browser does not animate the jump.
+  void element.offsetHeight;
+  element.style.transition = previousTransition;
+
+  // Restore page scroll if the browser "helpfully" scrolled on resize.
+  if (window.scrollX !== pageX || window.scrollY !== pageY) {
+    window.scrollTo(pageX, pageY);
+  }
+
+  // Keep caret/selection. Only pin internal scroll when the field was already
+  // overflowing (max-height cap) so typing mid-text does not jump to the top;
+  // when growing freely, leave scrollTop alone so the caret can stay in view.
+  try {
+    element.setSelectionRange(selectionStart, selectionEnd);
+  } catch {
+    // Some input types reject setSelectionRange; textarea should be fine.
+  }
+  if (hadInternalOverflow && element.scrollHeight > element.clientHeight + 1) {
+    element.scrollTop = innerScrollTop;
+  }
 }
 
 function toResolutionOption(value: string | undefined): ResolutionOption {
