@@ -1,0 +1,612 @@
+openapi: 3.1.0
+info:
+  title: Reference Image Batch Generator API
+  summary: HTTP API for parallel image generation from a base prompt and optional reference images.
+  description: |
+    UI-parity HTTP API for the **reference-image-batch-generator** app (Ceneyra Software).
+
+    The browser UI is a thin client over these routes. External scripts can submit the same
+    generation jobs (prompt, references, model, auth mode, resize, upscale) and poll async work.
+
+    **Client-only features** (not part of this API): history, archive, zip packing, and multi-product
+    queues. Call `POST /api/generate` once per product photo when batching many references.
+
+    ### Auth
+    - If `APP_ACCESS_TOKEN` is set on the server, send `Authorization: Bearer <token>`.
+    - If unset, the API is open (local/dev only).
+
+    ### Sync vs async
+    - **Sync** (`results` on POST): Vertex service account, Vertex Express, Together, fal→Vertex facade.
+    - **Async** (poll `GET /api/generate?job=`): Gemini Developer Batch API (`authMode: api_key` or
+      non-Vertex Gemini catalog models).
+  version: 1.0.0
+  contact:
+    name: Ceneyra Software
+  license:
+    name: Proprietary
+
+servers:
+  - url: /
+    description: Same origin as the app (use with Swagger UI at /api-docs)
+  - url: http://localhost:3000
+    description: Local Next.js dev server
+
+tags:
+  - name: Generation
+    description: Submit and poll image generation jobs
+  - name: Models
+    description: Discover available model codes
+
+security:
+  - bearerAuth: []
+  - {}
+
+paths:
+  /api/generate:
+    post:
+      tags: [Generation]
+      operationId: submitGenerate
+      summary: Submit a generation job
+      description: |
+        Creates a generation job for `count` prompt variants (clamped by `MAX_BATCH_SIZE`).
+
+        - Sync providers return `results` immediately.
+        - Async Gemini Developer Batch returns only `jobId` + `provider: gemini`; poll GET.
+      parameters: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateRequest'
+            examples:
+              vertexServiceAccount:
+                summary: Vertex service account (sync)
+                value:
+                  prompt: Studio product photo, soft light
+                  count: 2
+                  model: vertex/gemini-2.5-flash-image
+                  authMode: service_account
+                  aspectRatio: '2:3'
+                  referenceImages:
+                    - base64: iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==
+                      mimeType: image/png
+              geminiDeveloperBatch:
+                summary: Gemini Developer Batch API (async)
+                value:
+                  prompt: Clean e-commerce product shot
+                  count: 5
+                  model: vertex/gemini-2.5-flash-image
+                  authMode: api_key
+                  aspectRatio: '1:1'
+                  imageSize: 1K
+                  referenceImages:
+                    - base64: iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==
+                      mimeType: image/png
+      responses:
+        '200':
+          description: Job accepted. Includes `results` for sync providers; async returns job id only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateSubmitResponse'
+              examples:
+                sync:
+                  summary: Sync Vertex / Together / Express
+                  value:
+                    jobId: 550e8400-e29b-41d4-a716-446655440000
+                    provider: vertex
+                    results:
+                      usedModel: vertex/gemini-2.5-flash-image
+                      requestedCount: 2
+                      succeededCount: 2
+                      failedCount: 0
+                      results:
+                        - promptVariant: Studio product photo, soft light
+                          mimeType: image/png
+                          imageBase64: ''
+                          blobUrl: https://example.blob.vercel-storage.com/out-1.png
+                        - promptVariant: Studio product photo, soft light (variant 2)
+                          mimeType: image/png
+                          imageBase64: ''
+                          blobUrl: https://example.blob.vercel-storage.com/out-2.png
+                      failures: []
+                async:
+                  summary: Async Gemini batch
+                  value:
+                    jobId: batches/abc123
+                    provider: gemini
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+      security:
+        - bearerAuth: []
+        - {}
+
+    get:
+      tags: [Generation]
+      operationId: getGenerateStatus
+      summary: Poll an async generation job
+      description: |
+        Used after `POST /api/generate` when the response has no `results` (Gemini Developer Batch).
+
+        Terminal states: `succeeded`, `failed`, `cancelled`, `expired`.
+
+        When available, `progress` exposes Batch API request counters
+        (`successfulCount` + `failedCount` / `requestCount`).
+      parameters:
+        - name: job
+          in: query
+          required: true
+          description: "Job id returned by POST (e.g. batches/...)."
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 220
+            pattern: '^[a-zA-Z0-9_./:-]+$'
+          example: batches/abc123
+      responses:
+        '200':
+          description: Current job status (and results when succeeded).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateStatusResponse'
+              examples:
+                running:
+                  summary: In progress with batch stats
+                  value:
+                    jobId: batches/abc123
+                    state: running
+                    stateLabel: Running
+                    stateDetail: Running for 45s · 2/5 requests done
+                    progress:
+                      requestCount: 5
+                      successfulCount: 2
+                      failedCount: 0
+                      pendingCount: 3
+                succeeded:
+                  summary: Completed
+                  value:
+                    jobId: batches/abc123
+                    state: succeeded
+                    stateLabel: Succeeded
+                    stateDetail: Finished in 2m 10s · 5/5 requests done
+                    progress:
+                      requestCount: 5
+                      successfulCount: 5
+                      failedCount: 0
+                      pendingCount: 0
+                    results:
+                      usedModel: gemini-2.5-flash-image
+                      requestedCount: 5
+                      succeededCount: 5
+                      failedCount: 0
+                      results:
+                        - promptVariant: Clean e-commerce product shot
+                          mimeType: image/png
+                          imageBase64: ''
+                          blobUrl: https://example.blob.vercel-storage.com/out.png
+                      failures: []
+                failed:
+                  summary: Failed
+                  value:
+                    jobId: batches/abc123
+                    state: failed
+                    stateLabel: Failed
+                    error: Batch job failed.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+      security:
+        - bearerAuth: []
+        - {}
+
+    options:
+      tags: [Generation]
+      operationId: optionsGenerate
+      summary: CORS preflight for /api/generate
+      description: Returns CORS headers when `API_CORS_ORIGINS` is configured.
+      responses:
+        '204':
+          description: No content (preflight OK)
+        '200':
+          description: Preflight response with CORS headers
+
+  /api/models:
+    get:
+      tags: [Models]
+      operationId: listModels
+      summary: List available models
+      description: |
+        Returns curated catalog models merged with Gemini API discovery when `GEMINI_API_KEY` is set.
+        Falls back to catalog-only on discovery failure.
+      responses:
+        '200':
+          description: Model list and default code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelsResponse'
+              example:
+                models:
+                  - code: vertex/gemini-2.5-flash-image
+                    name: Gemini 2.5 Flash Image (Vertex)
+                    group: Vertex AI
+                  - code: gemini-2.5-flash-image
+                    name: Gemini 2.5 Flash Image
+                    group: Gemini Image
+                defaultModel: vertex/gemini-2.5-flash-image
+                source: catalog
+      security:
+        - {}
+        - bearerAuth: []
+
+    options:
+      tags: [Models]
+      operationId: optionsModels
+      summary: CORS preflight for /api/models
+      responses:
+        '204':
+          description: No content (preflight OK)
+        '200':
+          description: Preflight response with CORS headers
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: |
+        Required only when the server has `APP_ACCESS_TOKEN` set.
+        Send the same value as `Authorization: Bearer <token>`.
+
+  responses:
+    BadRequest:
+      description: Validation or unsupported configuration
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          examples:
+            missingPrompt:
+              value:
+                error: Prompt is required.
+            aiUpscaleVercel:
+              value:
+                error: >-
+                  AI Upscale is not supported on Vercel Serverless because the TensorFlow/ESRGAN
+                  runtime exceeds function size limits. Use normal resize on Vercel, or deploy
+                  this app on VPS/Docker for AI Upscale.
+    Unauthorized:
+      description: Missing or invalid access token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            error: Unauthorized.
+    PayloadTooLarge:
+      description: Request body exceeds `MAX_REQUEST_BYTES`
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            error: Request body is too large.
+    TooManyRequests:
+      description: IP rate limit exceeded
+      headers:
+        Retry-After:
+          description: Seconds until the client may retry
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            error: Rate limit exceeded. Try again later.
+    ServerError:
+      description: Provider or internal failure (details in server logs)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            error: Generation failed. Check server logs for details.
+
+  schemas:
+    ErrorBody:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          description: Human-readable error message (secrets redacted when possible)
+
+    AuthMode:
+      type: string
+      description: |
+        Authentication path for Vertex-listed / Gemini image models.
+        Always accepted; only relevant backends use it.
+      enum:
+        - service_account
+        - api_key
+        - vertex_express
+      default: service_account
+
+    Provider:
+      type: string
+      enum:
+        - gemini
+        - together
+        - fal
+        - vertex
+
+    JobState:
+      type: string
+      enum:
+        - pending
+        - running
+        - succeeded
+        - failed
+        - cancelled
+        - expired
+        - unknown
+
+    ReferenceImage:
+      type: object
+      required: [base64, mimeType]
+      additionalProperties: false
+      properties:
+        base64:
+          type: string
+          description: "Raw base64 image bytes without a data: URL prefix"
+          minLength: 1
+        mimeType:
+          type: string
+          description: Image MIME type
+          enum:
+            - image/jpeg
+            - image/jpg
+            - image/png
+            - image/webp
+            - image/heic
+            - image/heif
+
+    GenerateRequest:
+      type: object
+      required: [prompt]
+      additionalProperties: false
+      properties:
+        prompt:
+          type: string
+          description: Base generation prompt
+          minLength: 1
+          maxLength: 10000
+        negativePrompt:
+          type: string
+          description: Optional negative prompt (Together / supporting backends)
+          maxLength: 2000
+        count:
+          type: integer
+          description: Number of variants (clamped by server `MAX_BATCH_SIZE`, default max 8)
+          minimum: 1
+          maximum: 10
+          default: 5
+        model:
+          type: string
+          description: |
+            Model code. Examples: vertex/gemini-2.5-flash-image,
+            vertex/gemini-3.1-flash-image-preview, Together codes, or fal-ai/… facade ids.
+          example: vertex/gemini-2.5-flash-image
+        authMode:
+          $ref: '#/components/schemas/AuthMode'
+        aspectRatio:
+          type: string
+          description: "Output aspect ratio (provider-dependent). e.g. 1:1, 2:3, 3:2, 9:16, 16:9, 21:9"
+          example: '2:3'
+        imageSize:
+          type: string
+          description: "Resolution hint. Gemini-style 512/1K/2K/4K, or Together sizes like 1024x1024."
+          example: 1K
+        steps:
+          type: integer
+          description: Sampling steps (Together and similar); clamped 1–50
+          minimum: 1
+          maximum: 50
+        resizeWidth:
+          type: integer
+          description: Post-process width (must pair with `resizeHeight`)
+          minimum: 64
+          maximum: 8192
+        resizeHeight:
+          type: integer
+          description: Post-process height (must pair with `resizeWidth`)
+          minimum: 64
+          maximum: 8192
+        aiUpscale:
+          type: number
+          description: |
+            ESRGAN upscale factor (`2` or `3`). Not supported on Vercel serverless.
+          enum: [2, 3]
+        referenceImages:
+          type: array
+          description: Preferred multi-reference input
+          items:
+            $ref: '#/components/schemas/ReferenceImage'
+        referenceImageBase64:
+          type: string
+          description: Legacy single-image base64 (use with `referenceMimeType`)
+        referenceMimeType:
+          type: string
+          description: Legacy single-image MIME type
+
+    GenerationResultItem:
+      type: object
+      required: [promptVariant, mimeType]
+      additionalProperties: false
+      properties:
+        promptVariant:
+          type: string
+          description: Prompt text used for this variant
+        mimeType:
+          type: string
+          example: image/png
+        imageBase64:
+          type: string
+          description: |
+            Base64 image payload. May be empty when `blobUrl` is set after Vercel Blob offload.
+        blobUrl:
+          type: string
+          format: uri
+          description: Prefer this URL when present (Vercel Blob)
+
+    GenerationFailureItem:
+      type: object
+      required: [promptVariant, error]
+      additionalProperties: false
+      properties:
+        promptVariant:
+          type: string
+        error:
+          type: string
+
+    BatchOutput:
+      type: object
+      required:
+        - usedModel
+        - requestedCount
+        - succeededCount
+        - failedCount
+        - results
+        - failures
+      additionalProperties: false
+      properties:
+        usedModel:
+          type: string
+          description: Model code reported by the backend (may omit `vertex/` for Developer API jobs)
+        requestedCount:
+          type: integer
+          minimum: 0
+        succeededCount:
+          type: integer
+          minimum: 0
+        failedCount:
+          type: integer
+          minimum: 0
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenerationResultItem'
+        failures:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenerationFailureItem'
+
+    BatchProgress:
+      type: object
+      description: Request-level progress from Gemini Batch (`batchStats` / `completionStats`)
+      required:
+        - requestCount
+        - successfulCount
+        - failedCount
+        - pendingCount
+      additionalProperties: false
+      properties:
+        requestCount:
+          type: integer
+          minimum: 0
+          description: Total requests in the batch
+        successfulCount:
+          type: integer
+          minimum: 0
+        failedCount:
+          type: integer
+          minimum: 0
+        pendingCount:
+          type: integer
+          minimum: 0
+
+    GenerateSubmitResponse:
+      type: object
+      required: [jobId, provider]
+      additionalProperties: false
+      properties:
+        jobId:
+          type: string
+          description: "Opaque job id (UUID or Gemini batches/... name)"
+        provider:
+          $ref: '#/components/schemas/Provider'
+        results:
+          $ref: '#/components/schemas/BatchOutput'
+
+    GenerateStatusResponse:
+      type: object
+      required: [jobId, state, stateLabel]
+      additionalProperties: false
+      properties:
+        jobId:
+          type: string
+        state:
+          $ref: '#/components/schemas/JobState'
+        stateLabel:
+          type: string
+          description: Human-readable state label
+        stateDetail:
+          type: string
+          description: Extra timing / progress detail string
+        error:
+          type: string
+          description: Present on failed / cancelled / expired jobs
+        progress:
+          $ref: '#/components/schemas/BatchProgress'
+        results:
+          $ref: '#/components/schemas/BatchOutput'
+
+    ModelOption:
+      type: object
+      required: [code, name, group]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: Value to send as `model` on generate
+        name:
+          type: string
+          description: Display name
+        group:
+          type: string
+          description: UI grouping label (e.g. Vertex AI, Together AI)
+
+    ModelsResponse:
+      type: object
+      required: [models, defaultModel, source]
+      additionalProperties: false
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelOption'
+        defaultModel:
+          type: string
+        source:
+          type: string
+          enum: [catalog, api]
+          description: "'api' when live Gemini list succeeded; otherwise curated 'catalog'"

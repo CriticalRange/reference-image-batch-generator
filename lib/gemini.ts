@@ -10,15 +10,23 @@ import path from 'path';
 import { modelSupportsImageSize, normalizeModelCode } from '@/lib/modelOptions';
 import { buildPromptVariants } from '@/lib/promptVariants';
 
-export type AuthMode = 'service_account' | 'api_key';
+export type AuthMode = 'service_account' | 'api_key' | 'vertex_express';
+/** batch = toplu (async Batch API, cheaper); single = tekli (interactive generateContent, faster). */
+export type RenderMode = 'batch' | 'single';
 
 export type BatchInput = {
   basePrompt: string;
   negativePrompt?: string;
   model?: string;
   steps?: number;
-  /** Vertex / Google auth: service account (default) or Gemini API key from env. */
+  /** Vertex-listed models: api_key (Gemini Developer API, default), service_account, vertex_express. */
   authMode?: AuthMode;
+  /**
+   * Production style:
+   * - batch (toplu): Gemini Developer Batch API — cheaper, async poll
+   * - single (tekli): interactive generateContent — faster, standard pricing
+   */
+  renderMode?: RenderMode;
   referenceImages?: Array<{
     base64: string;
     mimeType: string;
@@ -64,6 +72,14 @@ export type SubmitBatchResult = {
   results?: BatchOutput;
 };
 
+/** Per-request progress from Gemini Batch (`batchStats` / `completionStats`). */
+export type BatchProgressStats = {
+  requestCount: number;
+  successfulCount: number;
+  failedCount: number;
+  pendingCount: number;
+};
+
 export type BatchStatusResult = {
   jobId: string;
   state: JobState;
@@ -71,6 +87,8 @@ export type BatchStatusResult = {
   stateDetail?: string;
   error?: string;
   results?: BatchOutput;
+  /** Present when the Batch API reports request-level stats while the job runs. */
+  progress?: BatchProgressStats;
 };
 
 type UpscalerConstructor = new (options: { model: unknown }) => {
@@ -295,11 +313,47 @@ function isVertexImageModel(model: string): boolean {
 }
 
 function normalizeAuthMode(value: string | undefined): AuthMode {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === 'api_key' || normalized === 'apikey' || normalized === 'api-key') {
-    return 'api_key';
+  const normalized = value?.trim().toLowerCase().replace(/-/g, '_');
+  if (
+    normalized === 'service_account' ||
+    normalized === 'serviceaccount' ||
+    normalized === 'vertex' ||
+    normalized === 'sa'
+  ) {
+    return 'service_account';
   }
-  return 'service_account';
+  if (
+    normalized === 'vertex_express' ||
+    normalized === 'vertexexpress' ||
+    normalized === 'express' ||
+    normalized === 'express_mode'
+  ) {
+    return 'vertex_express';
+  }
+  // Default: Gemini Developer API (api key).
+  return 'api_key';
+}
+
+function normalizeRenderMode(value: string | undefined): RenderMode {
+  const normalized = value?.trim().toLowerCase().replace(/-/g, '_');
+  if (
+    normalized === 'single' ||
+    normalized === 'tekli' ||
+    normalized === 'interactive' ||
+    normalized === 'fast'
+  ) {
+    return 'single';
+  }
+  if (
+    normalized === 'batch' ||
+    normalized === 'toplu' ||
+    normalized === 'bulk' ||
+    normalized === 'economy'
+  ) {
+    return 'batch';
+  }
+  // Default: interactive (tekli) for snappier UX unless caller opts into batch.
+  return 'single';
 }
 
 function normalizeAspectRatio(value: string | undefined): string {
@@ -551,13 +605,178 @@ function extractAllImagenVertexImagesFromResponse(response: Record<string, unkno
 }
 
 /**
- * Generate via API key auth for Vertex-listed models.
- *
- * - Vertex Express keys (AQ.…): REST Express Mode URL (no project/location).
- *   https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent?key=...
- * - AI Studio keys (AIza…): Gemini Developer API via `new GoogleGenAI({ apiKey })`
+ * Auth mode: API Key — Gemini Developer API Batch job (`ai.batches.create`).
+ * Async job; poll via getBatchStatus. ~50% cost vs interactive generateContent.
+ * Does not use Vertex Express.
  */
-async function runGeminiApiKeyBatch(
+async function createGeminiDeveloperBatchJob(input: {
+  model: string;
+  prompts: string[];
+  references: Array<{ base64: string; mimeType: string }>;
+  aspectRatio: string;
+  imageSize: string | undefined;
+  requestedCount: number;
+  resizeTo: { width: number; height: number } | undefined;
+  aiUpscale: number;
+}): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error('Missing GEMINI_API_KEY. Set it in .env.local to use API key authentication.');
+  }
+
+  // Developer API model ids never use the vertex/ prefix.
+  const modelName = input.model.replace(VERTEX_MODEL_PATTERN, '');
+  if (isVertexImagenModel(modelName)) {
+    throw new Error(
+      'Imagen models require Service Account (Vertex AI) authentication. Switch auth mode to Service Account or choose a Gemini image model.'
+    );
+  }
+
+  console.error('[gemini-api-key] createGeminiDeveloperBatchJob:', {
+    model: modelName,
+    mode: 'gemini-developer-batch-api',
+    referenceCount: input.references.length,
+    promptCount: input.prompts.length,
+    aspectRatio: input.aspectRatio,
+    imageSize: input.imageSize ?? null
+  });
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const inlinedRequests = input.prompts.map((promptVariant) => ({
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: promptVariant },
+            ...input.references.map((ref) => ({
+              inlineData: { mimeType: ref.mimeType, data: ref.base64 }
+            }))
+          ]
+        }
+      ],
+      config: {
+        responseModalities: ['IMAGE', 'TEXT'],
+        imageConfig: {
+          aspectRatio: input.aspectRatio,
+          ...(input.imageSize ? { imageSize: input.imageSize } : {})
+        }
+      },
+      metadata: {
+        promptVariant,
+        requestedCount: String(input.requestedCount),
+        ...(input.aiUpscale > 0 ? { aiUpscale: String(input.aiUpscale) } : {}),
+        ...(input.resizeTo
+          ? {
+              resizeWidth: String(input.resizeTo.width),
+              resizeHeight: String(input.resizeTo.height)
+            }
+          : {})
+      }
+    }));
+
+    const batchJob = await ai.batches.create({
+      model: modelName,
+      src: inlinedRequests,
+      config: { displayName: `image-batch-${Date.now()}` }
+    });
+
+    const jobId = batchJob.name;
+    if (!jobId) {
+      throw new Error('Batch job was created but returned no job name.');
+    }
+    return jobId;
+  } catch (error) {
+    throw new Error(formatApiKeyAuthError(error, modelName));
+  }
+}
+
+/**
+ * Tekli (interactive): Gemini Developer API generateContent in parallel.
+ * Faster than Batch API; standard pricing (not the ~50% Batch discount).
+ */
+async function runGeminiDeveloperInteractiveBatch(input: {
+  model: string;
+  prompts: string[];
+  references: Array<{ base64: string; mimeType: string }>;
+  aspectRatio: string;
+  imageSize: string | undefined;
+  requestedCount: number;
+  resizeTo: { width: number; height: number } | undefined;
+  aiUpscale: number;
+}): Promise<BatchOutput> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error('Missing GEMINI_API_KEY. Set it in .env.local for API key / interactive generation.');
+  }
+
+  const modelName = input.model.replace(VERTEX_MODEL_PATTERN, '');
+  if (isVertexImagenModel(modelName)) {
+    throw new Error(
+      'Imagen models require Service Account (Vertex AI) authentication. Switch auth mode to Service Account or use batch mode with a Gemini image model.'
+    );
+  }
+
+  const maxParallel = input.aiUpscale > 0 ? 1 : parseMaxParallelRequests();
+  console.error('[gemini-api-key] runGeminiDeveloperInteractiveBatch:', {
+    model: modelName,
+    mode: 'gemini-developer-interactive',
+    referenceCount: input.references.length,
+    promptCount: input.prompts.length,
+    maxParallel
+  });
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const jobs = input.prompts.map((promptVariant) => {
+      return async () => {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { text: promptVariant },
+                  ...input.references.map((ref) => ({
+                    inlineData: { mimeType: ref.mimeType, data: ref.base64 }
+                  }))
+                ]
+              }
+            ],
+            config: {
+              responseModalities: ['IMAGE', 'TEXT'],
+              imageConfig: {
+                aspectRatio: input.aspectRatio,
+                ...(input.imageSize ? { imageSize: input.imageSize } : {})
+              }
+            }
+          });
+
+          const extracted = extractImageFromGenerateContentResponse(response);
+          if (!extracted) {
+            throw getNoImageReturnedError(undefined);
+          }
+          const processed = await processGeneratedImage(extracted, input.resizeTo, input.aiUpscale);
+          return { ...processed, promptVariant } satisfies BatchResult;
+        } catch (error) {
+          throw new Error(formatApiKeyAuthError(error, modelName));
+        }
+      };
+    });
+
+    const settled = await runWithConcurrency(jobs, maxParallel);
+    return buildBatchOutput(input.model, input.requestedCount, input.prompts, settled);
+  } catch (error) {
+    throw new Error(formatApiKeyAuthError(error, modelName));
+  }
+}
+
+/**
+ * Auth mode: Vertex Express — GEMINI_API_KEY against Vertex Express / publishers REST.
+ * Separate from Gemini Developer API (authMode=api_key) and Service Account.
+ */
+async function runVertexExpressBatch(
   model: string,
   requestedCount: number,
   prompts: string[],
@@ -569,22 +788,23 @@ async function runGeminiApiKeyBatch(
 ): Promise<BatchOutput> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
-    throw new Error('Missing GEMINI_API_KEY. Set it in .env.local to use API key authentication.');
+    throw new Error(
+      'Missing GEMINI_API_KEY. Set a Vertex Express / Google Cloud API key in .env.local for Express mode.'
+    );
   }
 
   const modelName = model.replace(VERTEX_MODEL_PATTERN, '');
   if (isVertexImagenModel(modelName)) {
     throw new Error(
-      'Imagen models require Service Account (Vertex AI) authentication. Switch auth mode to Service Account or choose a Gemini image model.'
+      'Imagen models require Service Account (Vertex AI) authentication. Switch auth mode to Service Account.'
     );
   }
 
-  const useVertexExpress = isVertexExpressApiKey(apiKey);
   const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
 
-  console.error('[gemini-api-key] runGeminiApiKeyBatch:', {
+  console.error('[vertex-express] runVertexExpressBatch:', {
     model: modelName,
-    mode: useVertexExpress ? 'vertex-express-rest' : 'gemini-developer-api',
+    mode: 'vertex-express-rest',
     referenceCount: references.length,
     promptCount: prompts.length,
     aspectRatio,
@@ -594,51 +814,18 @@ async function runGeminiApiKeyBatch(
   const jobs = prompts.map((promptVariant) => {
     return async () => {
       try {
-        if (useVertexExpress) {
-          const extracted = await generateVertexExpressImage({
-            apiKey,
-            modelName,
-            promptVariant,
-            references,
-            aspectRatio,
-            imageSize
-          });
-          const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
-          return { ...processed, promptVariant } satisfies BatchResult;
-        }
-
-        const ai = new GoogleGenAI({ apiKey });
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                { text: promptVariant },
-                ...references.map((ref) => ({
-                  inlineData: { mimeType: ref.mimeType, data: ref.base64 }
-                }))
-              ]
-            }
-          ],
-          config: {
-            responseModalities: ['IMAGE', 'TEXT'],
-            imageConfig: {
-              aspectRatio,
-              ...(imageSize ? { imageSize } : {})
-            }
-          }
+        const extracted = await generateVertexExpressImage({
+          apiKey,
+          modelName,
+          promptVariant,
+          references,
+          aspectRatio,
+          imageSize
         });
-
-        const extracted = extractImageFromGenerateContentResponse(response);
-        if (!extracted) {
-          throw getNoImageReturnedError('Gemini API returned no image in response.');
-        }
-
         const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
         return { ...processed, promptVariant } satisfies BatchResult;
       } catch (error) {
-        throw new Error(formatApiKeyAuthError(error, useVertexExpress, modelName));
+        throw new Error(formatVertexExpressAuthError(error, modelName));
       }
     };
   });
@@ -648,11 +835,11 @@ async function runGeminiApiKeyBatch(
 }
 
 /**
- * Vertex Express / API-key image call.
+ * Vertex Express REST image call.
  *
- * Important: Express API keys belong to the Express project (e.g. numeric 7465…).
- * Do NOT send them against the service-account project (e.g. free-494923) — that yields 403.
- * Flash-image models require locations/global; regional signup locations (asia-southeast1) 404.
+ * Express API keys belong to the Express project (e.g. numeric 7465…).
+ * Do NOT send them against the service-account project — that yields 403.
+ * Flash-image models require locations/global.
  */
 async function generateVertexExpressImage(input: {
   apiKey: string;
@@ -682,7 +869,6 @@ async function generateVertexExpressImage(input: {
     }
   };
 
-  // Only env / Express-specific project — never service-account project_id (different GCP project).
   let expressProjectId = resolveExpressProjectIdFromEnv();
   const modelCandidates = expandVertexImageModelAliases(input.modelName);
   const errors: string[] = [];
@@ -693,7 +879,7 @@ async function generateVertexExpressImage(input: {
       return null;
     }
     triedUrls.add(url);
-    console.error('[gemini-api-key] trying', label);
+    console.error('[vertex-express] trying', label);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -713,20 +899,18 @@ async function generateVertexExpressImage(input: {
       const full = `[${response.status}] ${String(errMsg)}`;
       errors.push(`${label}: ${full}`);
 
-      // Quota exhausted — fail fast (retrying aliases only wastes quota).
       if (response.status === 429 || /resource has been exhausted|quota/i.test(full)) {
         throw new Error(
           `[429] Vertex Express quota exhausted for model ${input.modelName} ` +
             `(project ${expressProjectId ?? extractProjectIdFromText(full) ?? 'unknown'}). ` +
-            `Wait for quota reset, reduce count/parallelism, or switch Auth Method to Service Account ` +
-            `(service account project free-494923 / your paid Vertex project).`
+            `Wait for quota reset, reduce count/parallelism, or switch Auth Method to Service Account.`
         );
       }
 
       const projectFromError = extractProjectIdFromText(full);
       if (projectFromError && !expressProjectId) {
         expressProjectId = projectFromError;
-        console.error('[gemini-api-key] discovered Express project from error:', expressProjectId);
+        console.error('[vertex-express] discovered Express project from error:', expressProjectId);
       }
       return null;
     }
@@ -742,7 +926,6 @@ async function generateVertexExpressImage(input: {
     return extracted;
   };
 
-  // 1) If we already know Express project, hit global first (correct region for flash-image).
   if (expressProjectId) {
     for (const candidateModel of modelCandidates) {
       const hit = await tryUrl(
@@ -753,7 +936,6 @@ async function generateVertexExpressImage(input: {
     }
   }
 
-  // 2) Publishers path — usually 404 in signup region but reveals Express project number.
   for (const candidateModel of modelCandidates) {
     const hit = await tryUrl(
       `publishers/${candidateModel}`,
@@ -762,7 +944,6 @@ async function generateVertexExpressImage(input: {
     if (hit) return hit;
   }
 
-  // 3) After discovery, global with Express project (not SA project).
   if (expressProjectId) {
     for (const candidateModel of modelCandidates) {
       const hit = await tryUrl(
@@ -775,17 +956,13 @@ async function generateVertexExpressImage(input: {
 
   throw new Error(
     `Vertex Express failed for model ${input.modelName}. ` +
-      `Use the Express project id (from the API key / 404 path, e.g. 746556696967) via VERTEX_EXPRESS_PROJECT ` +
-      `or GOOGLE_CLOUD_PROJECT — do not point the API key at the service-account project (free-494923). ` +
-      `If you see 429, Express quota is exhausted: wait or switch Auth Method to Service Account. ` +
+      `Set VERTEX_EXPRESS_PROJECT to the Express project number (from the API key / 404 path) ` +
+      `if needed. Do not point Express keys at the service-account project. ` +
       `Attempts: ${errors.join(' || ')}`
   );
 }
 
-/**
- * Express project id/number for API-key global calls.
- * Never read service-account JSON here — that project is for SA auth only.
- */
+/** Express project id/number for Express REST calls (never service-account project_id). */
 function resolveExpressProjectIdFromEnv(): string | undefined {
   const fromEnv = (
     process.env.VERTEX_EXPRESS_PROJECT ??
@@ -798,7 +975,6 @@ function resolveExpressProjectIdFromEnv(): string | undefined {
 }
 
 function expandVertexImageModelAliases(modelName: string): string[] {
-  // Prefer the requested id only first; add preview alias as secondary.
   const names = [modelName];
   if (/^gemini-2\.5-flash-image$/i.test(modelName)) {
     names.push('gemini-2.5-flash-image-preview');
@@ -811,11 +987,6 @@ function expandVertexImageModelAliases(modelName: string): string[] {
 function extractProjectIdFromText(text: string): string | null {
   const match = text.match(/projects\/([a-zA-Z0-9-]+)\//);
   return match?.[1] ?? null;
-}
-
-/** Vertex Express / Google Cloud API keys commonly start with "AQ." */
-function isVertexExpressApiKey(apiKey: string): boolean {
-  return /^AQ\./i.test(apiKey.trim());
 }
 
 function modelRequiresGlobalVertexEndpoint(modelName: string): boolean {
@@ -843,44 +1014,62 @@ function buildVertexModelUrl(projectId: string, location: string, modelName: str
   return `https://${location}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/publishers/google/models/${encodeURIComponent(modelName)}:${apiEndpoint}`;
 }
 
-function formatApiKeyAuthError(error: unknown, usedVertexExpress: boolean, modelName: string): string {
+function formatApiKeyAuthError(error: unknown, modelName: string): string {
   const raw = formatError(error);
   const modelHint = `Requested model: ${modelName}.`;
   if (/429|resource has been exhausted|quota/i.test(raw)) {
     return (
-      `${raw} | ${modelHint} Express/API-key quota is exhausted. Wait for reset, lower count, ` +
-      `or switch Auth Method to Service Account (uses free-494923 / your Vertex SA project).`
+      `${raw} | ${modelHint} Gemini API key quota is exhausted. Wait for reset, lower count, ` +
+      `or switch Auth Method to Service Account (Vertex AI) or Vertex Express.`
     );
   }
   if (/generativelanguage\.googleapis\.com|SERVICE_DISABLED|Gemini API has not been used/i.test(raw)) {
     return (
-      `${raw} | ${modelHint} Hint: Gemini Developer API (AI Studio) permission error. ` +
-      `For Vertex Express keys (AQ.…) the app uses Express REST. ` +
-      `For AI Studio keys (AIza…), enable Gemini API, or switch Auth Method to Service Account.`
-    );
-  }
-  if (/free-494923|Permission 'aiplatform.endpoints.predict' denied/i.test(raw)) {
-    return (
-      `${raw} | ${modelHint} Hint: API key was pointed at the service-account project. ` +
-      `Set VERTEX_EXPRESS_PROJECT to the Express project number (e.g. 746556696967), ` +
-      `or use Auth Method = Service Account with the free-494923 credentials.`
+      `${raw} | ${modelHint} Hint: enable the Gemini API for this API key in Google AI Studio / Cloud Console, ` +
+      `or switch Auth Method to Service Account / Vertex Express.`
     );
   }
   if (/404|NOT_FOUND|was not found or your project does not have access/i.test(raw)) {
     return (
-      `${raw} | ${modelHint} Hint: model missing in this region/project. ` +
-      `Express signup regions (asia-southeast1) often 404 flash-image — need locations/global + Express project id. ` +
-      `Or switch to Service Account.`
+      `${raw} | ${modelHint} Hint: this model may not be available for Gemini Developer API keys. ` +
+      `Try another Gemini image model, or switch Auth Method to Service Account / Vertex Express.`
     );
   }
-  if (/PERMISSION_DENIED|not available|not allowed|403/i.test(raw)) {
+  if (/PERMISSION_DENIED|not available|not allowed|403|API_KEY_INVALID|invalid.?api.?key/i.test(raw)) {
     return (
-      `${raw} | ${modelHint} Hint: no access with current credentials. ` +
-      `API Key → VERTEX_EXPRESS_PROJECT=<express project number>. SA → Vertex AI User on free-494923.`
+      `${raw} | ${modelHint} Hint: check GEMINI_API_KEY (Google AI Studio key), ` +
+      `or switch Auth Method to Service Account / Vertex Express.`
     );
   }
-  if (!usedVertexExpress && /^\[403\]/i.test(raw)) {
-    return `${raw} | ${modelHint} Hint: for Vertex Express API keys use a Google Cloud express mode key (AQ.…).`;
+  return `${raw} | ${modelHint}`;
+}
+
+function formatVertexExpressAuthError(error: unknown, modelName: string): string {
+  const raw = formatError(error);
+  const modelHint = `Requested model: ${modelName}.`;
+  if (/429|resource has been exhausted|quota/i.test(raw)) {
+    return (
+      `${raw} | ${modelHint} Vertex Express quota is exhausted. Wait for reset, lower count, ` +
+      `or switch Auth Method to Service Account (Vertex AI).`
+    );
+  }
+  if (/free-494923|Permission 'aiplatform.endpoints.predict' denied/i.test(raw)) {
+    return (
+      `${raw} | ${modelHint} Hint: Express key was pointed at the service-account project. ` +
+      `Set VERTEX_EXPRESS_PROJECT to the Express project number, or use Service Account mode.`
+    );
+  }
+  if (/404|NOT_FOUND|was not found or your project does not have access/i.test(raw)) {
+    return (
+      `${raw} | ${modelHint} Hint: model missing for this Express project/region. ` +
+      `Flash-image usually needs locations/global + VERTEX_EXPRESS_PROJECT. Or use Service Account.`
+    );
+  }
+  if (/PERMISSION_DENIED|not available|not allowed|403|API_KEY_INVALID|invalid.?api.?key/i.test(raw)) {
+    return (
+      `${raw} | ${modelHint} Hint: use a Vertex Express / Google Cloud API key (often AQ.…), ` +
+      `set VERTEX_EXPRESS_PROJECT if needed, or switch to Service Account.`
+    );
   }
   return `${raw} | ${modelHint}`;
 }
@@ -1272,7 +1461,8 @@ function buildBatchOutput(
   model: string,
   requestedCount: number,
   prompts: string[],
-  settled: PromiseSettledResult<BatchResult>[]
+  settled: PromiseSettledResult<BatchResult>[],
+  options?: { allowEmpty?: boolean }
 ): BatchOutput {
   const successful = settled
     .filter((entry): entry is PromiseFulfilledResult<BatchResult> => entry.status === 'fulfilled')
@@ -1291,6 +1481,16 @@ function buildBatchOutput(
     .filter((entry): entry is BatchFailure => entry !== null);
 
   if (successful.length === 0) {
+    if (options?.allowEmpty) {
+      return {
+        usedModel: model,
+        requestedCount,
+        succeededCount: 0,
+        failedCount: failures.length,
+        results: [],
+        failures
+      };
+    }
     const failureSummary = failures.map((entry, index) => `#${index + 1}: ${entry.error}`).join(' || ');
     throw new Error(`Generation failed for all variants. ${failureSummary}`);
   }
@@ -1370,30 +1570,99 @@ function buildGeminiStateDetail(state: JobState, job: BatchJob): string | undefi
   const startedAt = parseTimestamp(job.startTime);
   const updatedAt = parseTimestamp(job.updateTime);
   const activeStart = startedAt ?? createdAt;
+  const progress = extractBatchProgressStats(job);
+  const progressHint = progress
+    ? `${progress.successfulCount + progress.failedCount}/${progress.requestCount} requests done` +
+      (progress.failedCount > 0 ? ` (${progress.failedCount} failed)` : '')
+    : undefined;
 
   if (state === 'pending') {
     if (createdAt) {
-      return `Queued for ${formatDuration((now - createdAt) / 1000)}`;
+      const queued = `Queued for ${formatDuration((now - createdAt) / 1000)}`;
+      return progressHint ? `${queued} · ${progressHint}` : queued;
     }
-
-    return undefined;
+    return progressHint;
   }
 
   if (state === 'running') {
     if (activeStart) {
-      return `Running for ${formatDuration((now - activeStart) / 1000)}`;
+      const running = `Running for ${formatDuration((now - activeStart) / 1000)}`;
+      return progressHint ? `${running} · ${progressHint}` : running;
     }
-
-    return undefined;
+    return progressHint;
   }
 
   if (state === 'succeeded') {
     if (createdAt && updatedAt) {
-      return `Finished in ${formatDuration((updatedAt - createdAt) / 1000)}`;
+      const finished = `Finished in ${formatDuration((updatedAt - createdAt) / 1000)}`;
+      return progressHint ? `${finished} · ${progressHint}` : finished;
+    }
+    return progressHint;
+  }
+
+  return progressHint;
+}
+
+/**
+ * Read request-level batch progress from the job payload.
+ * - Gemini Developer API: `batchStats` (requestCount / successfulRequestCount / …)
+ * - Vertex-style BatchJob: `completionStats` (successfulCount / failedCount / incompleteCount)
+ */
+function extractBatchProgressStats(job: BatchJob): BatchProgressStats | undefined {
+  const raw = job as BatchJob & {
+    batchStats?: {
+      requestCount?: string | number;
+      successfulRequestCount?: string | number;
+      failedRequestCount?: string | number;
+      pendingRequestCount?: string | number;
+    };
+  };
+
+  if (raw.batchStats) {
+    const requestCount = parseNonNegativeInt(raw.batchStats.requestCount) ?? 0;
+    const successfulCount = parseNonNegativeInt(raw.batchStats.successfulRequestCount) ?? 0;
+    const failedCount = parseNonNegativeInt(raw.batchStats.failedRequestCount) ?? 0;
+    const pendingFromApi = parseNonNegativeInt(raw.batchStats.pendingRequestCount);
+    const pendingCount =
+      pendingFromApi ?? Math.max(0, requestCount - successfulCount - failedCount);
+    if (requestCount > 0 || successfulCount > 0 || failedCount > 0 || pendingCount > 0) {
+      return {
+        requestCount: requestCount > 0 ? requestCount : successfulCount + failedCount + pendingCount,
+        successfulCount,
+        failedCount,
+        pendingCount
+      };
+    }
+  }
+
+  if (job.completionStats) {
+    const successfulCount = parseNonNegativeInt(job.completionStats.successfulCount) ?? 0;
+    const failedCount = parseNonNegativeInt(job.completionStats.failedCount) ?? 0;
+    // incompleteCount can be -1 ("unknown"); only use non-negative values as pending.
+    const incompleteRaw = Number.parseInt(String(job.completionStats.incompleteCount ?? ''), 10);
+    const pendingCount =
+      Number.isFinite(incompleteRaw) && incompleteRaw >= 0 ? incompleteRaw : 0;
+    const requestCount =
+      Number.isFinite(incompleteRaw) && incompleteRaw >= 0
+        ? successfulCount + failedCount + pendingCount
+        : successfulCount + failedCount;
+    if (successfulCount > 0 || failedCount > 0 || requestCount > 0) {
+      return { requestCount, successfulCount, failedCount, pendingCount };
     }
   }
 
   return undefined;
+}
+
+function parseNonNegativeInt(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return undefined;
+  }
+  return parsed;
 }
 
 function parsePositiveInt(value: unknown): number | undefined {
@@ -1601,12 +1870,29 @@ async function runTogetherBatch(
   return buildBatchOutput(model, requestedCount, prompts, settled);
 }
 
-async function extractGeminiBatchResults(ai: GoogleGenAI, job: BatchJob, context: GeminiResultExtractionContext): Promise<BatchOutput> {
+async function extractGeminiBatchResults(
+  ai: GoogleGenAI,
+  job: BatchJob,
+  context: GeminiResultExtractionContext,
+  options?: { allowPartial?: boolean }
+): Promise<BatchOutput> {
+  const allowPartial = options?.allowPartial === true;
   let inlinedResponses = job.dest?.inlinedResponses ?? [];
-  if (inlinedResponses.length === 0 && job.dest?.fileName) {
+  // File-backed dest is usually complete only at job end; skip mid-job downloads.
+  if (inlinedResponses.length === 0 && job.dest?.fileName && !allowPartial) {
     inlinedResponses = await downloadBatchResponsesFile(ai, job.dest.fileName, context.jobId);
   }
   if (inlinedResponses.length === 0) {
+    if (allowPartial) {
+      return {
+        usedModel: context.model,
+        requestedCount: 0,
+        succeededCount: 0,
+        failedCount: 0,
+        results: [],
+        failures: []
+      };
+    }
     throw new Error('Batch job completed but returned no responses.');
   }
 
@@ -1640,7 +1926,9 @@ async function extractGeminiBatchResults(ai: GoogleGenAI, job: BatchJob, context
     })
   );
 
-  return buildBatchOutput(context.model, requestedCount, prompts, settled);
+  return buildBatchOutput(context.model, requestedCount, prompts, settled, {
+    allowEmpty: allowPartial
+  });
 }
 
 export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult> {
@@ -1689,12 +1977,29 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
     return { jobId, provider: 'fal', results: result };
   }
 
-  if (isVertexImageModel(model)) {
-    const jobId = randomUUID();
-    const authMode = normalizeAuthMode(input.authMode);
+  const renderMode = normalizeRenderMode(input.renderMode);
+  const authMode = normalizeAuthMode(input.authMode);
 
-    if (authMode === 'api_key') {
-      const result = await runGeminiApiKeyBatch(
+  // --- Toplu (batch): async Gemini Developer Batch API (~50% cost, poll for results) ---
+  if (renderMode === 'batch') {
+    const jobId = await createGeminiDeveloperBatchJob({
+      model,
+      prompts,
+      references,
+      aspectRatio,
+      imageSize,
+      requestedCount: clampedCount,
+      resizeTo,
+      aiUpscale
+    });
+    return { jobId, provider: 'gemini' };
+  }
+
+  // --- Tekli (single / interactive): sync generateContent (faster, standard pricing) ---
+  if (isVertexImageModel(model)) {
+    if (authMode === 'vertex_express') {
+      const jobId = randomUUID();
+      const result = await runVertexExpressBatch(
         model,
         clampedCount,
         prompts,
@@ -1707,6 +2012,22 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       return { jobId, provider: 'gemini', results: result };
     }
 
+    if (authMode === 'api_key') {
+      const jobId = randomUUID();
+      const result = await runGeminiDeveloperInteractiveBatch({
+        model,
+        prompts,
+        references,
+        aspectRatio,
+        imageSize,
+        requestedCount: clampedCount,
+        resizeTo,
+        aiUpscale
+      });
+      return { jobId, provider: 'gemini', results: result };
+    }
+
+    const jobId = randomUUID();
     const result = await runVertexBatch(
       model,
       clampedCount,
@@ -1718,59 +2039,23 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
     return { jobId, provider: 'vertex', results: result };
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('Missing GEMINI_API_KEY');
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
-
-  const inlinedRequests = prompts.map((promptVariant) => ({
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { text: promptVariant },
-          ...references.map((ref) => ({
-            inlineData: { mimeType: ref.mimeType, data: ref.base64 }
-          }))
-        ]
-      }
-    ],
-    config: {
-      responseModalities: ['IMAGE', 'TEXT'],
-      imageConfig: {
-        aspectRatio,
-        ...(imageSize ? { imageSize } : {})
-      }
-    },
-    // Carry prompt variant through so result extraction can label each image correctly.
-    metadata: {
-      promptVariant,
-      requestedCount: String(clampedCount),
-      ...(aiUpscale > 0 ? { aiUpscale: String(aiUpscale) } : {}),
-      ...(resizeTo
-        ? {
-            resizeWidth: String(resizeTo.width),
-            resizeHeight: String(resizeTo.height)
-          }
-        : {})
-    }
-  }));
-
-  const batchJob = await ai.batches.create({
+  // Non-Vertex Gemini catalog models: interactive with API key (tekli default path).
+  const jobId = randomUUID();
+  const result = await runGeminiDeveloperInteractiveBatch({
     model,
-    src: inlinedRequests,
-    config: { displayName: `image-batch-${Date.now()}` }
+    prompts,
+    references,
+    aspectRatio,
+    imageSize,
+    requestedCount: clampedCount,
+    resizeTo,
+    aiUpscale
   });
-
-  const jobId = batchJob.name;
-  if (!jobId) {
-    throw new Error('Batch job was created but returned no job name.');
-  }
-
-  return { jobId, provider: 'gemini' };
+  return { jobId, provider: 'gemini', results: result };
 }
+
+/** Avoid re-decoding the same partial inlined responses on every poll. */
+const partialBatchResultCache = new Map<string, { inlineCount: number; results: BatchOutput }>();
 
 export async function getBatchStatus(jobId: string): Promise<BatchStatusResult> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -1781,32 +2066,39 @@ export async function getBatchStatus(jobId: string): Promise<BatchStatusResult> 
   const ai = new GoogleGenAI({ apiKey });
   const job = await ai.batches.get({ name: jobId });
   const state = mapGeminiJobState(job.state);
+  const progress = extractBatchProgressStats(job);
 
   if (state === 'failed') {
+    partialBatchResultCache.delete(jobId);
     return {
       jobId,
       state,
       stateLabel: getStateLabel(state),
       stateDetail: buildGeminiStateDetail(state, job),
-      error: job.error?.message?.trim() || 'Batch job failed.'
+      error: job.error?.message?.trim() || 'Batch job failed.',
+      ...(progress ? { progress } : {})
     };
   }
   if (state === 'cancelled') {
+    partialBatchResultCache.delete(jobId);
     return {
       jobId,
       state,
       stateLabel: getStateLabel(state),
       stateDetail: buildGeminiStateDetail(state, job),
-      error: 'Batch job was cancelled.'
+      error: 'Batch job was cancelled.',
+      ...(progress ? { progress } : {})
     };
   }
   if (state === 'expired') {
+    partialBatchResultCache.delete(jobId);
     return {
       jobId,
       state,
       stateLabel: getStateLabel(state),
       stateDetail: buildGeminiStateDetail(state, job),
-      error: 'Batch job has expired (48-hour limit reached).'
+      error: 'Batch job has expired (48-hour limit reached).',
+      ...(progress ? { progress } : {})
     };
   }
 
@@ -1814,15 +2106,73 @@ export async function getBatchStatus(jobId: string): Promise<BatchStatusResult> 
     const hasInlineResponses = (job.dest?.inlinedResponses?.length ?? 0) > 0;
     const hasFileOutput = Boolean(job.dest?.fileName);
     if (!hasInlineResponses && !hasFileOutput) {
-      return { jobId, state: 'running', stateLabel: 'Waiting for results...' };
+      return {
+        jobId,
+        state: 'running',
+        stateLabel: 'Waiting for results...',
+        stateDetail: buildGeminiStateDetail('running', job),
+        ...(progress ? { progress } : {})
+      };
     }
 
     const results = await extractGeminiBatchResults(ai, job, {
       jobId,
       model: normalizeModelCode(job.model ?? DEFAULT_MODEL)
     });
-    return { jobId, state, stateLabel: getStateLabel(state), stateDetail: buildGeminiStateDetail(state, job), results };
+    partialBatchResultCache.delete(jobId);
+    return {
+      jobId,
+      state,
+      stateLabel: getStateLabel(state),
+      stateDetail: buildGeminiStateDetail(state, job),
+      results,
+      ...(progress ? { progress } : {})
+    };
   }
 
-  return { jobId, state, stateLabel: getStateLabel(state), stateDetail: buildGeminiStateDetail(state, job) };
+  // While the job is still running, surface any already-finished inlined responses
+  // so the UI can fill pending history cards incrementally.
+  const inlineCount = job.dest?.inlinedResponses?.length ?? 0;
+  if (inlineCount > 0) {
+    try {
+      const cached = partialBatchResultCache.get(jobId);
+      let partialResults: BatchOutput;
+      if (cached && cached.inlineCount === inlineCount) {
+        partialResults = cached.results;
+      } else {
+        partialResults = await extractGeminiBatchResults(
+          ai,
+          job,
+          {
+            jobId,
+            model: normalizeModelCode(job.model ?? DEFAULT_MODEL)
+          },
+          { allowPartial: true }
+        );
+        if (partialResults.results.length > 0) {
+          partialBatchResultCache.set(jobId, { inlineCount, results: partialResults });
+        }
+      }
+      if (partialResults.results.length > 0) {
+        return {
+          jobId,
+          state,
+          stateLabel: getStateLabel(state),
+          stateDetail: buildGeminiStateDetail(state, job),
+          results: partialResults,
+          ...(progress ? { progress } : {})
+        };
+      }
+    } catch (partialError) {
+      console.warn('[gemini] partial batch extract skipped:', partialError);
+    }
+  }
+
+  return {
+    jobId,
+    state,
+    stateLabel: getStateLabel(state),
+    stateDetail: buildGeminiStateDetail(state, job),
+    ...(progress ? { progress } : {})
+  };
 }

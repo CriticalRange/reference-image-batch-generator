@@ -9,8 +9,10 @@ type RequestBody = {
   count?: number;
   model?: string;
   steps?: number;
-  /** Vertex / Google auth mode: service_account (default) | api_key */
+  /** Vertex-listed models: api_key (Gemini Developer API, default) | service_account | vertex_express */
   authMode?: string;
+  /** batch = toplu (async Batch API) | single = tekli (interactive) */
+  renderMode?: string;
   referenceImageBase64?: string;
   referenceMimeType?: string;
   aspectRatio?: string;
@@ -27,7 +29,8 @@ type RequestBody = {
 const DEFAULT_MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_TOTAL_REFERENCE_BYTES = 24 * 1024 * 1024;
-const MAX_PROMPT_LENGTH = 10_000;
+/** Catalogue templates + style variants can exceed 10k; Gemini text budget is much higher. */
+const MAX_PROMPT_LENGTH = 20_000;
 const MAX_NEGATIVE_PROMPT_LENGTH = 2_000;
 const MAX_JOB_ID_LENGTH = 220;
 const JOB_ID_PATTERN = /^[a-zA-Z0-9_./:-]+$/;
@@ -71,6 +74,7 @@ export async function POST(req: NextRequest) {
     const count = body.count ?? 5;
     const model = body.model?.trim() ?? undefined;
     const authMode = parseAuthMode(body.authMode);
+    const renderMode = parseRenderMode(body.renderMode);
     const steps = parseStepCount(body.steps);
     const aspectRatio = body.aspectRatio?.trim() ?? undefined;
     const imageSize = body.imageSize?.trim() ?? undefined;
@@ -145,6 +149,7 @@ export async function POST(req: NextRequest) {
       count,
       model,
       authMode,
+      renderMode,
       steps,
       aspectRatio,
       imageSize,
@@ -208,16 +213,28 @@ export async function GET(req: NextRequest) {
 // Falls back to keeping base64 when BLOB_READ_WRITE_TOKEN is not set
 // or an individual upload fails.
 
+/** Reuse blob URLs across polls when partial result count hasn't grown. */
+const blobTransformCache = new Map<string, { resultCount: number; output: BatchOutput }>();
+
 async function transformBatchOutputForBlob(
   output: BatchOutput,
   jobId: string
 ): Promise<BatchOutput> {
-  const blobResults = await uploadBatchToBlob(output.results, jobId);
+  const cached = blobTransformCache.get(jobId);
+  if (cached && cached.resultCount === output.results.length) {
+    return cached.output;
+  }
 
-  const transformedResults: BatchResult[] = output.results.map((result, index) => {
-    const blobResult = blobResults[index];
+  // Only upload newly arrived images when partial count grew.
+  const alreadyUploaded = cached?.output.results ?? [];
+  const startIndex = alreadyUploaded.length;
+  const newSlice = output.results.slice(startIndex);
+  const newBlobResults =
+    newSlice.length > 0 ? await uploadBatchToBlob(newSlice, jobId, startIndex) : [];
+
+  const transformedNew: BatchResult[] = newSlice.map((result, index) => {
+    const blobResult = newBlobResults[index];
     if (blobResult?.blobUrl) {
-      // Successfully uploaded — strip the heavy base64 payload, keep only blob URL.
       return {
         promptVariant: result.promptVariant,
         imageBase64: '',
@@ -225,14 +242,16 @@ async function transformBatchOutputForBlob(
         blobUrl: blobResult.blobUrl
       };
     }
-    // Upload failed or not configured — keep the original base64.
     return result;
   });
 
-  return {
+  const transformedResults: BatchResult[] = [...alreadyUploaded, ...transformedNew];
+  const transformed: BatchOutput = {
     ...output,
     results: transformedResults
   };
+  blobTransformCache.set(jobId, { resultCount: transformedResults.length, output: transformed });
+  return transformed;
 }
 
 function parseByteLimit(envName: string, fallback: number): number {
@@ -250,12 +269,37 @@ function rejectLargeRequest(req: NextRequest): NextResponse | null {
   return null;
 }
 
-function parseAuthMode(value: unknown): 'service_account' | 'api_key' {
-  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  if (normalized === 'api_key' || normalized === 'apikey' || normalized === 'api-key') {
-    return 'api_key';
+function parseAuthMode(value: unknown): 'service_account' | 'api_key' | 'vertex_express' {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase().replace(/-/g, '_') : '';
+  if (
+    normalized === 'service_account' ||
+    normalized === 'serviceaccount' ||
+    normalized === 'vertex' ||
+    normalized === 'sa'
+  ) {
+    return 'service_account';
   }
-  return 'service_account';
+  if (
+    normalized === 'vertex_express' ||
+    normalized === 'vertexexpress' ||
+    normalized === 'express' ||
+    normalized === 'express_mode'
+  ) {
+    return 'vertex_express';
+  }
+  // Default: Gemini Developer API (api key).
+  return 'api_key';
+}
+
+function parseRenderMode(value: unknown): 'batch' | 'single' {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase().replace(/-/g, '_') : '';
+  if (normalized === 'batch' || normalized === 'toplu' || normalized === 'bulk') {
+    return 'batch';
+  }
+  if (normalized === 'single' || normalized === 'tekli' || normalized === 'interactive' || normalized === 'fast') {
+    return 'single';
+  }
+  return 'single';
 }
 
 function parseResizeDimension(value: unknown): number | undefined {

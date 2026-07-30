@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { get, set } from 'idb-keyval';
 import { AnimatePresence, LayoutGroup, motion } from 'framer-motion';
 import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal, flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import Lightbox, { type Slide } from 'yet-another-react-lightbox';
@@ -21,6 +22,17 @@ import {
   sortModelOptions,
   type UiModelOption
 } from '@/lib/modelOptions';
+import { InfoHint, Tooltip } from '@/app/components/tooltip';
+import {
+  finalizeAnalysis,
+  PRODUCT_COLOR_VALUES,
+  PRODUCT_TYPE_VALUES,
+  productTypeLabel,
+  type ProductColorOption as AnalysisProductColor,
+  type ProductTypeOption,
+  type ReferenceAnalysis,
+  type ReferenceAnalysisDraft
+} from '@/lib/referenceAnalysis';
 
 type GenerationResult = {
   promptVariant: string;
@@ -48,12 +60,33 @@ type BatchSubmitResponse = {
   };
 };
 
+type BatchProgressStats = {
+  requestCount: number;
+  successfulCount: number;
+  failedCount: number;
+  pendingCount: number;
+};
+
+/** Live Gemini Batch job fields used for per-card status badges. */
+type BatchJobUiStatus = {
+  state: string;
+  stateLabel: string;
+  stateDetail?: string;
+  progress?: BatchProgressStats;
+  /** Once true for this product job, UI never regresses empty cards back to "queued". */
+  hasEnteredRunning?: boolean;
+};
+
+type PendingCardPhase = 'queued' | 'running' | 'waiting' | 'done' | 'retrying';
+
 type BatchStatusResponse = {
   jobId: string;
   state: string;
   stateLabel: string;
   stateDetail?: string;
   error?: string;
+  /** Gemini Developer Batch API request-level stats (when available). */
+  progress?: BatchProgressStats;
   results?: {
     usedModel: string;
     requestedCount: number;
@@ -85,6 +118,22 @@ type BatchQueueItem = {
   attempt: number;
 };
 
+/** Loading-card slots for the full generate submit (all refs × variants). */
+type PendingHistorySlot = {
+  id: string;
+  /** Which product photo this slot belongs to. */
+  refIndex: number;
+  /** 0-based variant index within that product. */
+  variantIndex: number;
+  item: HistoryItem | null;
+};
+
+type RefAnalysisState = {
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  analysis?: ReferenceAnalysis;
+  error?: string;
+};
+
 type GenerationConfigSnapshot = {
   basePrompt: string;
   negativePrompt?: string;
@@ -97,8 +146,12 @@ type GenerationConfigSnapshot = {
   resizeHeight?: number;
   aiUpscale?: number;
   requestedCount: number;
+  /**
+   * Reference metadata only in history/IDB — never store base64 here (quota).
+   * base64 may exist only in ephemeral in-memory configs before strip.
+   */
   referenceImages?: Array<{
-    base64: string;
+    base64?: string;
     mimeType: string;
     fileName?: string;
   }>;
@@ -112,7 +165,25 @@ type HistoryItem = {
   mimeType: string;
   imageBlob: Blob;
   imageUrl: string;
+  /** One batch submit (even with a single product photo) shares this id. */
+  collectionId?: string;
   generationConfig?: GenerationConfigSnapshot;
+  /** Gemini Flash product analysis used for this image (persisted in history state). */
+  referenceAnalysis?: ReferenceAnalysis;
+};
+
+/** Which analysis modal target is open. */
+type AnalysisModalTarget =
+  | { kind: 'ref'; refIndex: number }
+  | { kind: 'history'; itemId: string };
+
+type HistoryCollection = {
+  id: string;
+  createdAt: string;
+  items: HistoryItem[];
+  isNew: boolean;
+  coverUrl: string;
+  productCount: number;
 };
 
 type HistoryStorageItem = Omit<HistoryItem, 'imageUrl'>;
@@ -124,7 +195,8 @@ type ArchiveItem = HistoryItem & {
 type ArchiveStorageItem = Omit<ArchiveItem, 'imageUrl'>;
 
 type ThemeMode = 'light' | 'dark';
-type AuthModeOption = 'service_account' | 'api_key';
+type AuthModeOption = 'service_account' | 'api_key' | 'vertex_express';
+type RenderModeOption = 'batch' | 'single';
 type AspectRatioOption = '1:1' | '2:3' | '3:2' | '3:4' | '4:3' | '4:5' | '5:4' | '9:16' | '16:9' | '21:9';
 type ResolutionOption =  | '512'
   | '1K'
@@ -155,12 +227,11 @@ type AccentColorOption = 'warm-beige' | 'soft-olive' | 'muted-terracotta' | 'sla
 
 const DEFAULT_COUNT = 1;
 const DEFAULT_BATCH_RATE_LIMIT_SEC = 120;
-/** attempt 0 + N retries = N+1 total tries per product in batch mode */
+/** attempt 0 + N retries = N+1 total tries per product (one queue item per reference) */
 const MAX_BATCH_REFERENCE_RETRIES = 4;
 const BATCH_RETRY_BASE_DELAY_MS = 8_000;
 const MAX_BATCH_RATE_LIMIT_SEC = 600;
 const MAX_HISTORY_ITEMS = 120;
-const MAX_REFERENCE_IMAGES = 6;
 const MIN_RESIZE_DIMENSION = 64;
 const MAX_RESIZE_DIMENSION = 8192;
 const DEFAULT_CUSTOM_RESIZE_WIDTH = 2000;
@@ -173,9 +244,10 @@ const ARCHIVE_TTL_DAYS = 15;
 const THEME_STORAGE_KEY = 'reference-batch-theme-v1';
 const LANGUAGE_STORAGE_KEY = 'reference-batch-language-v1';
 const AUTH_MODE_STORAGE_KEY = 'reference-batch-auth-mode-v1';
-const BATCH_MODE_STORAGE_KEY = 'reference-batch-batchmode-v1';
+const RENDER_MODE_STORAGE_KEY = 'reference-batch-render-mode-v1';
 const BATCH_RATE_LIMIT_STORAGE_KEY = 'reference-batch-ratelimit-v1';
 const LAST_PROMPT_STORAGE_KEY = 'reference-batch-last-prompt-v1';
+const AUTO_AI_ANALYSIS_STORAGE_KEY = 'reference-batch-auto-ai-analysis-v1';
 const DEFAULT_MODEL = 'vertex/gemini-2.5-flash-image';
 const ASPECT_RATIO_OPTIONS: AspectRatioOption[] = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
 const RESOLUTION_OPTIONS: ResolutionOption[] = ['512', '1K', '2K', '4K'];
@@ -644,11 +716,25 @@ export default function HomePage() {
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
   const [failures, setFailures] = useState<GenerationFailure[]>([]);
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
-  const [pendingHistoryIds, setPendingHistoryIds] = useState<string[]>([]);
+  const [pendingSlots, setPendingSlots] = useState<PendingHistorySlot[]>([]);
+  /** Product photo currently being generated (drives "Sırada" vs "Üretiliyor" on cards). */
+  const [activePendingRefIndex, setActivePendingRefIndex] = useState(0);
+  /** Per-reference Gemini Flash analysis for the active generate run. */
+  const [refAnalyses, setRefAnalyses] = useState<Record<number, RefAnalysisState>>({});
+  const refAnalysesRef = useRef<Record<number, RefAnalysisState>>({});
+  /** Modal: loading-card ref analysis or history-item analysis. */
+  const [analysisModalTarget, setAnalysisModalTarget] = useState<AnalysisModalTarget | null>(null);
+  const [analysisModalDraft, setAnalysisModalDraft] = useState<ReferenceAnalysis | null>(null);
+  /** Lightbox override so partial pending cards can be opened before history commit. */
+  const [viewerOverrideItems, setViewerOverrideItems] = useState<HistoryItem[] | null>(null);
   const [isHistoryHydrated, setIsHistoryHydrated] = useState(false);
-  const [statusText, setStatusText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [generationElapsedSec, setGenerationElapsedSec] = useState(0);
+  const generationStartedAtRef = useRef<number | null>(null);
+  /** Abort in-flight generate run (fetch + queue loops). */
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const generationCancelledRef = useRef(false);
+  const activeCollectionIdRef = useRef<string | null>(null);
   const [themeMode, setThemeMode] = useState<ThemeMode>('light');
   const [language, setLanguage] = useState<'tr' | 'en'>('tr');
   const [isReferenceDragOver, setIsReferenceDragOver] = useState(false);
@@ -659,8 +745,12 @@ export default function HomePage() {
   const [customResizeWidth, setCustomResizeWidth] = useState(DEFAULT_CUSTOM_RESIZE_WIDTH);
   const [customResizeHeight, setCustomResizeHeight] = useState(DEFAULT_CUSTOM_RESIZE_HEIGHT);
   const [aiUpscale, setAiUpscale] = useState(0);
+  /** When on, Gemini Flash analyzes each reference on generate and builds product prompts. */
+  const [autoAiAnalysis, setAutoAiAnalysis] = useState(true);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
-  const [authMode, setAuthMode] = useState<AuthModeOption>('service_account');
+  const [authMode, setAuthMode] = useState<AuthModeOption>('api_key');
+  /** batch = toplu (async, cheaper); single = tekli (interactive, faster). */
+  const [renderMode, setRenderMode] = useState<RenderModeOption>('single');
   const [modelOptions, setModelOptions] = useState<UiModelOption[]>(INITIAL_MODEL_OPTIONS);
   const [activeTab, setActiveTab] = useState<'generator' | 'history'>('generator');
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -670,24 +760,58 @@ export default function HomePage() {
   const [isArchiveSectionOpen, setIsArchiveSectionOpen] = useState(false);
   const [isHistoryViewerOpen, setIsHistoryViewerOpen] = useState(false);
   const [historyViewerIndex, setHistoryViewerIndex] = useState(0);
+  /** When set, lightbox only shows items from this collection (batch run). */
+  const [viewerCollectionId, setViewerCollectionId] = useState<string | null>(null);
   const [isViewerPromptCollapsed, setIsViewerPromptCollapsed] = useState(false);
-  const [isBatchMode, setIsBatchMode] = useState(false);
   const [batchRateLimitSec, setBatchRateLimitSec] = useState(DEFAULT_BATCH_RATE_LIMIT_SEC);
   const [batchRateLimitInput, setBatchRateLimitInput] = useState(String(DEFAULT_BATCH_RATE_LIMIT_SEC));
   const [batchRunResults, setBatchRunResults] = useState<BatchRunResult[]>([]);
   const [batchTotalRefs, setBatchTotalRefs] = useState(0);
+  /** Variants requested per reference for the active run (drives progress total). */
+  const [batchCountPerRef, setBatchCountPerRef] = useState(1);
+  /** Live stats for the in-flight async batch job (Gemini Developer Batch API). */
+  const [batchInFlightProgress, setBatchInFlightProgress] = useState<BatchProgressStats | null>(null);
+  /** Full job state/detail for the status strip above pending cards. */
+  const [batchJobUiStatus, setBatchJobUiStatus] = useState<BatchJobUiStatus | null>(null);
   const historyObjectUrlsRef = useRef<Map<string, string>>(new Map());
   const archiveObjectUrlsRef = useRef<Map<string, string>>(new Map());
   const hasPromptHydratedRef = useRef(false);
   const lastBatchRunTimeRef = useRef<number>(0);
   const batchRunResultsRef = useRef<BatchRunResult[]>([]);
+  /** All history items produced by the active generate submit (one collection). */
+  const batchHistoryItemsRef = useRef<HistoryItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const negativePromptTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const historyGroups = useMemo(() => groupHistoryByDate(historyItems, language), [historyItems, language]);
+  /** Avoid double-showing images that are still in the live pending grid. */
+  const pendingFilledIds = useMemo(
+    () => new Set(pendingSlots.map((slot) => slot.item?.id).filter((id): id is string => Boolean(id))),
+    [pendingSlots]
+  );
+  const historyItemsForGrid = useMemo(
+    () =>
+      pendingFilledIds.size > 0
+        ? historyItems.filter((item) => !pendingFilledIds.has(item.id))
+        : historyItems,
+    [historyItems, pendingFilledIds]
+  );
+  const historyCollections = useMemo(
+    () => groupHistoryCollections(historyItemsForGrid),
+    [historyItemsForGrid]
+  );
+  /** Album-style collections only when a batch produced 2+ images. */
+  const multiCollections = useMemo(
+    () => historyCollections.filter((collection) => collection.items.length > 1),
+    [historyCollections]
+  );
+  const historyGroups = useMemo(
+    () => groupCollectionsByDate(historyCollections, language),
+    [historyCollections, language]
+  );
   const modelGroups = useMemo(() => groupModelOptions(modelOptions), [modelOptions]);
   const selectedModelIsTogether = useMemo(() => isTogetherImageModelCode(selectedModel), [selectedModel]);
-  const selectedModelIsVertex = useMemo(() => /^vertex\//i.test(selectedModel), [selectedModel]);
+  /** Negative prompt is only wired for Together AI image models — Gemini ignores it. */
+  const supportsNegativePrompt = selectedModelIsTogether;
   const supportsTogetherSteps = useMemo(() => modelSupportsTogetherSteps(selectedModel), [selectedModel]);
   const supportsResolutionSelector = useMemo(
     () => modelSupportsImageSize(selectedModel) || selectedModelIsTogether,
@@ -698,7 +822,6 @@ export default function HomePage() {
     [selectedModelIsTogether]
   );
   const selectedModelLooksImageCapable = useMemo(() => modelLooksImageCapable(selectedModel), [selectedModel]);
-  const canAddReferenceImage = isBatchMode || referenceImages.length < MAX_REFERENCE_IMAGES;
   const resolvedResize = useMemo(() => {
     if (resizePreset === 'none') {
       return undefined;
@@ -713,16 +836,184 @@ export default function HomePage() {
 
     return parseResizeDimensionsFromPreset(resizePreset);
   }, [customResizeHeight, customResizeWidth, resizePreset]);
+  const viewerItems = useMemo(() => {
+    if (viewerOverrideItems && viewerOverrideItems.length > 0) {
+      return viewerOverrideItems;
+    }
+    if (!viewerCollectionId) {
+      return historyItems;
+    }
+    return historyItems.filter((item) => resolveCollectionId(item) === viewerCollectionId);
+  }, [historyItems, viewerCollectionId, viewerOverrideItems]);
   const historySlides = useMemo<Slide[]>(
     () =>
-      historyItems.map((item, index) => ({
+      viewerItems.map((item, index) => ({
         src: item.imageUrl,
         alt: t('historySlideAlt', { index: index + 1 })
       })),
-    [historyItems, t]
+    [viewerItems, t]
   );
-  const activeHistoryItem = historyItems[historyViewerIndex];
+  const activeHistoryItem = viewerItems[historyViewerIndex];
   const newHistoryCount = useMemo(() => historyItems.filter((item) => item.isNew).length, [historyItems]);
+
+  const generationTotal = useMemo(() => {
+    const refs = Math.max(1, batchTotalRefs || referenceImages.length || 1);
+    const perRef = Math.max(1, batchCountPerRef || 1);
+    return refs * perRef;
+  }, [batchTotalRefs, batchCountPerRef, referenceImages.length]);
+
+  const generationCurrent = useMemo(() => {
+    if (!isLoading) return 0;
+    const perRef = Math.max(1, batchCountPerRef || 1);
+    // Finished reference jobs contribute their full variant count.
+    const base = batchRunResults.length * perRef;
+
+    // While an async Gemini batch job is open, fold in request-level stats.
+    if (batchInFlightProgress) {
+      const doneInJob =
+        batchInFlightProgress.successfulCount + batchInFlightProgress.failedCount;
+      const jobTotal = Math.max(batchInFlightProgress.requestCount, perRef);
+      if (doneInJob >= jobTotal) {
+        return Math.min(base + jobTotal, generationTotal);
+      }
+      // "Working on" the next unfinished request (same pattern as pre-stats UI).
+      return Math.min(Math.max(1, base + doneInJob + 1), generationTotal);
+    }
+
+    return Math.min(Math.max(1, base + 1), generationTotal);
+  }, [isLoading, batchCountPerRef, batchRunResults.length, batchInFlightProgress, generationTotal]);
+
+  const progressStatusText = useMemo(() => {
+    if (!isLoading) return '';
+    const current = generationCurrent;
+    const total = generationTotal;
+    const seconds = generationElapsedSec;
+    const translated = t('generatingProgress', { current, total, seconds });
+    // Guard against missing i18n key (stale HMR / cold bundle) showing the raw key name.
+    if (!translated || translated === 'generatingProgress') {
+      return language === 'en'
+        ? `generating ${current} / ${total}  ${seconds}s`
+        : `üretiliyor ${current} / ${total}  ${seconds}s`;
+    }
+    return translated;
+  }, [isLoading, generationCurrent, generationTotal, generationElapsedSec, language, t]);
+
+  /**
+   * Shared batch phase for pending cards.
+   * Once a job has been seen as running, never flash back to "queued" if Gemini
+   * briefly reports PENDING/PAUSED mid-job (common during long batches).
+   */
+  const pendingBatchPhase = useMemo<PendingCardPhase>(() => {
+    if (!isLoading || pendingSlots.length === 0) {
+      return 'running';
+    }
+
+    const state = (batchJobUiStatus?.state ?? 'pending').toLowerCase();
+    const stateLabel = batchJobUiStatus?.stateLabel?.toLowerCase() ?? '';
+    const hasEverRun = Boolean(batchJobUiStatus?.hasEnteredRunning);
+
+    if (state === 'retrying') {
+      return 'retrying';
+    }
+    if (stateLabel.includes('waiting for results') || stateLabel.includes('waiting')) {
+      return 'waiting';
+    }
+    if (state === 'succeeded') {
+      return 'done';
+    }
+    if (state === 'running') {
+      return 'running';
+    }
+    if (state === 'pending' || state === 'queued') {
+      // Sticky: after first RUNNING poll, keep showing "Generating" not "In queue".
+      return hasEverRun ? 'running' : 'queued';
+    }
+    if (!batchJobUiStatus) {
+      return 'running';
+    }
+    return hasEverRun ? 'running' : 'queued';
+  }, [isLoading, pendingSlots.length, batchJobUiStatus]);
+
+  /**
+   * Per-card badge phase across the full multi-ref grid.
+   * - Future product photos → "Sırada" (especially meaningful in tekli mode)
+   * - Active product photo → job phase (üretiliyor / sırada / yeniden deneniyor)
+   * - Filled slots → tamamlandı
+   */
+  function getPendingCardStatus(slot: PendingHistorySlot, globalIndex: number): {
+    phase: PendingCardPhase;
+    badge: string;
+    meta: string;
+  } {
+    const progress = batchJobUiStatus?.progress ?? batchInFlightProgress;
+    const hasItem = Boolean(slot.item);
+
+    let phase: PendingCardPhase;
+    if (hasItem) {
+      phase = 'done';
+    } else if (slot.refIndex > activePendingRefIndex) {
+      // Not started yet — waiting for earlier product jobs to finish.
+      phase = 'queued';
+    } else if (slot.refIndex < activePendingRefIndex) {
+      // Earlier product should already be filled; if empty, treat as waiting/retry gap.
+      phase = 'waiting';
+    } else if (pendingBatchPhase === 'queued') {
+      phase = 'queued';
+    } else if (pendingBatchPhase === 'retrying') {
+      phase = 'retrying';
+    } else if (pendingBatchPhase === 'waiting') {
+      phase = 'waiting';
+    } else if (pendingBatchPhase === 'done') {
+      phase = 'waiting';
+    } else {
+      // Active product job is running — variants for this ref are in flight.
+      phase = 'running';
+      if (
+        progress &&
+        progress.requestCount > 0 &&
+        progress.pendingCount === 0 &&
+        progress.successfulCount + progress.failedCount >= progress.requestCount
+      ) {
+        phase = 'waiting';
+      }
+    }
+
+    const badgeKey =
+      phase === 'queued'
+        ? 'batchStatusQueued'
+        : phase === 'retrying'
+          ? 'batchStatusRetrying'
+          : phase === 'waiting'
+            ? 'batchStatusWaitingResults'
+            : phase === 'done'
+              ? 'batchStatusCompleted'
+              : 'batchStatusProcessing';
+
+    return {
+      phase,
+      badge: t(badgeKey),
+      meta: `#${globalIndex + 1}`
+    };
+  }
+
+  useEffect(() => {
+    if (!isLoading) {
+      generationStartedAtRef.current = null;
+      setGenerationElapsedSec(0);
+      return;
+    }
+    if (generationStartedAtRef.current === null) {
+      generationStartedAtRef.current = Date.now();
+      setGenerationElapsedSec(0);
+    }
+    const tick = () => {
+      const started = generationStartedAtRef.current ?? Date.now();
+      setGenerationElapsedSec(Math.max(0, Math.floor((Date.now() - started) / 1000)));
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [isLoading]);
 
   const countError = useMemo<string | null>(() => {
     const n = Number.parseInt(countInput, 10);
@@ -751,24 +1042,24 @@ export default function HomePage() {
   }, [resizePreset, resizeHeightInput, t]);
 
   const batchRateLimitError = useMemo<string | null>(() => {
-    if (!isBatchMode) return null;
     const n = Number.parseInt(batchRateLimitInput, 10);
     if (!Number.isFinite(n)) return t('errorInvalidNumber');
     if (n < 0) return t('errorRateLimitMin');
     if (n > MAX_BATCH_RATE_LIMIT_SEC) return t('errorRateLimitMax');
     return null;
-  }, [isBatchMode, batchRateLimitInput, t]);
+  }, [batchRateLimitInput, t]);
 
   const canSubmit = useMemo(() => {
+    // Base prompt is optional — per-reference Flash analysis builds the catalogue prompt.
     return (
-      prompt.trim().length > 0 &&
+      referenceImages.length > 0 &&
       !isLoading &&
       !countError &&
       !resizeWidthError &&
       !resizeHeightError &&
       !batchRateLimitError
     );
-  }, [prompt, isLoading, countError, resizeWidthError, resizeHeightError, batchRateLimitError]);
+  }, [referenceImages.length, isLoading, countError, resizeWidthError, resizeHeightError, batchRateLimitError]);
 
   useEffect(() => {
     // Selecting product options overwrites the base prompt with the commercial catalogue template.
@@ -875,7 +1166,7 @@ export default function HomePage() {
             return;
           }
 
-          setHistoryItems(sanitized);
+          setHistoryItems(repairHistoryCollectionIds(sanitized));
         }
       } catch {
         toast.error(t('toastHistoryLoadFailed'), {
@@ -1016,11 +1307,17 @@ export default function HomePage() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const storedAuthMode = window.localStorage.getItem(AUTH_MODE_STORAGE_KEY);
-    if (storedAuthMode === 'service_account' || storedAuthMode === 'api_key') {
+    if (
+      storedAuthMode === 'service_account' ||
+      storedAuthMode === 'api_key' ||
+      storedAuthMode === 'vertex_express'
+    ) {
       setAuthMode(storedAuthMode);
     }
-    const stored = window.localStorage.getItem(BATCH_MODE_STORAGE_KEY);
-    if (stored === 'true') setIsBatchMode(true);
+    const storedRenderMode = window.localStorage.getItem(RENDER_MODE_STORAGE_KEY);
+    if (storedRenderMode === 'batch' || storedRenderMode === 'single') {
+      setRenderMode(storedRenderMode);
+    }
     const storedLimit = window.localStorage.getItem(BATCH_RATE_LIMIT_STORAGE_KEY);
     if (storedLimit !== null) {
       const parsed = Number.parseInt(storedLimit, 10);
@@ -1028,6 +1325,12 @@ export default function HomePage() {
         setBatchRateLimitSec(parsed);
         setBatchRateLimitInput(String(parsed));
       }
+    }
+    const storedAutoAi = window.localStorage.getItem(AUTO_AI_ANALYSIS_STORAGE_KEY);
+    if (storedAutoAi === '0' || storedAutoAi === 'false') {
+      setAutoAiAnalysis(false);
+    } else if (storedAutoAi === '1' || storedAutoAi === 'true') {
+      setAutoAiAnalysis(true);
     }
   }, []);
 
@@ -1038,17 +1341,18 @@ export default function HomePage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem(BATCH_MODE_STORAGE_KEY, String(isBatchMode));
-    if (!isBatchMode) {
-      setBatchRunResults([]);
-      batchRunResultsRef.current = [];
-    }
-  }, [isBatchMode]);
+    window.localStorage.setItem(RENDER_MODE_STORAGE_KEY, renderMode);
+  }, [renderMode]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(BATCH_RATE_LIMIT_STORAGE_KEY, String(batchRateLimitSec));
   }, [batchRateLimitSec]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(AUTO_AI_ANALYSIS_STORAGE_KEY, autoAiAnalysis ? '1' : '0');
+  }, [autoAiAnalysis]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1125,7 +1429,7 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    if (historyItems.length === 0) {
+    if (viewerItems.length === 0) {
       if (isHistoryViewerOpen) {
         setIsHistoryViewerOpen(false);
       }
@@ -1133,10 +1437,10 @@ export default function HomePage() {
       return;
     }
 
-    if (historyViewerIndex > historyItems.length - 1) {
-      setHistoryViewerIndex(historyItems.length - 1);
+    if (historyViewerIndex > viewerItems.length - 1) {
+      setHistoryViewerIndex(viewerItems.length - 1);
     }
-  }, [historyItems.length, historyViewerIndex, isHistoryViewerOpen]);
+  }, [viewerItems.length, historyViewerIndex, isHistoryViewerOpen]);
 
   // Mark the currently viewed item as seen in a separate effect so that the
   // historyItems state update (which re-renders historySlides) never happens in
@@ -1148,13 +1452,11 @@ export default function HomePage() {
     if (!isHistoryViewerOpen) {
       return;
     }
-    const viewedId = historyItems[historyViewerIndex]?.id;
+    const viewedId = viewerItems[historyViewerIndex]?.id;
     if (viewedId) {
       markHistoryItemAsViewed(viewedId);
     }
-    // Intentionally excludes historyItems: we only want to run when the viewer
-    // opens or the user navigates — not when items are updated as a result of
-    // this very effect, which would cause an update loop.
+    // Intentionally excludes viewerItems content updates from deps beyond index/open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyViewerIndex, isHistoryViewerOpen]);
 
@@ -1242,23 +1544,50 @@ export default function HomePage() {
     }
   }
 
-  async function downloadBatchResults() {
-    const results = batchRunResultsRef.current;
-    if (results.length === 0) return;
+  async function downloadHistoryItemsAsZip(
+    items: HistoryItem[],
+    zipBaseName: string,
+    options?: {
+      /** Put every file under this single root folder (e.g. "KA1232 1"). */
+      rootFolderName?: string;
+    }
+  ) {
+    if (items.length === 0) return;
 
     try {
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
+      const catalog = multiCollections;
 
-      for (const run of results) {
-        const folderName = getBatchReferenceFolderName(run);
-        const folder = zip.folder(folderName);
-        if (!folder) continue;
-
-        for (let i = 0; i < run.items.length; i++) {
-          const item = run.items[i];
+      const writeItemsToFolder = (
+        folder: { file: (name: string, data: Blob) => unknown },
+        folderItems: HistoryItem[]
+      ) => {
+        for (let i = 0; i < folderItems.length; i++) {
+          const item = folderItems[i];
           const fileExt = mimeTypeToFileExtension(item.mimeType);
           folder.file(getHistoryImageDownloadName(item, i + 1, fileExt), item.imageBlob);
+        }
+      };
+
+      if (options?.rootFolderName) {
+        const folder = zip.folder(options.rootFolderName);
+        if (!folder) {
+          throw new Error('Failed to create zip folder.');
+        }
+        writeItemsToFolder(folder, items);
+      } else {
+        // Group by collection id; multi-image collections go into named folders.
+        const byCollection = groupHistoryCollections(items);
+        for (const collection of byCollection) {
+          if (collection.items.length > 1) {
+            const folderName = getCollectionFolderName(collection, catalog);
+            const folder = zip.folder(folderName);
+            if (!folder) continue;
+            writeItemsToFolder(folder, collection.items);
+          } else {
+            writeItemsToFolder(zip, collection.items);
+          }
         }
       }
 
@@ -1266,7 +1595,7 @@ export default function HomePage() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `${getDownloadBatchBaseName(results.flatMap((run) => run.items))}.zip`;
+      anchor.download = `${zipBaseName}.zip`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -1276,18 +1605,58 @@ export default function HomePage() {
     }
   }
 
+  async function downloadCollection(collection: HistoryCollection) {
+    if (collection.items.length === 1) {
+      downloadHistoryItem(collection.items[0], 1);
+      return;
+    }
+    const folderName = getCollectionFolderName(collection, multiCollections);
+    await downloadHistoryItemsAsZip(collection.items, folderName, { rootFolderName: folderName });
+  }
+
   function openReferencePicker() {
     fileInputRef.current?.click();
   }
 
   function openHistoryViewer(itemId: string) {
-    const targetIndex = historyItems.findIndex((item) => item.id === itemId);
+    // Prefer in-flight pending slots (partial batch results) when present.
+    const pendingReady = pendingSlots.map((slot) => slot.item).filter((entry): entry is HistoryItem => Boolean(entry));
+    const pendingIndex = pendingReady.findIndex((entry) => entry.id === itemId);
+    if (pendingIndex >= 0) {
+      setViewerOverrideItems(pendingReady);
+      setViewerCollectionId(null);
+      setHistoryViewerIndex(pendingIndex);
+      setIsHistoryViewerOpen(true);
+      return;
+    }
+
+    const item = historyItems.find((entry) => entry.id === itemId);
+    if (!item) {
+      return;
+    }
+
+    const collectionId = resolveCollectionId(item);
+    const scoped = historyItems.filter((entry) => resolveCollectionId(entry) === collectionId);
+    const targetIndex = scoped.findIndex((entry) => entry.id === itemId);
     if (targetIndex < 0) {
       return;
     }
 
     markHistoryItemAsViewed(itemId);
+    setViewerOverrideItems(null);
+    setViewerCollectionId(collectionId);
     setHistoryViewerIndex(targetIndex);
+    setIsHistoryViewerOpen(true);
+  }
+
+  function openCollectionViewer(collection: HistoryCollection, startIndex = 0) {
+    if (collection.items.length === 0) {
+      return;
+    }
+    const safeIndex = Math.max(0, Math.min(startIndex, collection.items.length - 1));
+    markHistoryItemAsViewed(collection.items[safeIndex].id);
+    setViewerCollectionId(collection.id);
+    setHistoryViewerIndex(safeIndex);
     setIsHistoryViewerOpen(true);
   }
 
@@ -1311,19 +1680,26 @@ export default function HomePage() {
     setReferenceImages((previous) => previous.filter((image) => image.id !== id));
   }
 
-  function downloadHistoryImage() {
-    const item = activeHistoryItem;
-    if (!item || typeof document === 'undefined') {
+  function downloadHistoryItem(item: HistoryItem, index = 1) {
+    if (typeof document === 'undefined') {
       return;
     }
 
     const fileExt = mimeTypeToFileExtension(item.mimeType);
     const anchor = document.createElement('a');
     anchor.href = item.imageUrl;
-    anchor.download = getHistoryImageDownloadName(item, historyViewerIndex + 1, fileExt);
+    anchor.download = getHistoryImageDownloadName(item, index, fileExt);
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
+  }
+
+  function downloadHistoryImage() {
+    const item = activeHistoryItem;
+    if (!item) {
+      return;
+    }
+    downloadHistoryItem(item, historyViewerIndex + 1);
   }
 
   function applyRegenerateConfiguration() {
@@ -1372,19 +1748,21 @@ export default function HomePage() {
     const restoredCount = Math.max(1, Math.min(Number(config.requestedCount) || DEFAULT_COUNT, 10));
     setCount(restoredCount);
     setCountInput(String(restoredCount));
-    const hasStoredReferenceMetadata = Array.isArray(config.referenceImages);
+    // Reference image bytes are not kept in history (IndexedDB quota). Only metadata may remain.
     const restoredSourceReferences = config.referenceImages ?? [];
-    const restoredReferences = (isBatchMode ? restoredSourceReferences : restoredSourceReferences.slice(0, MAX_REFERENCE_IMAGES)).map((reference) => ({
-      id: makeId(),
-      base64: reference.base64,
-      mimeType: reference.mimeType,
-      previewDataUrl: `data:${reference.mimeType};base64,${reference.base64}`,
-      fileName: reference.fileName ?? ''
-    }));
+    const restoredReferences = restoredSourceReferences
+      .filter((reference) => typeof reference.base64 === 'string' && reference.base64.length > 0)
+      .map((reference) => ({
+        id: makeId(),
+        base64: reference.base64 as string,
+        mimeType: reference.mimeType,
+        previewDataUrl: `data:${reference.mimeType};base64,${reference.base64}`,
+        fileName: reference.fileName ?? ''
+      }));
     setReferenceImages(restoredReferences);
     setIsHistoryViewerOpen(false);
 
-    if (!hasStoredReferenceMetadata) {
+    if (restoredReferences.length === 0) {
       toast.error(t('toastReferenceUnavailable'), {
         description: t('toastReferenceUnavailableDesc'),
         duration: 5600
@@ -1405,23 +1783,11 @@ export default function HomePage() {
       return;
     }
 
-    const incomingFiles = Array.from(files);
-    const availableSlots = isBatchMode ? incomingFiles.length : Math.max(0, MAX_REFERENCE_IMAGES - referenceImages.length);
-    const selected = isBatchMode ? incomingFiles : incomingFiles.slice(0, availableSlots);
-
-    if (selected.length === 0) {
-      toast.error(t('toastReferenceLimitReached'), {
-        description: t('toastReferenceLimitReachedDesc', { max: MAX_REFERENCE_IMAGES }),
-        duration: 4500
-      });
-      return;
-    }
-
+    const selected = Array.from(files);
     const createdReferences: ReferenceImage[] = [];
 
     for (const file of selected) {
       if (!ALLOWED_REFERENCE_MIME_TYPES.has(file.type.toLowerCase())) {
-        setError(t('errorFailedReadImageFile'));
         toast.error(t('toastReferenceReadFailed'), {
           description: t('toastReferenceReadFailedDesc'),
           duration: 5000
@@ -1430,7 +1796,6 @@ export default function HomePage() {
       }
 
       if (file.size > MAX_REFERENCE_FILE_BYTES) {
-        setError(t('payloadTooLarge'));
         toast.error(t('toastReferenceReadFailed'), {
           description: t('payloadTooLarge'),
           duration: 5000
@@ -1442,7 +1807,6 @@ export default function HomePage() {
       const parsed = parseDataUrlImage(dataUrl);
 
       if (!parsed) {
-        setError(t('errorFailedReadImageFile'));
         toast.error(t('toastReferenceReadFailed'), {
           description: t('toastReferenceReadFailedDesc'),
           duration: 5000
@@ -1460,18 +1824,16 @@ export default function HomePage() {
     }
 
     if (createdReferences.length > 0) {
-      setReferenceImages((previous) => {
-        const nextReferences = [...previous, ...createdReferences];
-        return isBatchMode ? nextReferences : nextReferences.slice(0, MAX_REFERENCE_IMAGES);
-      });
-      setError('');
+      setReferenceImages((previous) => [...previous, ...createdReferences]);
     }
   }
 
   function onReferenceDragOver(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
-    setIsReferenceDragOver(true);
+    if (!isReferenceDragOver) {
+      setIsReferenceDragOver(true);
+    }
   }
 
   function onReferenceDragEnter(event: DragEvent<HTMLElement>) {
@@ -1481,6 +1843,11 @@ export default function HomePage() {
 
   function onReferenceDragLeave(event: DragEvent<HTMLElement>) {
     event.preventDefault();
+    // Ignore leave events that stay inside the drop surface (child nodes).
+    const nextTarget = event.relatedTarget as Node | null;
+    if (nextTarget && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
     setIsReferenceDragOver(false);
   }
 
@@ -1490,22 +1857,88 @@ export default function HomePage() {
     void handleFileInput(event.dataTransfer.files);
   }
 
+  /** Abort all in-flight work and reset UI as if Generate was never pressed. */
+  function cancelGeneration() {
+    if (!isLoading && !generationAbortRef.current) {
+      return;
+    }
+
+    generationCancelledRef.current = true;
+    const collectionId = activeCollectionIdRef.current;
+    activeCollectionIdRef.current = null;
+    generationAbortRef.current?.abort();
+    generationAbortRef.current = null;
+
+    batchHistoryItemsRef.current = [];
+    batchRunResultsRef.current = [];
+    refAnalysesRef.current = {};
+    generationStartedAtRef.current = null;
+
+    flushSync(() => {
+      setPendingSlots((previous) => {
+        for (const slot of previous) {
+          const url = slot.item?.imageUrl;
+          if (url?.startsWith('blob:')) {
+            URL.revokeObjectURL(url);
+          }
+        }
+        return [];
+      });
+
+      if (collectionId) {
+        setHistoryItems((previous) => {
+          const kept: HistoryItem[] = [];
+          for (const item of previous) {
+            if (item.collectionId === collectionId) {
+              if (item.imageUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(item.imageUrl);
+              }
+            } else {
+              kept.push(item);
+            }
+          }
+          return kept;
+        });
+      }
+
+      setIsLoading(false);
+      setActivePendingRefIndex(0);
+      setBatchInFlightProgress(null);
+      setBatchJobUiStatus(null);
+      setGenerationElapsedSec(0);
+      setFailures([]);
+      setBatchRunResults([]);
+      setRefAnalyses({});
+      setAnalysisModalTarget(null);
+      setAnalysisModalDraft(null);
+      setViewerOverrideItems(null);
+    });
+  }
+
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const submittedCount = Math.max(1, Math.min(count, 10));
+    // Prefer the live input value so Generate works without requiring blur on the count field.
+    const parsedCount = Number.parseInt(countInput, 10);
+    const submittedCount = Math.max(
+      1,
+      Math.min(Number.isFinite(parsedCount) ? parsedCount : count, 10)
+    );
+    if (submittedCount !== count) {
+      setCount(submittedCount);
+      setCountInput(String(submittedCount));
+    }
     const submittedPrompt = prompt.trim();
-    const submittedNegativePrompt = negativePrompt.trim();
+    const submittedNegativePrompt = supportsNegativePrompt ? negativePrompt.trim() : '';
     const submittedModel = selectedModel;
     const submittedAuthMode = authMode;
-    const submittedIsVertex = /^vertex\//i.test(submittedModel);
+    const submittedRenderMode = renderMode;
+    const submittedAutoAiAnalysis = autoAiAnalysis;
     const submittedRefs = referenceImages.map((img) => ({ base64: img.base64, mimeType: img.mimeType, fileName: img.fileName }));
 
-    if (!isBatchMode && submittedRefs.length > MAX_REFERENCE_IMAGES) {
-      const message = t('errorReferenceLimitNormalMode', { max: MAX_REFERENCE_IMAGES });
-      setError(message);
-      toast.error(t('toastReferenceLimitReached'), {
-        description: message,
+    if (submittedRefs.length === 0) {
+      toast.error(t('toastReferenceRequired'), {
+        description: t('errorReferenceRequired'),
         duration: 5000
       });
       return;
@@ -1524,28 +1957,83 @@ export default function HomePage() {
       requestedCount: submittedCount,
     };
 
+    // Cancel any previous run before starting a new one.
+    generationAbortRef.current?.abort();
+    const abortController = new AbortController();
+    generationAbortRef.current = abortController;
+    generationCancelledRef.current = false;
+    const { signal } = abortController;
+
+    const assertNotCancelled = () => {
+      if (generationCancelledRef.current || signal.aborted) {
+        const error = new Error('Generation cancelled');
+        error.name = 'AbortError';
+        throw error;
+      }
+    };
+
+    const sleepCancellable = async (ms: number) => {
+      let remaining = ms;
+      while (remaining > 0) {
+        assertNotCancelled();
+        const chunk = Math.min(1000, remaining);
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve();
+          }, chunk);
+          const onAbort = () => {
+            window.clearTimeout(timer);
+            signal.removeEventListener('abort', onAbort);
+            const error = new Error('Generation cancelled');
+            error.name = 'AbortError';
+            reject(error);
+          };
+          signal.addEventListener('abort', onAbort, { once: true });
+        });
+        remaining -= chunk;
+      }
+    };
+
     setIsLoading(true);
-    setError('');
+    setBatchCountPerRef(submittedCount);
+    setBatchInFlightProgress(null);
+    setBatchJobUiStatus(null);
+    setActivePendingRefIndex(0);
+    setRefAnalyses({});
+    refAnalysesRef.current = {};
+    setAnalysisModalTarget(null);
+    setAnalysisModalDraft(null);
     setFailures([]);
     setBatchRunResults([]);
     batchRunResultsRef.current = [];
+    batchHistoryItemsRef.current = [];
+    generationStartedAtRef.current = Date.now();
+    setGenerationElapsedSec(0);
+    // One collection for the whole submit — every reference image joins this batch.
+    const collectionId = makeId();
+    activeCollectionIdRef.current = collectionId;
+    const collectionCreatedAt = new Date().toISOString();
 
     // Calls /api/generate with the given refs, polls until done, returns structured output.
+    // onPartialResults is invoked whenever the poll returns more finished images than before.
     async function callApiAndGetResults(
       refs: Array<{ base64: string; mimeType: string; fileName?: string }>,
-      promptForRun = submittedPrompt
+      promptForRun = submittedPrompt,
+      onPartialResults?: (results: GenerationResult[]) => Promise<void>
     ) {
-      setStatusText(t('statusSubmitting', { count: submittedCount }));
-
+      assertNotCancelled();
       const submitResponse = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal,
         body: JSON.stringify({
           prompt: promptForRun,
           negativePrompt: submittedNegativePrompt || undefined,
           count: submittedCount,
           model: submittedModel,
-          authMode: submittedIsVertex ? submittedAuthMode : undefined,
+          authMode: submittedAuthMode,
+          renderMode: submittedRenderMode,
           aspectRatio,
           steps: supportsTogetherSteps ? steps : undefined,
           imageSize: supportsResolutionSelector ? imageSize : undefined,
@@ -1570,21 +2058,70 @@ export default function HomePage() {
       if (submitResult.results) {
         batchOutput = submitResult.results;
       } else {
-        setStatusText(t('statusBatchSubmitted'));
         const POLL_INTERVAL_MS = 5000;
         let finalStatus: BatchStatusResponse | undefined;
+        let lastPartialCount = 0;
 
         while (true) {
-          const statusResponse = await fetch(`/api/generate?job=${encodeURIComponent(jobId)}`);
+          assertNotCancelled();
+          const statusResponse = await fetch(`/api/generate?job=${encodeURIComponent(jobId)}`, {
+            signal
+          });
           finalStatus = (await parseApiJsonOrThrow(statusResponse, '/api/generate')) as BatchStatusResponse;
 
           if (!statusResponse.ok) {
             throw new Error((finalStatus as unknown as { error?: string }).error ?? t('errorGenerationFailed'));
           }
 
-          setStatusText(getBatchStatusText(finalStatus.state, finalStatus.stateLabel, finalStatus.stateDetail, t));
-          if (isTerminalBatchState(finalStatus.state)) break;
-          await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          const polled = finalStatus;
+          // Paint job status immediately (before any heavy partial image work).
+          flushSync(() => {
+            if (polled.progress && polled.progress.requestCount > 0) {
+              setBatchInFlightProgress(polled.progress);
+            }
+            const stateLower = (polled.state ?? '').toLowerCase();
+            const labelLower = (polled.stateLabel ?? '').toLowerCase();
+            const enteredRunning =
+              stateLower === 'running' ||
+              stateLower === 'succeeded' ||
+              labelLower.includes('waiting for results');
+            setBatchJobUiStatus((previous) => {
+              let nextState = polled.state;
+              // Avoid flashing "In queue" after retry or after we already saw RUNNING.
+              if (
+                !enteredRunning &&
+                (stateLower === 'pending' || stateLower === 'queued') &&
+                (previous?.state === 'retrying' || previous?.hasEnteredRunning)
+              ) {
+                nextState = previous?.state === 'retrying' ? 'retrying' : 'running';
+              }
+              return {
+                state: nextState,
+                stateLabel: polled.stateLabel,
+                stateDetail: polled.stateDetail,
+                progress: polled.progress,
+                // Sticky for this product attempt — survives PENDING/PAUSED flicker from Gemini.
+                hasEnteredRunning: Boolean(previous?.hasEnteredRunning) || enteredRunning
+              };
+            });
+          });
+
+          // Stream finished variants into pending history cards as they arrive.
+          // Skip heavy partial materialization on the terminal poll — the caller commits
+          // history + clears loading slots in one flush before the success toast.
+          const isTerminal = isTerminalBatchState(polled.state);
+          const partialList = (polled.results?.results ?? []) as GenerationResult[];
+          if (!isTerminal && onPartialResults && partialList.length > lastPartialCount) {
+            lastPartialCount = partialList.length;
+            try {
+              await onPartialResults(partialList);
+            } catch (partialUiError) {
+              console.warn('[batch-generate] partial UI update failed', partialUiError);
+            }
+          }
+
+          if (isTerminal) break;
+          await sleepCancellable(POLL_INTERVAL_MS);
         }
 
         if (!finalStatus || finalStatus.state !== 'succeeded') {
@@ -1592,6 +2129,7 @@ export default function HomePage() {
         }
 
         batchOutput = finalStatus.results as BatchOutputShape;
+        // Keep in-flight UI status until the caller flushSync-commits history / clears slots.
       }
 
       return {
@@ -1604,268 +2142,575 @@ export default function HomePage() {
     }
 
     function applyUsedModel(usedModel: string): string {
-      if (usedModel && usedModel !== 'unknown-model') {
-        const normalizedUsedModel = normalizeModelCode(usedModel);
-        setSelectedModel(normalizedUsedModel);
-        setModelOptions((previous) =>
-          sortModelOptions(mergeModelOptions(previous, [{
-            code: normalizedUsedModel,
-            name: humanizeModelCode(normalizedUsedModel),
-            group: inferModelGroup(normalizedUsedModel)
-          }]))
-        );
-        return normalizedUsedModel;
+      if (!usedModel || usedModel === 'unknown-model') {
+        return submittedModel;
       }
-      return submittedModel;
+
+      let normalizedUsedModel = normalizeModelCode(usedModel);
+
+      // Gemini Developer Batch API reports bare model ids (no `vertex/` prefix).
+      // Auth Mode is only shown for vertex/* — preserve the user's Vertex selection.
+      if (/^vertex\//i.test(submittedModel) && !/^vertex\//i.test(normalizedUsedModel)) {
+        normalizedUsedModel = `vertex/${normalizedUsedModel}`;
+      }
+
+      const submittedBase = normalizeModelCode(submittedModel).replace(/^vertex\//i, '');
+      const usedBase = normalizedUsedModel.replace(/^vertex\//i, '');
+      // Same model under a different reporting form — keep the exact UI selection.
+      if (submittedBase.toLowerCase() === usedBase.toLowerCase()) {
+        return submittedModel;
+      }
+
+      setSelectedModel(normalizedUsedModel);
+      setModelOptions((previous) =>
+        sortModelOptions(
+          mergeModelOptions(previous, [
+            {
+              code: normalizedUsedModel,
+              name: humanizeModelCode(normalizedUsedModel),
+              group: inferModelGroup(normalizedUsedModel)
+            }
+          ])
+        )
+      );
+      return normalizedUsedModel;
     }
 
-    if (isBatchMode && referenceImages.length > 0) {
-      // Batch mode: one generation run per reference image with retry items inserted next in line.
-      const totalRefs = referenceImages.length;
-      const rateLimitMs = batchRateLimitSec * 1000;
-      const queue: BatchQueueItem[] = referenceImages.map((ref, refIndex) => ({ ref, refIndex, attempt: 0 }));
-      let processedAttempts = 0;
-      setBatchTotalRefs(totalRefs);
+    // Always one generation job per reference image (queue + rate limit + retries).
+    const totalRefs = referenceImages.length;
+    const rateLimitMs = batchRateLimitSec * 1000;
+    const queue: BatchQueueItem[] = referenceImages.map((ref, refIndex) => ({ ref, refIndex, attempt: 0 }));
+    let processedAttempts = 0;
+    setBatchTotalRefs(totalRefs);
 
-      try {
-        while (queue.length > 0) {
-          const item = queue.shift();
-          if (!item) break;
-
-          const { ref, refIndex, attempt } = item;
-          const promptForRun = getBatchPromptForReference(submittedPrompt, refIndex);
-
-          if (processedAttempts > 0) {
-            const targetTime = lastBatchRunTimeRef.current + rateLimitMs;
-            let remaining = targetTime - Date.now();
-            while (remaining > 0) {
-              const seconds = Math.ceil(remaining / 1000);
-              setStatusText(t('batchRateLimitWait', { seconds }));
-              await new Promise<void>((r) => setTimeout(r, Math.min(1000, remaining)));
-              remaining = targetTime - Date.now();
-            }
-          }
-
-          setStatusText(t('batchGeneratingStep', { current: Math.min(batchRunResultsRef.current.length + 1, totalRefs), total: totalRefs }));
-          setPendingHistoryIds(Array.from({ length: submittedCount }, () => makeId()));
-
-          const singleRefConfig: GenerationConfigSnapshot = {
-            ...submittedConfig,
-            basePrompt: promptForRun,
-            referenceImages: [{ base64: ref.base64, mimeType: ref.mimeType, fileName: ref.fileName }]
-          };
-
-          try {
-            const { outputResults, outputFailures, usedModel } = await callApiAndGetResults([
-              { base64: ref.base64, mimeType: ref.mimeType }
-            ], promptForRun);
-
-            lastBatchRunTimeRef.current = Date.now();
-
-            if (outputResults.length < submittedCount) {
-              const firstFailure = outputFailures[0]?.error?.trim();
-              throw new Error(firstFailure || `Generated ${outputResults.length} of ${submittedCount} requested image(s).`);
-            }
-
-            processedAttempts += 1;
-            const resolvedUsedModel = applyUsedModel(usedModel);
-            const historyConfig: GenerationConfigSnapshot = { ...singleRefConfig, model: resolvedUsedModel };
-
-            if (outputFailures.length > 0) {
-              setFailures((prev) => [
-                ...prev,
-                ...outputFailures.map((f) => ({ ...f, error: formatGenerationError(f.error, t) }))
-              ]);
-              toast.error(t('toastSomeVariantsFailed'), {
-                description: t('toastSomeVariantsFailedDesc', { count: outputFailures.length }),
-                duration: 4500
-              });
-            }
-
-            let runItems: HistoryItem[] = [];
-            if (outputResults.length > 0) {
-              const createdAt = new Date().toISOString();
-              runItems = await Promise.all(
-                outputResults.map((entry) =>
-                  createHistoryItemFromGenerationResult(entry, {
-                    id: makeId(),
-                    createdAt,
-                    isNew: true,
-                    generationConfig: historyConfig
-                  })
-                )
-              );
-
-              setHistoryItems((previous) => {
-                const olderItems = previous.map((e) => ({ ...e, isNew: false }));
-                return [...runItems, ...olderItems].slice(0, MAX_HISTORY_ITEMS);
-              });
-
-              toast.success(t('toastGenerationCompleted'), {
-                description: t('toastGenerationCompletedDesc', { count: outputResults.length }),
-                duration: 3000
-              });
-            }
-
-            const runResult: BatchRunResult = {
-              refIndex,
-              refPreviewDataUrl: ref.previewDataUrl,
-              refFileName: ref.fileName,
-              items: runItems
-            };
-            batchRunResultsRef.current = [...batchRunResultsRef.current, runResult];
-            setBatchRunResults([...batchRunResultsRef.current]);
-
-          } catch (stepError) {
-            lastBatchRunTimeRef.current = Date.now();
-            processedAttempts += 1;
-            const rawMessage = stepError instanceof Error ? stepError.message : t('unexpectedError');
-            console.error('[batch-generate] step failed', { refIndex, attempt, error: stepError });
-            const message = formatGenerationError(rawMessage, t);
-            const nextAttempt = attempt + 1;
-            const maxAttempts = MAX_BATCH_REFERENCE_RETRIES + 1;
-
-            if (attempt < MAX_BATCH_REFERENCE_RETRIES) {
-              const delayMs = getBatchRetryDelayMs(rawMessage, attempt);
-              let remaining = delayMs;
-              while (remaining > 0) {
-                setStatusText(
-                  t('batchRetrying', {
-                    product: ref.fileName?.trim() || String(refIndex + 1),
-                    attempt: nextAttempt + 1,
-                    max: maxAttempts,
-                    seconds: Math.ceil(remaining / 1000),
-                    error: message
-                  })
-                );
-                await new Promise<void>((r) => setTimeout(r, Math.min(1000, remaining)));
-                remaining = Math.max(0, remaining - 1000);
-              }
-              // Retry this product immediately after backoff (before later queue items).
-              queue.unshift({ ref, refIndex, attempt: nextAttempt });
-              toast.error(t('batchRetryToast'), {
-                description: t('batchRetryToastDesc', {
-                  product: ref.fileName?.trim() || String(refIndex + 1),
-                  attempt: nextAttempt + 1,
-                  max: maxAttempts,
-                  error: message
-                }),
-                duration: 4500
-              });
-            } else {
-              setError(message);
-              setFailures((prev) => [
-                ...prev,
-                {
-                  promptVariant: promptForRun,
-                  error: t('batchRetryExhausted', {
-                    product: ref.fileName?.trim() || String(refIndex + 1),
-                    max: maxAttempts,
-                    error: message
-                  })
-                }
-              ]);
-              const failedRunResult: BatchRunResult = {
-                refIndex,
-                refPreviewDataUrl: ref.previewDataUrl,
-                refFileName: ref.fileName,
-                items: []
-              };
-              batchRunResultsRef.current = [...batchRunResultsRef.current, failedRunResult];
-              setBatchRunResults([...batchRunResultsRef.current]);
-              toast.error(t('errorGenerationFailed'), {
-                description: t('batchRetryExhausted', {
-                  product: ref.fileName?.trim() || String(refIndex + 1),
-                  max: maxAttempts,
-                  error: message
-                }),
-                duration: 7000
-              });
-            }
-          } finally {
-            setPendingHistoryIds([]);
-          }
-        }
-
-        setStatusText(t('batchComplete', { total: totalRefs }));
-        if (totalRefs > 1) {
-          toast.success(t('batchComplete', { total: totalRefs }), { duration: 5000 });
-        }
-
-        if (typeof window !== 'undefined' && window.innerWidth <= 980 && batchRunResultsRef.current.length > 0) {
-          setActiveTab('history');
-        }
-      } finally {
-        setIsLoading(false);
+    /** Stable slots for every product × variant — full grid from first click. */
+    const allPendingSlots: PendingHistorySlot[] = [];
+    const slotIdsByRefIndex = new Map<number, string[]>();
+    for (let r = 0; r < totalRefs; r++) {
+      const ids: string[] = [];
+      for (let v = 0; v < submittedCount; v++) {
+        const id = makeId();
+        ids.push(id);
+        allPendingSlots.push({ id, refIndex: r, variantIndex: v, item: null });
       }
+      slotIdsByRefIndex.set(r, ids);
+    }
+    /** Filled images for the whole submit, keyed by slot id. */
+    const filledItemsBySlotId = new Map<string, HistoryItem>();
 
-    } else {
-      // Normal single generation: all reference images in one call.
-      setPendingHistoryIds(Array.from({ length: submittedCount }, () => makeId()));
+    const publishPendingSlots = () => {
+      setPendingSlots(
+        allPendingSlots.map((slot) => ({
+          ...slot,
+          item: filledItemsBySlotId.get(slot.id) ?? null
+        }))
+      );
+    };
 
+    // Manual catalogue template from product option dropdowns (used when AI auto-analysis is off
+    // or as fallback when analysis fails / prompt field is empty).
+    const manualCataloguePrompt =
+      selectedProductColor
+        ? buildCommercialCataloguePrompt({
+            color: selectedProductColor,
+            plexiglass: selectedPlexiglass,
+            mounting: selectedMounting,
+            handlePresence: selectedHandlePresence,
+            handle: handleDescription.trim() || DEFAULT_HANDLE_DESCRIPTION,
+            roomStyle: selectedRoomStyle,
+            accentColor: selectedAccentColor
+          })
+        : '';
+
+    flushSync(() => {
+      setActivePendingRefIndex(0);
+      publishPendingSlots();
+      if (submittedAutoAiAnalysis) {
+        const loadingMap: Record<number, RefAnalysisState> = {};
+        for (let r = 0; r < totalRefs; r++) {
+          loadingMap[r] = { status: 'loading' };
+        }
+        refAnalysesRef.current = loadingMap;
+        setRefAnalyses(loadingMap);
+      } else {
+        refAnalysesRef.current = {};
+        setRefAnalyses({});
+      }
+    });
+
+    // Gemini Flash: analyze every reference once so each product gets its own prompt.
+    if (submittedAutoAiAnalysis) {
       try {
-        const { outputResults, outputFailures, succeededCount, failedCount, usedModel } =
-          await callApiAndGetResults(submittedRefs);
+        await Promise.all(
+          submittedRefs.map(async (ref, index) => {
+            try {
+              assertNotCancelled();
+              const response = await fetch('/api/analyze-reference', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                signal,
+                body: JSON.stringify({
+                  base64: ref.base64,
+                  mimeType: ref.mimeType,
+                  fileName: ref.fileName
+                })
+              });
+              const payload = (await response.json().catch(() => ({}))) as {
+                analysis?: ReferenceAnalysis;
+                error?: string;
+              };
+              if (!response.ok || !payload.analysis) {
+                throw new Error(payload.error?.trim() || t('analysisFailed'));
+              }
+              const next: RefAnalysisState = { status: 'ready', analysis: payload.analysis };
+              refAnalysesRef.current = { ...refAnalysesRef.current, [index]: next };
+              setRefAnalyses((prev) => ({ ...prev, [index]: next }));
+            } catch (analyzeError) {
+              if (
+                generationCancelledRef.current ||
+                signal.aborted ||
+                (analyzeError instanceof Error && analyzeError.name === 'AbortError')
+              ) {
+                throw analyzeError instanceof Error
+                  ? analyzeError
+                  : Object.assign(new Error('Generation cancelled'), { name: 'AbortError' });
+              }
+              const message = getUnknownErrorMessage(analyzeError, t('analysisFailed'));
+              console.warn('[analyze-reference] failed', { index, message });
+              toast.error(t('toastAnalysisFailed', { product: ref.fileName?.trim() || String(index + 1) }), {
+                description: message,
+                duration: 5000
+              });
+              const next: RefAnalysisState = { status: 'error', error: message };
+              refAnalysesRef.current = { ...refAnalysesRef.current, [index]: next };
+              setRefAnalyses((prev) => ({ ...prev, [index]: next }));
+            }
+          })
+        );
+      } catch (analyzeWaveError) {
+        if (
+          generationCancelledRef.current ||
+          signal.aborted ||
+          (analyzeWaveError instanceof Error && analyzeWaveError.name === 'AbortError')
+        ) {
+          // Cancel path handles UI reset.
+          return;
+        }
+        throw analyzeWaveError;
+      }
+    }
 
-        const resolvedUsedModel = applyUsedModel(usedModel);
-        const historyConfig: GenerationConfigSnapshot = {
+    try {
+      while (queue.length > 0) {
+        assertNotCancelled();
+        const item = queue.shift();
+        if (!item) break;
+
+        const { ref, refIndex, attempt } = item;
+        const analysisPrompt = refAnalysesRef.current[refIndex]?.analysis?.prompt?.trim();
+        // Priority: AI analysis prompt → manual base prompt → product-option template → last-resort fallback.
+        const promptForRun =
+          analysisPrompt ||
+          getBatchPromptForReference(submittedPrompt, refIndex) ||
+          manualCataloguePrompt ||
+          'Create a photorealistic commercial furniture catalogue image from the reference. Preserve product identity exactly. GENERATE.';
+        const slotIds = slotIdsByRefIndex.get(refIndex) ?? [];
+
+        if (processedAttempts > 0) {
+          const targetTime = lastBatchRunTimeRef.current + rateLimitMs;
+          const waitMs = Math.max(0, targetTime - Date.now());
+          if (waitMs > 0) {
+            await sleepCancellable(waitMs);
+          }
+        }
+
+        setActivePendingRefIndex(refIndex);
+        setBatchInFlightProgress(null);
+        setBatchJobUiStatus({
+          state: attempt > 0 ? 'retrying' : submittedRenderMode === 'single' ? 'running' : 'pending',
+          stateLabel: attempt > 0 ? 'Retrying' : submittedRenderMode === 'single' ? 'Running' : 'Pending',
+          stateDetail: undefined,
+          progress: undefined,
+          // Tekli starts interactive immediately; toplu sticky-running from first RUNNING poll.
+          hasEnteredRunning: attempt === 0 && submittedRenderMode === 'single'
+        });
+        // Tracks which generation results already filled a pending slot (by stable key).
+        const partialSeenKeys = new Set<string>();
+        // Clear only this product's slots on a new attempt (keep other products' filled cards).
+        for (const id of slotIds) {
+          const existing = filledItemsBySlotId.get(id);
+          if (existing?.imageUrl.startsWith('blob:') && attempt > 0) {
+            URL.revokeObjectURL(existing.imageUrl);
+          }
+          if (attempt > 0) {
+            filledItemsBySlotId.delete(id);
+          }
+        }
+        publishPendingSlots();
+
+        const singleRefConfig: GenerationConfigSnapshot = {
           ...submittedConfig,
-          model: resolvedUsedModel,
-          referenceImages: submittedRefs
+          basePrompt: promptForRun,
+          referenceImages: [{ base64: ref.base64, mimeType: ref.mimeType, fileName: ref.fileName }]
         };
 
-        setFailures(outputFailures.map((failure) => ({
-          ...failure,
-          error: formatGenerationError(failure.error, t)
-        })));
+        const resultKey = (entry: GenerationResult) =>
+          entry.blobUrl?.trim() ||
+          (entry.imageBase64 ? `b64:${entry.imageBase64.slice(0, 96)}` : '') ||
+          `pv:${entry.promptVariant}:${entry.mimeType}`;
 
-        setStatusText(t('statusModelSummary', { model: usedModel, success: succeededCount, fail: failedCount }));
+        const applyPartialResults = async (partialResults: GenerationResult[]) => {
+          if (generationCancelledRef.current || signal.aborted) return;
 
-        if (outputResults.length > 0) {
-          const createdAt = new Date().toISOString();
-          const latestItems = await Promise.all(
-            outputResults.map((entry) =>
+          const newcomers = partialResults.filter((entry) => {
+            const key = resultKey(entry);
+            if (!key || partialSeenKeys.has(key)) return false;
+            partialSeenKeys.add(key);
+            return true;
+          });
+          if (newcomers.length === 0) return;
+
+          // Fill this product's empty slots left-to-right.
+          const emptySlotIds = slotIds.filter((id) => !filledItemsBySlotId.has(id));
+          const toFill = newcomers.slice(0, emptySlotIds.length);
+          const refAnalysis = refAnalysesRef.current[refIndex]?.analysis;
+          const partialHistoryConfig = stripReferenceBase64FromConfig(singleRefConfig);
+          const created = await Promise.all(
+            toFill.map((entry, index) =>
               createHistoryItemFromGenerationResult(entry, {
-                id: makeId(),
-                createdAt,
+                id: emptySlotIds[index],
+                createdAt: collectionCreatedAt,
                 isNew: true,
-                generationConfig: historyConfig
+                collectionId,
+                generationConfig: partialHistoryConfig,
+                referenceAnalysis: refAnalysis
               })
             )
           );
-          setHistoryItems((previous) => {
-            const olderItems = previous.map((entry) => ({ ...entry, isNew: false }));
-            return [...latestItems, ...olderItems].slice(0, MAX_HISTORY_ITEMS);
-          });
-        }
 
-        if (outputResults.length > 0 && typeof window !== 'undefined' && window.innerWidth <= 980) {
-          setActiveTab('history');
-        }
+          if (generationCancelledRef.current || signal.aborted) {
+            for (const createdItem of created) {
+              if (createdItem.imageUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(createdItem.imageUrl);
+              }
+            }
+            return;
+          }
 
-        if (succeededCount > 0) {
-          toast.success(t('toastGenerationCompleted'), {
-            description: t('toastGenerationCompletedDesc', { count: succeededCount }),
-            duration: 4200
-          });
-        }
+          for (const createdItem of created) {
+            filledItemsBySlotId.set(createdItem.id, createdItem);
+          }
 
-        if (failedCount > 0) {
-          toast.error(t('toastSomeVariantsFailed'), {
-            description: t('toastSomeVariantsFailedDesc', { count: failedCount }),
-            duration: 6500
+          flushSync(() => {
+            publishPendingSlots();
           });
+        };
+
+        try {
+          const { outputResults, outputFailures, usedModel } = await callApiAndGetResults(
+            [{ base64: ref.base64, mimeType: ref.mimeType }],
+            promptForRun,
+            applyPartialResults
+          );
+
+          // Cancel may land after the network response but before we commit history.
+          assertNotCancelled();
+
+          lastBatchRunTimeRef.current = Date.now();
+
+          if (outputResults.length < submittedCount) {
+            const firstFailure = outputFailures[0]?.error?.trim();
+            throw new Error(firstFailure || `Generated ${outputResults.length} of ${submittedCount} requested image(s).`);
+          }
+
+          processedAttempts += 1;
+          const resolvedUsedModel = applyUsedModel(usedModel);
+          const historyConfig: GenerationConfigSnapshot = stripReferenceBase64FromConfig({
+            ...singleRefConfig,
+            model: resolvedUsedModel
+          });
+          const refAnalysis = refAnalysesRef.current[refIndex]?.analysis;
+
+          if (outputFailures.length > 0) {
+            const productLabel = ref.fileName?.trim() || String(refIndex + 1);
+            setFailures((prev) => [
+              ...prev,
+              ...outputFailures.map((f) => ({
+                promptVariant: productLabel,
+                error: formatGenerationError(f.error, t)
+              }))
+            ]);
+          }
+
+          let runItems: HistoryItem[] = [];
+          if (outputResults.length > 0) {
+            // Prefer already-rendered partial slot images (same object URLs / no flash).
+            const filledPartialCount = slotIds.filter((id) => filledItemsBySlotId.has(id)).length;
+            if (filledPartialCount >= outputResults.length) {
+              runItems = slotIds.slice(0, outputResults.length).map((id, index) => {
+                const existing = filledItemsBySlotId.get(id)!;
+                return {
+                  ...existing,
+                  promptVariant: outputResults[index]?.promptVariant || existing.promptVariant,
+                  generationConfig: historyConfig,
+                  referenceAnalysis: refAnalysis ?? existing.referenceAnalysis,
+                  isNew: true
+                };
+              });
+            } else {
+              runItems = await Promise.all(
+                outputResults.map(async (entry, index) => {
+                  const slotId = slotIds[index] ?? makeId();
+                  const existing = filledItemsBySlotId.get(slotId);
+                  if (existing) {
+                    return {
+                      ...existing,
+                      promptVariant: entry.promptVariant || existing.promptVariant,
+                      generationConfig: historyConfig,
+                      referenceAnalysis: refAnalysis ?? existing.referenceAnalysis,
+                      isNew: true
+                    } satisfies HistoryItem;
+                  }
+                  return createHistoryItemFromGenerationResult(entry, {
+                    id: slotId,
+                    createdAt: collectionCreatedAt,
+                    isNew: true,
+                    collectionId,
+                    generationConfig: historyConfig,
+                    referenceAnalysis: refAnalysis
+                  });
+                })
+              );
+
+              // Revoke object URLs for partial items not carried into the final run.
+              const keptIds = new Set(runItems.map((entry) => entry.id));
+              for (const id of slotIds) {
+                const existing = filledItemsBySlotId.get(id);
+                if (existing && !keptIds.has(id) && existing.imageUrl.startsWith('blob:')) {
+                  URL.revokeObjectURL(existing.imageUrl);
+                  filledItemsBySlotId.delete(id);
+                }
+              }
+            }
+
+            for (const runItem of runItems) {
+              filledItemsBySlotId.set(runItem.id, runItem);
+            }
+
+            // Accumulate into the active batch collection (all refs share collectionId).
+            batchHistoryItemsRef.current = [...batchHistoryItemsRef.current, ...runItems];
+          }
+
+          const runResult: BatchRunResult = {
+            refIndex,
+            refPreviewDataUrl: ref.previewDataUrl,
+            refFileName: ref.fileName,
+            items: runItems
+          };
+          batchRunResultsRef.current = [...batchRunResultsRef.current, runResult];
+
+          // Keep the full loading grid; fill this product's cards and commit history.
+          // Do not clear pendingSlots — remaining product cards stay as "Sırada".
+          if (generationCancelledRef.current || signal.aborted) {
+            return;
+          }
+          flushSync(() => {
+            if (runItems.length > 0) {
+              const batchItems = batchHistoryItemsRef.current;
+              setHistoryItems((previous) => {
+                const outsideBatch = previous
+                  .filter((entry) => entry.collectionId !== collectionId)
+                  .map((entry) => ({ ...entry, isNew: false }));
+                return [...batchItems, ...outsideBatch].slice(0, MAX_HISTORY_ITEMS);
+              });
+            }
+            setBatchRunResults([...batchRunResultsRef.current]);
+            publishPendingSlots();
+            setViewerOverrideItems(null);
+            setBatchInFlightProgress(null);
+            setBatchJobUiStatus(null);
+          });
+        } catch (stepError) {
+          // User cancelled — exit quietly (cancelGeneration already resets UI).
+          if (
+            generationCancelledRef.current ||
+            signal.aborted ||
+            (stepError instanceof Error && stepError.name === 'AbortError')
+          ) {
+            return;
+          }
+
+          lastBatchRunTimeRef.current = Date.now();
+          processedAttempts += 1;
+          const rawMessage = getUnknownErrorMessage(stepError, t('unexpectedError'));
+          // warn (not error): Next.js dev overlay treats console.error as a page error.
+          console.warn('[batch-generate] step failed', {
+            refIndex,
+            attempt,
+            product: ref.fileName?.trim() || String(refIndex + 1),
+            error: rawMessage
+          });
+          const message = formatGenerationError(rawMessage, t);
+          const nextAttempt = attempt + 1;
+          const maxAttempts = MAX_BATCH_REFERENCE_RETRIES + 1;
+          const productLabel = ref.fileName?.trim() || String(refIndex + 1);
+
+          // Drop only this product's partial object URLs on failed attempt.
+          for (const id of slotIds) {
+            const existing = filledItemsBySlotId.get(id);
+            if (existing?.imageUrl.startsWith('blob:')) {
+              URL.revokeObjectURL(existing.imageUrl);
+            }
+            filledItemsBySlotId.delete(id);
+          }
+
+          if (attempt < MAX_BATCH_REFERENCE_RETRIES) {
+            const delayMs = getBatchRetryDelayMs(rawMessage, attempt);
+            const delaySec = Math.max(1, Math.round(delayMs / 1000));
+
+            // Immediate toast so failures are never silent.
+            toast.error(t('toastBatchStepFailed', { product: productLabel }), {
+              description: `${message}\n${t('toastBatchStepFailedRetry', {
+                attempt: nextAttempt,
+                max: maxAttempts,
+                seconds: delaySec
+              })}`,
+              duration: Math.min(12_000, Math.max(4500, delayMs + 1500))
+            });
+
+            // Keep full grid; this product's cards go empty + "Yeniden deneniyor".
+            flushSync(() => {
+              setViewerOverrideItems(null);
+              setBatchInFlightProgress(null);
+              publishPendingSlots();
+              setBatchJobUiStatus({
+                state: 'retrying',
+                stateLabel: 'Retrying',
+                stateDetail: message,
+                progress: undefined,
+                hasEnteredRunning: false
+              });
+            });
+
+            try {
+              await sleepCancellable(delayMs);
+            } catch {
+              if (generationCancelledRef.current || signal.aborted) {
+                return;
+              }
+              throw new Error('Generation cancelled');
+            }
+            queue.unshift({ ref, refIndex, attempt: nextAttempt });
+          } else {
+            if (generationCancelledRef.current || signal.aborted) {
+              return;
+            }
+            toast.error(t('toastBatchStepFailed', { product: productLabel }), {
+              description: `${message}\n${t('toastBatchStepFailedFinal', { max: maxAttempts })}`,
+              duration: 8000
+            });
+
+            flushSync(() => {
+              publishPendingSlots();
+              setViewerOverrideItems(null);
+              setBatchInFlightProgress(null);
+              setBatchJobUiStatus(null);
+            });
+            setFailures((prev) => [
+              ...prev,
+              {
+                promptVariant: productLabel,
+                error: t('batchRetryExhausted', {
+                  product: productLabel,
+                  max: maxAttempts,
+                  error: message
+                })
+              }
+            ]);
+            const failedRunResult: BatchRunResult = {
+              refIndex,
+              refPreviewDataUrl: ref.previewDataUrl,
+              refFileName: ref.fileName,
+              items: []
+            };
+            batchRunResultsRef.current = [...batchRunResultsRef.current, failedRunResult];
+            setBatchRunResults([...batchRunResultsRef.current]);
+          }
         }
-      } catch (submitError) {
-        const rawMessage = submitError instanceof Error ? submitError.message : t('unexpectedError');
-        console.error('[generate] request failed', { error: submitError, rawMessage, selectedModel, submittedCount });
-        const message = formatGenerationError(rawMessage, t);
-        setStatusText(t('statusGenerationFailed'));
-        setError(message);
-        toast.error(t('errorGenerationFailed'), { description: message, duration: 8000 });
-      } finally {
-        setPendingHistoryIds([]);
+      }
+
+      // Cancelled mid-queue — do not toast "completed" or switch tabs.
+      if (generationCancelledRef.current || signal.aborted) {
+        return;
+      }
+
+      const succeededRuns = batchRunResultsRef.current.filter((run) => run.items.length > 0).length;
+      const failedRuns = totalRefs - succeededRuns;
+
+      // End loading UI first, then toast — avoids "completed" while skeletons still show.
+      flushSync(() => {
         setIsLoading(false);
+        setPendingSlots([]);
+        setActivePendingRefIndex(0);
+        setBatchInFlightProgress(null);
+        setBatchJobUiStatus(null);
+        generationStartedAtRef.current = null;
+      });
+
+      if (failedRuns > 0) {
+        toast.error(t('toastRunFinishedWithIssues'), {
+          description: t('toastRunFinishedWithIssuesDesc', { success: succeededRuns, fail: failedRuns }),
+          duration: 6500
+        });
+      } else if (totalRefs > 1) {
+        toast.success(t('batchComplete', { total: totalRefs }), { duration: 4200 });
+      } else if (succeededRuns > 0) {
+        toast.success(t('toastGenerationCompleted'), {
+          description: t('toastGenerationCompletedDesc', {
+            count: batchRunResultsRef.current[0]?.items.length ?? submittedCount
+          }),
+          duration: 3200
+        });
+      }
+
+      if (typeof window !== 'undefined' && window.innerWidth <= 980 && batchRunResultsRef.current.length > 0) {
+        setActiveTab('history');
+      }
+    } finally {
+      // Safety net if we bailed before the success-path flushSync.
+      // When cancelled, cancelGeneration already wiped history + pending; keep UI idle.
+      if (generationCancelledRef.current || signal.aborted) {
+        if (generationAbortRef.current === abortController) {
+          generationAbortRef.current = null;
+        }
+        if (activeCollectionIdRef.current === collectionId) {
+          activeCollectionIdRef.current = null;
+        }
+        flushSync(() => {
+          setIsLoading(false);
+          setPendingSlots([]);
+          setActivePendingRefIndex(0);
+          setBatchInFlightProgress(null);
+          setBatchJobUiStatus(null);
+          generationStartedAtRef.current = null;
+        });
+        return;
+      }
+
+      flushSync(() => {
+        setIsLoading(false);
+        setPendingSlots([]);
+        setActivePendingRefIndex(0);
+        setBatchInFlightProgress(null);
+        setBatchJobUiStatus(null);
+        generationStartedAtRef.current = null;
+      });
+
+      if (generationAbortRef.current === abortController) {
+        generationAbortRef.current = null;
+      }
+      if (activeCollectionIdRef.current === collectionId) {
+        activeCollectionIdRef.current = null;
       }
     }
   }
@@ -1881,7 +2726,6 @@ export default function HomePage() {
               <span>{historyItems.length}</span>
             </span>
           </h2>
-          {isLoading ? <p className="history-meta is-busy">{t('historyGeneratingMeta', { count: pendingHistoryIds.length || count })}</p> : null}
           {historyItems.length > 0 ? (
             <div className="history-selection-bar">
               <button
@@ -1927,91 +2771,268 @@ export default function HomePage() {
           ) : null}
         </div>
 
-        {isBatchMode && (batchRunResults.length > 0 || isLoading) ? (
-          <section className="batch-mode-panel">
-            <div className="batch-mode-panel-head">
-              <span className="batch-mode-panel-title">{t('batchPanelTitle')}</span>
-              {isLoading ? (
-                <span className="batch-mode-panel-status">
-                  {t('batchStillGenerating', {
-                    current: Math.min(batchRunResults.length + 1, batchTotalRefs),
-                    total: batchTotalRefs
-                  })}
-                </span>
-              ) : null}
-            </div>
-            {batchRunResults.length > 0 ? (
-              <div className="batch-ref-thumbs">
-                {batchRunResults.map((run) => (
-                  <div key={run.refIndex} className="batch-ref-thumb">
-                    <img src={run.refPreviewDataUrl} alt={`Ref ${run.refIndex + 1}`} />
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            {!isLoading && batchRunResults.length > 0 ? (
-              <button
-                type="button"
-                className="batch-download-btn"
-                onClick={() => { void downloadBatchResults(); }}
-              >
-                <DownloadIcon />
-                {t('downloadBatchResults')}
-              </button>
-            ) : null}
-          </section>
-        ) : null}
-
         {!isHistoryHydrated ? (
           <p className="history-empty">{t('loadingHistory')}</p>
-        ) : historyGroups.length === 0 && pendingHistoryIds.length === 0 ? (
+        ) : historyGroups.length === 0 && pendingSlots.length === 0 ? (
           <p className="history-empty">{t('noHistory')}</p>
         ) : (
           <div className="history-list">
-            {pendingHistoryIds.length > 0 ? (
+            {pendingSlots.length > 0 ? (
               <section className="history-group history-group-pending">
-                <h3 className="history-date">{t('generatingNow')}</h3>
-                {statusText ? <p className="history-pending-status">{statusText}</p> : null}
-                <div className="history-grid">
-                  {pendingHistoryIds.map((pendingId, index) => (
-                    <article className="history-item history-item-pending" key={pendingId} aria-hidden="true">
-                      <div className="history-skeleton-thumb" />
-                      <span className="history-pending-badge">{t('generatingIndex', { index: index + 1 })}</span>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-            {historyGroups.map((group) => (
-              <section key={group.dateKey} className="history-group">
-                <h3 className="history-date">{group.label}</h3>
-                <div className="history-grid">
-                  {group.items.map((item) => (
-                    <article
-                      className={`history-item${isSelectionMode && selectedHistoryIds.has(item.id) ? ' is-selected' : ''}`}
-                      key={item.id}
-                    >
-                      <button
-                        type="button"
-                        className="history-open-btn"
-                        onClick={() => isSelectionMode ? toggleSelectImage(item.id) : openHistoryViewer(item.id)}
-                        aria-label={isSelectionMode ? t('selectImages') : t('openImageViewer')}
-                        aria-pressed={isSelectionMode ? selectedHistoryIds.has(item.id) : undefined}
+                <h3 className="history-date">{progressStatusText || t('generatingNow')}</h3>
+                <div className="history-grid" role="status" aria-live="polite">
+                  {pendingSlots.map((slot, index) => {
+                    const item = slot.item;
+                    const cardStatus = getPendingCardStatus(slot, index);
+                    const analysisState = refAnalyses[slot.refIndex];
+                    const openAnalysis = () => {
+                      const ready = refAnalysesRef.current[slot.refIndex]?.analysis;
+                      setAnalysisModalTarget({ kind: 'ref', refIndex: slot.refIndex });
+                      setAnalysisModalDraft(ready ? { ...ready } : null);
+                    };
+
+                    if (!item) {
+                      return (
+                        <article
+                          className={`history-item history-item-pending history-item-status--${cardStatus.phase}`}
+                          key={slot.id}
+                        >
+                          <button
+                            type="button"
+                            className="history-pending-hit"
+                            onClick={openAnalysis}
+                            aria-label={t('openAnalysisModal')}
+                          >
+                            <div className="history-skeleton-thumb" />
+                          </button>
+                          <div className={`history-card-status history-card-status--${cardStatus.phase}`}>
+                            <span className="history-card-status-badge">{cardStatus.badge}</span>
+                            <span className="history-card-status-meta">{cardStatus.meta}</span>
+                          </div>
+                          {analysisState?.status === 'loading' ? (
+                            <span className="history-analysis-chip">{t('analysisLoadingChip')}</span>
+                          ) : analysisState?.status === 'ready' ? (
+                            <span className="history-analysis-chip is-ready">{t('analysisReadyChip')}</span>
+                          ) : analysisState?.status === 'error' ? (
+                            <span className="history-analysis-chip is-error">{t('analysisErrorChip')}</span>
+                          ) : null}
+                        </article>
+                      );
+                    }
+
+                    return (
+                      <motion.article
+                        className={`history-item history-item-partial history-item-status--${cardStatus.phase}`}
+                        key={slot.id}
+                        initial={{ opacity: 0, scale: 0.92, filter: 'blur(6px)' }}
+                        animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                        transition={{ type: 'spring', stiffness: 380, damping: 28 }}
                       >
-                        <img src={item.imageUrl} alt={t('historyResultAlt')} loading="lazy" />
-                        {isSelectionMode ? (
-                          <span className={`history-select-circle${selectedHistoryIds.has(item.id) ? ' is-selected' : ''}`} aria-hidden="true">
-                            {selectedHistoryIds.has(item.id) ? <CheckIcon /> : null}
-                          </span>
-                        ) : (
+                        <button
+                          type="button"
+                          className="history-open-btn"
+                          onClick={() => openHistoryViewer(item.id)}
+                          aria-label={t('openImageViewer')}
+                        >
+                          <img src={item.imageUrl} alt={t('historyResultAlt')} loading="lazy" />
                           <span className="history-open-indicator" aria-hidden="true">
                             <OpenViewerIcon />
                           </span>
-                        )}
-                      </button>
-                      {item.isNew && !isSelectionMode ? <span className="new-badge">{t('newBadge')}</span> : null}
-                    </article>
-                  ))}
+                        </button>
+                        <button
+                          type="button"
+                          className="history-analysis-open-btn"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            openAnalysis();
+                          }}
+                          aria-label={t('openAnalysisModal')}
+                          title={t('openAnalysisModal')}
+                        >
+                          AI
+                        </button>
+                        <Tooltip content={t('download')} side="top" triggerClassName="history-card-download-wrap">
+                          <button
+                            type="button"
+                            className="history-card-download"
+                            aria-label={t('download')}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              downloadHistoryItem(item, index + 1);
+                            }}
+                          >
+                            <DownloadIcon />
+                          </button>
+                        </Tooltip>
+                        <div className={`history-card-status history-card-status--${cardStatus.phase}`}>
+                          <span className="history-card-status-badge">{cardStatus.badge}</span>
+                          <span className="history-card-status-meta">{cardStatus.meta}</span>
+                        </div>
+                      </motion.article>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
+
+            {historyGroups.map((group) => (
+              <section key={group.dateKey} className="history-group">
+                <h3 className="history-date">{group.label}</h3>
+                <div className="history-collections-grid">
+                  {group.collections.map((collection) => {
+                    // Single output image and single product → plain photo card.
+                    // Multi-product batch (several references in one submit) always uses the album UI,
+                    // even while the batch is still filling (items may grow as each ref finishes).
+                    if (collection.items.length === 1 && collection.productCount <= 1) {
+                      const item = collection.items[0];
+                      return (
+                        <article
+                          className={`history-item${isSelectionMode && selectedHistoryIds.has(item.id) ? ' is-selected' : ''}`}
+                          key={collection.id}
+                        >
+                          <button
+                            type="button"
+                            className="history-open-btn"
+                            onClick={() =>
+                              isSelectionMode ? toggleSelectImage(item.id) : openHistoryViewer(item.id)
+                            }
+                            aria-label={isSelectionMode ? t('selectImages') : t('openImageViewer')}
+                            aria-pressed={isSelectionMode ? selectedHistoryIds.has(item.id) : undefined}
+                          >
+                            <img src={item.imageUrl} alt={t('historyResultAlt')} loading="lazy" />
+                            {isSelectionMode ? (
+                              <span
+                                className={`history-select-circle${selectedHistoryIds.has(item.id) ? ' is-selected' : ''}`}
+                                aria-hidden="true"
+                              >
+                                {selectedHistoryIds.has(item.id) ? <CheckIcon /> : null}
+                              </span>
+                            ) : (
+                              <span className="history-open-indicator" aria-hidden="true">
+                                <OpenViewerIcon />
+                              </span>
+                            )}
+                          </button>
+                          {!isSelectionMode ? (
+                            <Tooltip content={t('download')} side="top" triggerClassName="history-card-download-wrap">
+                              <button
+                                type="button"
+                                className="history-card-download"
+                                aria-label={t('download')}
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  downloadHistoryItem(item, 1);
+                                }}
+                              >
+                                <DownloadIcon />
+                              </button>
+                            </Tooltip>
+                          ) : null}
+                          {item.isNew && !isSelectionMode ? <span className="new-badge">{t('newBadge')}</span> : null}
+                        </article>
+                      );
+                    }
+
+                    const previewItems = collection.items.slice(0, 4);
+                    const collectionTitle = getCollectionDisplayName(collection, multiCollections);
+                    const allSelected =
+                      collection.items.length > 0 &&
+                      collection.items.every((item) => selectedHistoryIds.has(item.id));
+                    return (
+                      <article
+                        key={collection.id}
+                        className={`history-collection-card${allSelected && isSelectionMode ? ' is-selected' : ''}${
+                          collection.isNew && !isSelectionMode ? ' is-new' : ''
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          className="history-collection-open"
+                          onClick={() => {
+                            if (isSelectionMode) {
+                              setSelectedHistoryIds((prev) => {
+                                const next = new Set(prev);
+                                if (allSelected) {
+                                  for (const item of collection.items) next.delete(item.id);
+                                } else {
+                                  for (const item of collection.items) next.add(item.id);
+                                }
+                                return next;
+                              });
+                              return;
+                            }
+                            openCollectionViewer(collection, 0);
+                          }}
+                          aria-label={`${collectionTitle} — ${t('openCollectionViewer', { count: collection.items.length })}`}
+                        >
+                          <div className="history-collection-stack" aria-hidden="true">
+                            <span className="history-collection-stack-layer history-collection-stack-layer--back" />
+                            <span className="history-collection-stack-layer history-collection-stack-layer--mid" />
+                          </div>
+                          <div className="history-collection-face">
+                            <div
+                              className={`history-collection-mosaic history-collection-mosaic--${Math.min(
+                                4,
+                                Math.max(1, previewItems.length)
+                              )}`}
+                            >
+                              {previewItems.map((item) => (
+                                <img key={item.id} src={item.imageUrl} alt="" loading="lazy" />
+                              ))}
+                            </div>
+                            <span className="history-collection-type-badge">{collectionTitle}</span>
+                            {collection.isNew && !isSelectionMode ? (
+                              <span className="new-badge">{t('newBadge')}</span>
+                            ) : null}
+                            {isSelectionMode ? (
+                              <span
+                                className={`history-select-circle${allSelected ? ' is-selected' : ''}`}
+                                aria-hidden="true"
+                              >
+                                {allSelected ? <CheckIcon /> : null}
+                              </span>
+                            ) : (
+                              <span className="history-open-indicator" aria-hidden="true">
+                                <OpenViewerIcon />
+                              </span>
+                            )}
+                          </div>
+                          <div className="history-collection-meta">
+                            <span className="history-collection-meta-title">{collectionTitle}</span>
+                            <span className="history-collection-meta-stats">
+                              {t('collectionImageCount', { count: collection.items.length })}
+                              {collection.productCount > 1
+                                ? ` · ${t('collectionProductCount', { count: collection.productCount })}`
+                                : ''}
+                            </span>
+                          </div>
+                        </button>
+                        {!isSelectionMode ? (
+                          <Tooltip
+                            content={`${t('downloadCollection')}: ${collectionTitle}`}
+                            side="top"
+                            triggerClassName="history-card-download-wrap"
+                          >
+                            <button
+                              type="button"
+                              className="history-card-download"
+                              aria-label={`${t('downloadCollection')}: ${collectionTitle}`}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void downloadCollection(collection);
+                              }}
+                            >
+                              <DownloadIcon />
+                            </button>
+                          </Tooltip>
+                        ) : null}
+                      </article>
+                    );
+                  })}
                 </div>
               </section>
             ))}
@@ -2038,13 +3059,30 @@ export default function HomePage() {
                       <button
                         type="button"
                         className="history-open-btn"
-                        onClick={() => { window.open(item.imageUrl, '_blank'); }}
+                        onClick={() => {
+                          window.open(item.imageUrl, '_blank');
+                        }}
                         aria-label={t('openImageViewer')}
                       >
                         <img src={item.imageUrl} alt={t('historyResultAlt')} loading="lazy" />
                       </button>
+                      <Tooltip content={t('download')} side="top" triggerClassName="history-card-download-wrap">
+                        <button
+                          type="button"
+                          className="history-card-download"
+                          aria-label={t('download')}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            downloadHistoryItem(item, 1);
+                          }}
+                        >
+                          <DownloadIcon />
+                        </button>
+                      </Tooltip>
                       <span className={`archive-ttl-badge${daysLeft <= 3 ? ' is-urgent' : ''}`}>
-                        {daysLeft}{t('archiveDaysLabel')}
+                        {daysLeft}
+                        {t('archiveDaysLabel')}
                       </span>
                     </article>
                   );
@@ -2058,30 +3096,20 @@ export default function HomePage() {
       <section className="workspace">
         <div className="workspace-header">
           <h1>{t('appTitle')}</h1>
-          <p style={{ margin: '6px 0 0' }}>
-            <a href="/local-batch" style={{ color: 'var(--brand)', fontWeight: 600, fontSize: '0.9rem' }}>
-              KA Konsol Batch Panel →
-            </a>
-          </p>
           <div className="workspace-top">
-            <button
-              type="button"
-              className="theme-toggle icon-only"
-              onClick={() => setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'))}
-              aria-label={themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
-              title={themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
+            <Tooltip
+              content={themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
+              side="bottom"
             >
-              {themeMode === 'dark' ? <SunIcon /> : <MoonIcon />}
-            </button>
-            <button
-              type="button"
-              className={`batch-mode-toggle${isBatchMode ? ' is-active' : ''}`}
-              onClick={() => setIsBatchMode((prev) => !prev)}
-              aria-label={t('batchModeToggle')}
-              title={t('batchModeToggle')}
-            >
-              {isBatchMode ? t('batchModeOn') : t('batchModeOff')}
-            </button>
+              <button
+                type="button"
+                className="theme-toggle icon-only"
+                onClick={() => setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'))}
+                aria-label={themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
+              >
+                {themeMode === 'dark' ? <SunIcon /> : <MoonIcon />}
+              </button>
+            </Tooltip>
             <div className="language-dropdown-wrap">
               <GlobeIcon />
               <select
@@ -2113,6 +3141,45 @@ export default function HomePage() {
               }}
             />
 
+            <label htmlFor="render-mode-selector">
+              <span className="field-head">
+                <span>{t('renderMode')}</span>
+                <InfoHint text={t('fieldInfo.renderMode')} />
+              </span>
+              <select
+                id="render-mode-selector"
+                value={renderMode}
+                onChange={(event) => setRenderMode(event.target.value as RenderModeOption)}
+              >
+                <option value="single">{t('renderModeSingle')}</option>
+                <option value="batch">{t('renderModeBatch')}</option>
+              </select>
+              {renderMode === 'batch' ? (
+                <p className="reference-note">{t('renderModeBatchHint')}</p>
+              ) : (
+                <p className="reference-note">{t('renderModeSingleHint')}</p>
+              )}
+            </label>
+
+            <label htmlFor="auth-mode-selector">
+              <span className="field-head">
+                <span>{t('authMode')}</span>
+                <InfoHint text={t('fieldInfo.authMode')} />
+              </span>
+              <select
+                id="auth-mode-selector"
+                value={authMode}
+                onChange={(event) => setAuthMode(event.target.value as AuthModeOption)}
+              >
+                <option value="api_key">{t('authModeApiKey')}</option>
+                <option value="service_account">{t('authModeServiceAccount')}</option>
+                <option value="vertex_express">{t('authModeVertexExpress')}</option>
+              </select>
+              {authMode === 'vertex_express' ? (
+                <p className="reference-note">{t('authModeVertexExpressHint')}</p>
+              ) : null}
+            </label>
+
             <label htmlFor="model-selector">
               <span className="field-head">
                 <ModelIcon />
@@ -2135,69 +3202,77 @@ export default function HomePage() {
               ) : null}
             </label>
 
-            {selectedModelIsVertex ? (
-              <label htmlFor="auth-mode-selector">
-                <span className="field-head">
-                  <span>{t('authMode')}</span>
-                  <InfoHint text={t('fieldInfo.authMode')} />
-                </span>
-                <select
-                  id="auth-mode-selector"
-                  value={authMode}
-                  onChange={(event) => setAuthMode(event.target.value as AuthModeOption)}
-                >
-                  <option value="service_account">{t('authModeServiceAccount')}</option>
-                  <option value="api_key">{t('authModeApiKey')}</option>
-                </select>
-                {authMode === 'api_key' ? <p className="reference-note">{t('authModeApiKeyHint')}</p> : null}
-              </label>
-            ) : null}
-
             <section className="reference-block">
               <div className="field-head">
                 <GalleryIcon />
-                <span>{isBatchMode ? t('referenceImagesBatch') : t('referenceImages')}</span>
+                <span>{t('referenceImages')}</span>
                 <InfoHint text={t('fieldInfo.referenceImages')} />
               </div>
 
               <div
-                className={`reference-drop-surface${isReferenceDragOver ? ' is-drag-over' : ''}`}
+                className={[
+                  'reference-drop-surface',
+                  referenceImages.length === 0 ? 'is-empty' : '',
+                  isReferenceDragOver ? 'is-drag-over' : ''
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
                 onDragOver={onReferenceDragOver}
                 onDragEnter={onReferenceDragEnter}
                 onDragLeave={onReferenceDragLeave}
                 onDrop={onReferenceDrop}
                 onClick={(event) => {
-                  if (event.target === event.currentTarget) {
-                    openReferencePicker();
+                  if (event.target === event.currentTarget || (event.target as HTMLElement).closest('.ref-empty-state')) {
+                    if (!(event.target as HTMLElement).closest('button')) {
+                      openReferencePicker();
+                    }
                   }
                 }}
               >
+                {isReferenceDragOver ? (
+                  <div className="reference-drop-overlay" aria-live="polite">
+                    <div className="reference-drop-overlay-ring" aria-hidden />
+                    <div className="reference-drop-overlay-copy">
+                      <span className="reference-drop-overlay-icon" aria-hidden>
+                        <PlusIcon />
+                      </span>
+                      <strong>{t('referenceDropActive')}</strong>
+                      <span>{t('referenceDropActiveHint')}</span>
+                    </div>
+                  </div>
+                ) : null}
+
                 {referenceImages.length === 0 ? (
-                  <button type="button" className="ref-add-primary" onClick={openReferencePicker} aria-label={t('addReferenceImage')}>
-                    <PlusIcon />
-                  </button>
+                  <div className="ref-empty-state">
+                    <button type="button" className="ref-add-primary" onClick={openReferencePicker} aria-label={t('addReferenceImage')}>
+                      <PlusIcon />
+                    </button>
+                    <div className="ref-empty-copy">
+                      <strong>{t('referenceDropTitle')}</strong>
+                      <span>{t('referenceDropSubtitle')}</span>
+                    </div>
+                  </div>
                 ) : (
                   <div className="ref-preview-row">
-                  {referenceImages.map((image, index) => (
-                    <article className="ref-preview-item" key={image.id}>
-                      <div className="ref-preview-circle">
-                        <img src={image.previewDataUrl} alt={t('referenceAlt', { index: index + 1 })} />
-                      </div>
-                      <button
-                        type="button"
-                        className="ref-remove-btn"
-                        aria-label={t('removeReferenceImage', { index: index + 1 })}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          removeReferenceImage(image.id);
-                        }}
-                      >
-                        <CloseIcon />
-                      </button>
-                    </article>
-                  ))}
+                    {referenceImages.map((image, index) => (
+                      <article className="ref-preview-item" key={image.id}>
+                        <div className="ref-preview-circle">
+                          <img src={image.previewDataUrl} alt={t('referenceAlt', { index: index + 1 })} />
+                        </div>
+                        <button
+                          type="button"
+                          className="ref-remove-btn"
+                          aria-label={t('removeReferenceImage', { index: index + 1 })}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeReferenceImage(image.id);
+                          }}
+                        >
+                          <CloseIcon />
+                        </button>
+                      </article>
+                    ))}
 
-                  {canAddReferenceImage ? (
                     <button
                       type="button"
                       className="ref-add-circle"
@@ -2209,51 +3284,38 @@ export default function HomePage() {
                     >
                       <PlusIcon />
                     </button>
-                  ) : null}
                   </div>
                 )}
               </div>
 
-              <p className="reference-note">
-                {isBatchMode
-                  ? t('referenceSelectedCountBatch', { selected: referenceImages.length })
-                  : t('referenceSelectedCount', { selected: referenceImages.length, max: MAX_REFERENCE_IMAGES })}
-              </p>
-              {isBatchMode ? (
-                <p className="reference-note batch-mode-note">
-                  {t('batchReferenceNote', { count: referenceImages.length })}
-                </p>
-              ) : null}
             </section>
 
-            {isBatchMode ? (
-              <label htmlFor="batch-rate-limit">
-                <span className="field-head">
-                  <LayersIcon />
-                  <span>{t('batchRateLimit')}</span>
-                  <InfoHint text={t('fieldInfo.batchRateLimit')} />
-                </span>
-                <input
-                  id="batch-rate-limit"
-                  type="number"
-                  min={0}
-                  max={MAX_BATCH_RATE_LIMIT_SEC}
-                  value={batchRateLimitInput}
-                  className={batchRateLimitError ? 'is-invalid' : ''}
-                  onChange={(event) => setBatchRateLimitInput(event.target.value)}
-                  onBlur={() => {
-                    const n = Number.parseInt(batchRateLimitInput, 10);
-                    if (Number.isFinite(n) && n >= 0 && n <= MAX_BATCH_RATE_LIMIT_SEC) {
-                      setBatchRateLimitSec(n);
-                      setBatchRateLimitInput(String(n));
-                    } else {
-                      setBatchRateLimitInput(String(batchRateLimitSec));
-                    }
-                  }}
-                />
-                {batchRateLimitError ? <p className="field-error">{batchRateLimitError}</p> : null}
-              </label>
-            ) : null}
+            <label htmlFor="batch-rate-limit">
+              <span className="field-head">
+                <LayersIcon />
+                <span>{t('batchRateLimit')}</span>
+                <InfoHint text={t('fieldInfo.batchRateLimit')} />
+              </span>
+              <input
+                id="batch-rate-limit"
+                type="number"
+                min={0}
+                max={MAX_BATCH_RATE_LIMIT_SEC}
+                value={batchRateLimitInput}
+                className={batchRateLimitError ? 'is-invalid' : ''}
+                onChange={(event) => setBatchRateLimitInput(event.target.value)}
+                onBlur={() => {
+                  const n = Number.parseInt(batchRateLimitInput, 10);
+                  if (Number.isFinite(n) && n >= 0 && n <= MAX_BATCH_RATE_LIMIT_SEC) {
+                    setBatchRateLimitSec(n);
+                    setBatchRateLimitInput(String(n));
+                  } else {
+                    setBatchRateLimitInput(String(batchRateLimitSec));
+                  }
+                }}
+              />
+              {batchRateLimitError ? <p className="field-error">{batchRateLimitError}</p> : null}
+            </label>
 
             <label htmlFor="prompt">
               <span className="field-head">
@@ -2377,20 +3439,22 @@ export default function HomePage() {
               />
             </label>
 
-            <label htmlFor="negative-prompt">
-              <span className="field-head">
-                <PromptIcon />
-                <span>{t('negativePrompt')}</span>
-                <InfoHint text={t('fieldInfo.negativePrompt')} />
-              </span>
-              <textarea
-                ref={negativePromptTextareaRef}
-                id="negative-prompt"
-                value={negativePrompt}
-                onChange={(event) => setNegativePrompt(event.target.value)}
-                placeholder={t('negativePromptPlaceholder')}
-              />
-            </label>
+            {supportsNegativePrompt ? (
+              <label htmlFor="negative-prompt">
+                <span className="field-head">
+                  <PromptIcon />
+                  <span>{t('negativePrompt')}</span>
+                  <InfoHint text={t('fieldInfo.negativePrompt')} />
+                </span>
+                <textarea
+                  ref={negativePromptTextareaRef}
+                  id="negative-prompt"
+                  value={negativePrompt}
+                  onChange={(event) => setNegativePrompt(event.target.value)}
+                  placeholder={t('negativePromptPlaceholder')}
+                />
+              </label>
+            ) : null}
 
             <label htmlFor="count">
               <span className="field-head">
@@ -2405,7 +3469,14 @@ export default function HomePage() {
                 max={10}
                 value={countInput}
                 className={countError ? 'is-invalid' : ''}
-                onChange={(event) => setCountInput(event.target.value)}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setCountInput(next);
+                  const n = Number.parseInt(next, 10);
+                  if (Number.isFinite(n) && n >= 1 && n <= 10) {
+                    setCount(n);
+                  }
+                }}
                 onBlur={() => {
                   const n = Number.parseInt(countInput, 10);
                   if (Number.isFinite(n) && n >= 1 && n <= 10) {
@@ -2561,6 +3632,20 @@ export default function HomePage() {
               </div>
             ) : null}
 
+            <label className="checkbox-row" htmlFor="auto-ai-analysis">
+              <input
+                id="auto-ai-analysis"
+                type="checkbox"
+                checked={autoAiAnalysis}
+                onChange={(event) => setAutoAiAnalysis(event.target.checked)}
+                disabled={isLoading}
+              />
+              <span className="field-head">
+                <span>{t('autoAiAnalysis')}</span>
+                <InfoHint text={t('fieldInfo.autoAiAnalysis')} />
+              </span>
+            </label>
+
             <label className="checkbox-row" htmlFor="ai-upscale">
               <input
                 id="ai-upscale"
@@ -2586,79 +3671,459 @@ export default function HomePage() {
               )}
             </label>
 
-            <motion.button
-              type="submit"
-              className={`generate-btn${isLoading ? ' is-loading' : ''}`}
-              disabled={!canSubmit}
-              aria-busy={isLoading}
-              whileHover={!isLoading ? { y: -1, scale: 1.01 } : undefined}
-              whileTap={!isLoading ? { scale: 0.98 } : undefined}
-              animate={
-                isLoading
-                  ? {
-                      scale: [1, 1.008, 1],
-                      boxShadow: [
-                        '0 12px 28px color-mix(in oklab, var(--generate-grad-1) 45%, transparent)',
-                        '0 18px 36px color-mix(in oklab, var(--generate-grad-2) 54%, transparent)',
-                        '0 12px 28px color-mix(in oklab, var(--generate-grad-1) 45%, transparent)'
-                      ]
-                    }
-                  : { scale: 1 }
-              }
-              transition={isLoading ? { duration: 1.1, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.18 }}
-            >
-              <span className="generate-btn-drift generate-btn-drift-1" aria-hidden="true" />
-              <span className="generate-btn-drift generate-btn-drift-2" aria-hidden="true" />
-              <span className="generate-btn-drift generate-btn-drift-3" aria-hidden="true" />
-              <span className="generate-btn-drift generate-btn-drift-4" aria-hidden="true" />
-              <span className="generate-btn-drift generate-btn-drift-5" aria-hidden="true" />
-              <span className="generate-btn-drift generate-btn-drift-6" aria-hidden="true" />
-              <span className="generate-btn-drift generate-btn-drift-7" aria-hidden="true" />
-              <span className="generate-btn-drift generate-btn-drift-8" aria-hidden="true" />
-              <span className="generate-btn-drift generate-btn-drift-9" aria-hidden="true" />
-              <motion.span
-                className="generate-btn-content"
-                key={isLoading ? 'loading' : 'idle'}
-                initial={{ opacity: 0, y: 6, filter: 'blur(2px)' }}
-                animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-                transition={{ duration: 0.2, ease: 'easeOut' }}
+            <div className={`generate-btn-bar${isLoading ? ' has-cancel' : ''}`}>
+              <motion.button
+                type="submit"
+                className={`generate-btn${isLoading ? ' is-loading' : ''}`}
+                disabled={!canSubmit}
+                aria-busy={isLoading}
+                whileHover={!isLoading ? { y: -1, scale: 1.01 } : undefined}
+                whileTap={!isLoading ? { scale: 0.98 } : undefined}
+                animate={
+                  isLoading
+                    ? {
+                        scale: [1, 1.008, 1],
+                        boxShadow: [
+                          '0 12px 28px color-mix(in oklab, var(--generate-grad-1) 45%, transparent)',
+                          '0 18px 36px color-mix(in oklab, var(--generate-grad-2) 54%, transparent)',
+                          '0 12px 28px color-mix(in oklab, var(--generate-grad-1) 45%, transparent)'
+                        ]
+                      }
+                    : { scale: 1 }
+                }
+                transition={isLoading ? { duration: 1.1, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.18 }}
               >
-                {isLoading ? (
-                  <>
-                    <span className="generate-btn-spinner" aria-hidden="true" />
-                    <span className="generate-btn-loading-wrap">
-                      <span>{aiUpscale > 0 ? t('upscaling') : t('generating')}</span>
-                      {statusText ? <span className="generate-btn-sub-label">{statusText}</span> : null}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="generate-btn-icon" aria-hidden="true">✨</span>
-                    <span>{t('generate')}</span>
-                  </>
-                )}
-              </motion.span>
-            </motion.button>
+                <span className="generate-btn-drift generate-btn-drift-1" aria-hidden="true" />
+                <span className="generate-btn-drift generate-btn-drift-2" aria-hidden="true" />
+                <span className="generate-btn-drift generate-btn-drift-3" aria-hidden="true" />
+                <span className="generate-btn-drift generate-btn-drift-4" aria-hidden="true" />
+                <span className="generate-btn-drift generate-btn-drift-5" aria-hidden="true" />
+                <span className="generate-btn-drift generate-btn-drift-6" aria-hidden="true" />
+                <span className="generate-btn-drift generate-btn-drift-7" aria-hidden="true" />
+                <span className="generate-btn-drift generate-btn-drift-8" aria-hidden="true" />
+                <span className="generate-btn-drift generate-btn-drift-9" aria-hidden="true" />
+                <motion.span
+                  className="generate-btn-content"
+                  key={isLoading ? 'loading' : 'idle'}
+                  initial={{ opacity: 0, y: 6, filter: 'blur(2px)' }}
+                  animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                >
+                  {isLoading ? (
+                    <>
+                      <span className="generate-btn-spinner" aria-hidden="true" />
+                      <span className="generate-btn-loading-wrap">
+                        <span>{progressStatusText || t('generating')}</span>
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="generate-btn-icon" aria-hidden="true">
+                        ✨
+                      </span>
+                      <span>{t('generate')}</span>
+                    </>
+                  )}
+                </motion.span>
+              </motion.button>
+              {isLoading ? (
+                <button
+                  type="button"
+                  className="cancel-generate-btn"
+                  onClick={cancelGeneration}
+                  aria-label={t('cancelGenerate')}
+                >
+                  {t('cancelGenerate')}
+                </button>
+              ) : null}
+            </div>
           </form>
         </section>
 
-        {error ? <p className="error">{error}</p> : null}
-        {statusText ? <p className="subtitle">{statusText}</p> : null}
-
         {failures.length > 0 ? (
-          <section className="panel" style={{ marginTop: '1rem' }}>
-            <div className="form">
-              <strong>{t('failedVariants')}</strong>
-              {failures.map((failure, index) => (
-                <p className="error" key={`${failure.promptVariant}-${index}`}>
-                  {index + 1}. {failure.error}
-                </p>
-              ))}
+          <section className="run-issues-panel" aria-live="polite">
+            <div className="run-issues-head">
+              <span className="run-issues-title">
+                <span aria-hidden>⚠</span>
+                <span>{t('runIssuesTitle')}</span>
+                <span className="run-issues-count">{t('runIssuesCount', { count: failures.length })}</span>
+              </span>
+              <button
+                type="button"
+                className="run-issues-dismiss"
+                onClick={() => {
+                  setFailures([]);
+                }}
+              >
+                {t('dismissErrors')}
+              </button>
             </div>
+            <ul className="run-issues-list">
+              {failures.map((failure, index) => (
+                <li className="run-issues-item" key={`${failure.promptVariant}-${failure.error}-${index}`}>
+                  {failure.promptVariant ? (
+                    <span className="run-issues-item-label">{failure.promptVariant}</span>
+                  ) : null}
+                  <p className="run-issues-item-detail">{failure.error}</p>
+                </li>
+              ))}
+            </ul>
           </section>
         ) : null}
 
       </section>
+
+      {analysisModalTarget && typeof document !== 'undefined'
+        ? createPortal(
+        <div
+          className="analysis-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            // Close only on backdrop (not when pressing inside dialog).
+            if (event.target === event.currentTarget) {
+              setAnalysisModalTarget(null);
+              setAnalysisModalDraft(null);
+            }
+          }}
+        >
+          <div
+            className="analysis-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="analysis-modal-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="analysis-modal-head">
+              <div>
+                <h2 id="analysis-modal-title">{t('analysisModalTitle')}</h2>
+                <p className="analysis-modal-sub">
+                  {t('analysisModalSubtitle', {
+                    product:
+                      analysisModalTarget.kind === 'ref'
+                        ? submittedRefsLabel(referenceImages, analysisModalTarget.refIndex) ||
+                          String(analysisModalTarget.refIndex + 1)
+                        : historyItems.find((item) => item.id === analysisModalTarget.itemId)
+                            ?.referenceAnalysis?.productTypeLabel ||
+                          historyItems.find((item) => item.id === analysisModalTarget.itemId)
+                            ?.generationConfig?.referenceImages?.[0]?.fileName ||
+                          t('historyResultAlt')
+                  })}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="analysis-modal-close"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setAnalysisModalTarget(null);
+                  setAnalysisModalDraft(null);
+                }}
+              >
+                {t('close')}
+              </button>
+            </header>
+
+            {(() => {
+              if (analysisModalTarget.kind === 'ref') {
+                const state = refAnalyses[analysisModalTarget.refIndex];
+                if (state?.status === 'loading' || (!state && isLoading)) {
+                  return <p className="analysis-modal-empty">{t('analysisLoadingChip')}</p>;
+                }
+                if (state?.status === 'error') {
+                  return (
+                    <p className="analysis-modal-empty is-error">
+                      {state.error || t('analysisFailed')}
+                    </p>
+                  );
+                }
+              }
+
+              const historyAnalysis =
+                analysisModalTarget.kind === 'history'
+                  ? historyItems.find((item) => item.id === analysisModalTarget.itemId)
+                      ?.referenceAnalysis
+                  : undefined;
+              const refAnalysis =
+                analysisModalTarget.kind === 'ref'
+                  ? refAnalyses[analysisModalTarget.refIndex]?.analysis
+                  : undefined;
+              const source = analysisModalDraft || historyAnalysis || refAnalysis;
+              const draft = source ? finalizeAnalysis(source) : null;
+              if (!draft) {
+                return <p className="analysis-modal-empty">{t('analysisEmpty')}</p>;
+              }
+
+              const updateDraft = (patch: Partial<ReferenceAnalysis>) => {
+                setAnalysisModalDraft((prev) => {
+                  const base = prev || draft;
+                  return finalizeAnalysis({ ...base, ...patch });
+                });
+              };
+
+              return (
+                <div className="analysis-modal-body">
+                  <div className="analysis-modal-grid">
+                    <label>
+                      <span>{t('analysisProductType')}</span>
+                      <select
+                        value={draft.productType}
+                        onChange={(e) =>
+                          updateDraft({
+                            productType: e.target.value as ProductTypeOption,
+                            productTypeLabel: productTypeLabel(e.target.value as ProductTypeOption)
+                          })
+                        }
+                      >
+                        {PRODUCT_TYPE_VALUES.map((option) => (
+                          <option key={option} value={option}>
+                            {productTypeLabel(option, language === 'en' ? 'en' : 'tr')}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('productColorPlaceholder')}</span>
+                      <select
+                        value={draft.productColor}
+                        onChange={(e) =>
+                          updateDraft({
+                            productColor: e.target.value as AnalysisProductColor
+                          })
+                        }
+                      >
+                        {PRODUCT_COLOR_VALUES.map((option) => (
+                          <option key={option} value={option}>
+                            {t(`productColorOptions.${option}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('analysisMounting')}</span>
+                      <select
+                        value={draft.mounting}
+                        onChange={(e) => {
+                          const mounting = e.target.value as ReferenceAnalysis['mounting'];
+                          // Wall-mounted ⇒ no freestanding legs — clear/disable leg count.
+                          updateDraft({
+                            mounting,
+                            legCount: mounting === 'wall-mounted' ? null : draft.legCount
+                          });
+                        }}
+                      >
+                        {MOUNTING_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {t(`mountingOptions.${option}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('analysisLegCount')}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={12}
+                        disabled={draft.mounting === 'wall-mounted'}
+                        value={draft.mounting === 'wall-mounted' ? '' : draft.legCount ?? ''}
+                        placeholder={
+                          draft.mounting === 'wall-mounted'
+                            ? t('analysisLegCountDisabled')
+                            : t('analysisLegCountPlaceholder')
+                        }
+                        onChange={(e) => {
+                          const raw = e.target.value.trim();
+                          if (!raw) {
+                            updateDraft({ legCount: null });
+                            return;
+                          }
+                          const n = Number.parseInt(raw, 10);
+                          updateDraft({
+                            legCount: Number.isFinite(n) ? Math.max(0, Math.min(12, n)) : null
+                          });
+                        }}
+                      />
+                    </label>
+                    {draft.mounting !== 'wall-mounted' && draft.legCount != null && draft.legCount > 0 ? (
+                      <label>
+                        <span>{t('analysisLegLayout')}</span>
+                        <input
+                          type="text"
+                          value={draft.legLayout || ''}
+                          placeholder={t('analysisLegLayoutPlaceholder')}
+                          onChange={(e) => updateDraft({ legLayout: e.target.value })}
+                        />
+                      </label>
+                    ) : null}
+                    <label>
+                      <span>{t('analysisPlexiglass')}</span>
+                      <select
+                        value={draft.plexiglass}
+                        onChange={(e) =>
+                          updateDraft({
+                            plexiglass: e.target.value as ReferenceAnalysis['plexiglass']
+                          })
+                        }
+                      >
+                        {PLEXIGLASS_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {t(`plexiglassOptions.${option}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('analysisHandles')}</span>
+                      <select
+                        value={draft.handlePresence}
+                        onChange={(e) =>
+                          updateDraft({
+                            handlePresence: e.target.value as ReferenceAnalysis['handlePresence']
+                          })
+                        }
+                      >
+                        {HANDLE_PRESENCE_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {t(`handlePresenceOptions.${option}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('roomStylePlaceholder')}</span>
+                      <select
+                        value={draft.roomStyle}
+                        onChange={(e) =>
+                          updateDraft({
+                            roomStyle: e.target.value as ReferenceAnalysis['roomStyle']
+                          })
+                        }
+                      >
+                        {ROOM_STYLE_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {t(`roomStyleOptions.${option}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('accentColorPlaceholder')}</span>
+                      <select
+                        value={draft.accentColor}
+                        onChange={(e) =>
+                          updateDraft({
+                            accentColor: e.target.value as ReferenceAnalysis['accentColor']
+                          })
+                        }
+                      >
+                        {ACCENT_COLOR_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {t(`accentColorOptions.${option}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {draft.handlePresence === 'with-handle' ? (
+                      <label>
+                        <span>{t('handlePlaceholder')}</span>
+                        <input
+                          value={draft.handleDescription}
+                          onChange={(e) => updateDraft({ handleDescription: e.target.value })}
+                          placeholder={t('handlePlaceholder')}
+                        />
+                      </label>
+                    ) : null}
+                    <label className="analysis-modal-check">
+                      <input
+                        type="checkbox"
+                        checked={draft.hasLaserPatterns}
+                        onChange={(e) => updateDraft({ hasLaserPatterns: e.target.checked })}
+                      />
+                      <span>{t('analysisLaser')}</span>
+                    </label>
+                    <label>
+                      <span>{t('analysisConfidence')}</span>
+                      <input
+                        type="text"
+                        readOnly
+                        value={`${Math.round((draft.confidence || 0) * 100)}%`}
+                      />
+                    </label>
+                  </div>
+                  <label className="analysis-modal-prompt">
+                    <span>{t('analysisPrompt')}</span>
+                    <textarea
+                      value={draft.prompt}
+                      rows={12}
+                      onChange={(e) =>
+                        setAnalysisModalDraft((prev) =>
+                          prev || draft ? { ...(prev || draft), prompt: e.target.value } : null
+                        )
+                      }
+                    />
+                  </label>
+                  {draft.notes ? (
+                    <p className="analysis-modal-notes">
+                      <strong>{t('analysisNotes')}:</strong> {draft.notes}
+                    </p>
+                  ) : null}
+                  <footer className="analysis-modal-actions">
+                    <button
+                      type="button"
+                      className="analysis-modal-secondary"
+                      onClick={() => {
+                        setAnalysisModalTarget(null);
+                        setAnalysisModalDraft(null);
+                      }}
+                    >
+                      {t('close')}
+                    </button>
+                    <button
+                      type="button"
+                      className="analysis-modal-primary"
+                      onClick={() => {
+                        if (!analysisModalTarget || !analysisModalDraft) return;
+                        const rebuilt = finalizeAnalysis(analysisModalDraft);
+                        const saved: ReferenceAnalysis = {
+                          ...rebuilt,
+                          prompt: analysisModalDraft.prompt?.trim() || rebuilt.prompt
+                        };
+
+                        if (analysisModalTarget.kind === 'ref') {
+                          const next: RefAnalysisState = { status: 'ready', analysis: saved };
+                          refAnalysesRef.current = {
+                            ...refAnalysesRef.current,
+                            [analysisModalTarget.refIndex]: next
+                          };
+                          setRefAnalyses((prev) => ({
+                            ...prev,
+                            [analysisModalTarget.refIndex]: next
+                          }));
+                        } else {
+                          const itemId = analysisModalTarget.itemId;
+                          setHistoryItems((prev) =>
+                            prev.map((entry) =>
+                              entry.id === itemId ? { ...entry, referenceAnalysis: saved } : entry
+                            )
+                          );
+                        }
+
+                        toast.success(t('toastAnalysisSaved'), { duration: 2800 });
+                        setAnalysisModalTarget(null);
+                        setAnalysisModalDraft(null);
+                      }}
+                    >
+                      {t('saveAnalysis')}
+                    </button>
+                  </footer>
+                </div>
+              );
+            })()}
+          </div>
+        </div>,
+        document.body
+      ) : null}
 
       <nav className="mobile-tabbar" aria-label="Ana sekme navigasyonu">
         <button
@@ -2684,7 +4149,11 @@ export default function HomePage() {
 
       <Lightbox
         open={isHistoryViewerOpen}
-        close={() => setIsHistoryViewerOpen(false)}
+        close={() => {
+          setIsHistoryViewerOpen(false);
+          setViewerCollectionId(null);
+          setViewerOverrideItems(null);
+        }}
         index={historyViewerIndex}
         slides={historySlides}
         plugins={[Zoom]}
@@ -2709,6 +4178,12 @@ export default function HomePage() {
               item={activeHistoryItem}
               onDownload={downloadHistoryImage}
               onRegenerate={applyRegenerateConfiguration}
+              onShowAnalysis={() => {
+                const item = activeHistoryItem;
+                if (!item) return;
+                setAnalysisModalTarget({ kind: 'history', itemId: item.id });
+                setAnalysisModalDraft(item.referenceAnalysis ? { ...item.referenceAnalysis } : null);
+              }}
               isPromptCollapsed={isViewerPromptCollapsed}
               onToggleCollapsed={() => setIsViewerPromptCollapsed((v) => !v)}
             />
@@ -2761,7 +4236,10 @@ function base64ToBlob(base64: string, mimeType: string): Blob {
 
 async function createHistoryItemFromGenerationResult(
   result: GenerationResult,
-  metadata: Pick<HistoryItem, 'id' | 'createdAt' | 'isNew' | 'generationConfig'>
+  metadata: Pick<
+    HistoryItem,
+    'id' | 'createdAt' | 'isNew' | 'collectionId' | 'generationConfig' | 'referenceAnalysis'
+  >
 ): Promise<HistoryItem> {
   let imageBlob: Blob;
   if (result.blobUrl) {
@@ -2785,13 +4263,69 @@ async function createHistoryItemFromGenerationResult(
     mimeType: result.mimeType,
     imageBlob,
     imageUrl: URL.createObjectURL(imageBlob),
-    generationConfig: metadata.generationConfig
+    collectionId: metadata.collectionId,
+    generationConfig: metadata.generationConfig,
+    referenceAnalysis: metadata.referenceAnalysis
+  };
+}
+
+function isReferenceAnalysis(value: unknown): value is ReferenceAnalysis {
+  if (!value || typeof value !== 'object') return false;
+  const r = value as Record<string, unknown>;
+  // Accept new enum shape; also tolerate legacy free-text fields if still present.
+  const hasNewShape =
+    typeof r.productColor === 'string' &&
+    typeof r.roomStyle === 'string' &&
+    typeof r.accentColor === 'string';
+  const hasLegacyShape =
+    typeof r.bodyColorMaterial === 'string' &&
+    typeof r.doorColorMaterial === 'string' &&
+    typeof r.colorSummary === 'string';
+  return (
+    typeof r.productType === 'string' &&
+    typeof r.productTypeLabel === 'string' &&
+    typeof r.mounting === 'string' &&
+    typeof r.hasLaserPatterns === 'boolean' &&
+    typeof r.plexiglass === 'string' &&
+    typeof r.handlePresence === 'string' &&
+    typeof r.handleDescription === 'string' &&
+    typeof r.confidence === 'number' &&
+    typeof r.notes === 'string' &&
+    typeof r.prompt === 'string' &&
+    (hasNewShape || hasLegacyShape)
+  );
+}
+
+/** Migrate legacy free-text analysis blobs into catalog enums when loading history. */
+function coerceReferenceAnalysis(value: unknown): ReferenceAnalysis | undefined {
+  if (!isReferenceAnalysis(value)) return undefined;
+  try {
+    return finalizeAnalysis(value as ReferenceAnalysisDraft);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Drop heavy reference image bytes before writing history to IndexedDB. */
+function stripReferenceBase64FromConfig(config: GenerationConfigSnapshot): GenerationConfigSnapshot {
+  if (!config.referenceImages?.length) {
+    return config;
+  }
+  return {
+    ...config,
+    referenceImages: config.referenceImages.map((reference) => ({
+      mimeType: reference.mimeType,
+      ...(reference.fileName ? { fileName: reference.fileName } : {})
+    }))
   };
 }
 
 function toHistoryStorageItem(item: HistoryItem): HistoryStorageItem {
-  const { imageUrl: _imageUrl, ...rest } = item;
-  return rest;
+  const { imageUrl: _imageUrl, generationConfig, ...rest } = item;
+  return {
+    ...rest,
+    generationConfig: generationConfig ? stripReferenceBase64FromConfig(generationConfig) : undefined
+  };
 }
 
 function toArchiveStorageItem(item: ArchiveItem): ArchiveStorageItem {
@@ -2827,11 +4361,95 @@ function getReferenceBaseName(item: HistoryItem): string {
   return sanitizeDownloadName(stripFileExtension(getReferenceFileName(item))) || 'history';
 }
 
+/** Stable key for “which product photo” — filename, else reference payload fingerprint. */
+function getHistoryProductKey(item: HistoryItem): string {
+  const base = getReferenceBaseName(item);
+  if (base && base !== 'history') {
+    return base;
+  }
+  const ref = item.generationConfig?.referenceImages?.[0];
+  if (ref?.fileName?.trim()) {
+    return `file:${sanitizeDownloadName(ref.fileName)}`;
+  }
+  if (ref?.mimeType) {
+    return `mime:${ref.mimeType}`;
+  }
+  return `item:${item.id}`;
+}
+
+/** Prefer product code (e.g. KA1232) from reference filename. */
+function getItemProductCode(item: HistoryItem): string {
+  const fileName = getReferenceFileName(item);
+  const code = extractProductCodeFromFileName(fileName);
+  if (code) {
+    return code;
+  }
+  const base = getReferenceBaseName(item);
+  return base !== 'history' ? base : '';
+}
+
+/** Unique product codes in collection, majority-first then alpha. */
+function getCollectionProductCodes(collection: HistoryCollection): string[] {
+  const counts = new Map<string, number>();
+  for (const item of collection.items) {
+    const code = getItemProductCode(item);
+    if (!code || code.toUpperCase() === 'BATCH') continue;
+    counts.set(code, (counts.get(code) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], undefined, { sensitivity: 'base' }))
+    .map(([code]) => code);
+}
+
+function getCollectionProductCode(collection: HistoryCollection): string {
+  return getCollectionProductCodes(collection)[0] || 'BATCH';
+}
+
+/** Short multi-code label: "KA1 + KA2" or "KA1 + KA2 +2". */
+function formatProductCodeList(codes: string[]): string {
+  if (codes.length === 0) return 'BATCH';
+  if (codes.length === 1) return codes[0];
+  if (codes.length <= 3) return codes.join(' + ');
+  return `${codes.slice(0, 2).join(' + ')} +${codes.length - 2}`;
+}
+
+function getCollectionTitleBase(collection: HistoryCollection): string {
+  return formatProductCodeList(getCollectionProductCodes(collection));
+}
+
+/** Among collections sharing the same title base: oldest = #1. */
+function getCollectionOrdinal(collection: HistoryCollection, multiCollections: HistoryCollection[]): number {
+  const titleBase = getCollectionTitleBase(collection);
+  const sameTitle = multiCollections
+    .filter((entry) => getCollectionTitleBase(entry) === titleBase)
+    .sort((a, b) => {
+      const time = a.createdAt.localeCompare(b.createdAt);
+      return time !== 0 ? time : a.id.localeCompare(b.id);
+    });
+  const index = sameTitle.findIndex((entry) => entry.id === collection.id);
+  return index >= 0 ? index + 1 : 1;
+}
+
+function getCollectionDisplayName(collection: HistoryCollection, multiCollections: HistoryCollection[]): string {
+  // Prefer product codes from reference filenames for both single- and multi-product batches.
+  // Only fall back to "Batch #N" when no usable product code can be extracted.
+  const titleBase = getCollectionTitleBase(collection);
+  const ordinal = getCollectionOrdinal(collection, multiCollections);
+  return `${titleBase} #${ordinal}`;
+}
+
+/** Zip/folder form without "#": "KA1232 #1" → "KA1232 1" (then sanitized). */
+function getCollectionFolderName(collection: HistoryCollection, multiCollections: HistoryCollection[]): string {
+  const display = getCollectionDisplayName(collection, multiCollections);
+  const withoutHash = display.replace(/#/g, '').replace(/\s+/g, ' ').trim();
+  return sanitizeDownloadName(withoutHash) || 'collection';
+}
+
 function getHistoryImageDownloadName(item: HistoryItem, index: number, fileExt: string): string {
-  const baseName = getReferenceBaseName(item);
+  const productCode = getItemProductCode(item) || getReferenceBaseName(item);
   const createdKey = item.createdAt.slice(0, 10);
   const suffix = String(Math.max(1, index)).padStart(2, '0');
-  return `${baseName}-${createdKey}-${suffix}.${fileExt}`;
+  return `${productCode}-${createdKey}-${suffix}.${fileExt}`;
 }
 
 function getDownloadBatchBaseName(items: HistoryItem[]): string {
@@ -2849,20 +4467,52 @@ function getDownloadBatchBaseName(items: HistoryItem[]): string {
   return `history-${dateKey}`;
 }
 
-function getBatchReferenceFolderName(run: BatchRunResult): string {
-  const safeName = getReferenceGroupingCode(run.refFileName ?? '');
-  const fallback = `ref-${String(run.refIndex + 1).padStart(2, '0')}`;
-  return safeName || fallback;
-}
-
 function stripFileExtension(fileName: string): string {
   return fileName.replace(/\.[^./\\]+$/, '');
 }
 
+/**
+ * Extract a product code from a reference filename.
+ * Supports: KA1232, KA-1232, KA_1232, ka 1232, foto_KA1232_on, KA1232-front, etc.
+ */
+function extractProductCodeFromFileName(fileName: string): string {
+  const baseName = stripFileExtension(fileName || '').trim();
+  if (!baseName) return '';
+
+  // Letter prefix + optional separator + digits (anywhere in name).
+  // e.g. KA1232, KA-1232, YT_450, tv 12
+  const letterDigit = baseName.match(/(?:^|[^A-Za-z0-9])([A-Za-z]{1,8})[-_\s]?(\d{2,8})(?=$|[^0-9])/);
+  if (letterDigit) {
+    return sanitizeDownloadName(`${letterDigit[1].toUpperCase()}${letterDigit[2]}`);
+  }
+
+  // Digits + letter suffix: 1232KA / 1232-KA
+  const digitLetter = baseName.match(/(?:^|[^A-Za-z0-9])(\d{2,8})[-_\s]?([A-Za-z]{1,8})(?=$|[^A-Za-z])/);
+  if (digitLetter) {
+    return sanitizeDownloadName(`${digitLetter[2].toUpperCase()}${digitLetter[1]}`);
+  }
+
+  // First path token that mixes letters + digits (no generic camera names).
+  const generic = /^(img|image|photo|pic|dsc|dcim|screenshot|whatsapp|copy|untitled|download|file|image\d*)$/i;
+  const tokens = baseName.split(/[\s._\-()[\]{}]+/).filter(Boolean);
+  for (const token of tokens) {
+    if (generic.test(token)) continue;
+    if (/[A-Za-z]/.test(token) && /\d/.test(token) && token.length <= 16) {
+      return sanitizeDownloadName(token.toUpperCase());
+    }
+  }
+
+  // Short non-generic basename as last resort (keeps human names usable).
+  if (!generic.test(baseName) && baseName.length <= 28 && !/^\d+$/.test(baseName)) {
+    return sanitizeDownloadName(baseName);
+  }
+
+  return '';
+}
+
+/** @deprecated Prefer extractProductCodeFromFileName — kept for any external callers. */
 function getReferenceGroupingCode(fileName: string): string {
-  const baseName = stripFileExtension(fileName).trim();
-  const match = baseName.match(/^[A-Za-z]+\d+/);
-  return sanitizeDownloadName(match?.[0] ?? baseName);
+  return extractProductCodeFromFileName(fileName) || sanitizeDownloadName(stripFileExtension(fileName).trim());
 }
 
 function sanitizeDownloadName(value: string): string {
@@ -2873,28 +4523,6 @@ function sanitizeDownloadName(value: string): string {
     .replace(/-+/g, '-')
     .replace(/^[.-]+|[.-]+$/g, '')
     .slice(0, 80);
-}
-
-function groupHistoryByDate(items: HistoryItem[], language: 'tr' | 'en'): Array<{ dateKey: string; label: string; items: HistoryItem[] }> {
-  const grouped = new Map<string, HistoryItem[]>();
-
-  for (const item of items) {
-    const dateKey = item.createdAt.slice(0, 10);
-    const group = grouped.get(dateKey) ?? [];
-    group.push(item);
-    grouped.set(dateKey, group);
-  }
-
-  return Array.from(grouped.entries()).map(([dateKey, groupItems]) => ({
-    dateKey,
-    label: new Date(dateKey).toLocaleDateString(resolveDateLocale(language), {
-      weekday: 'short',
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
-    }),
-    items: groupItems
-  }));
 }
 
 function makeId(): string {
@@ -2930,6 +4558,8 @@ function normalizePersistedHistoryItem(value: unknown): HistoryItem | null {
     return null;
   }
 
+  const referenceAnalysis = coerceReferenceAnalysis(record.referenceAnalysis);
+
   return {
     id: record.id,
     createdAt: record.createdAt,
@@ -2938,8 +4568,106 @@ function normalizePersistedHistoryItem(value: unknown): HistoryItem | null {
     mimeType,
     imageBlob,
     imageUrl: URL.createObjectURL(imageBlob),
-    generationConfig: hasValidConfig ? (configValue as GenerationConfigSnapshot | undefined) : undefined
+    collectionId: typeof record.collectionId === 'string' && record.collectionId ? record.collectionId : undefined,
+    generationConfig: hasValidConfig ? (configValue as GenerationConfigSnapshot | undefined) : undefined,
+    referenceAnalysis
   };
+}
+
+function resolveCollectionId(item: HistoryItem): string {
+  return item.collectionId?.trim() || item.id;
+}
+
+/**
+ * Repair items that share the same batch timestamp but lost/missing collectionId
+ * (legacy history / partial saves) so one generate-submit stays one collection.
+ */
+function repairHistoryCollectionIds(items: HistoryItem[]): HistoryItem[] {
+  const byCreatedAt = new Map<string, HistoryItem[]>();
+  for (const item of items) {
+    const stamp = item.createdAt;
+    const list = byCreatedAt.get(stamp) ?? [];
+    list.push(item);
+    byCreatedAt.set(stamp, list);
+  }
+
+  return items.map((item) => {
+    if (item.collectionId?.trim()) {
+      return item;
+    }
+    const peers = byCreatedAt.get(item.createdAt) ?? [item];
+    if (peers.length < 2) {
+      return item;
+    }
+    // Prefer an existing collectionId from a peer; otherwise synthesize one for the group.
+    const sharedId =
+      peers.map((peer) => peer.collectionId?.trim()).find((id) => Boolean(id)) ||
+      `batch-${item.createdAt}`;
+    return { ...item, collectionId: sharedId };
+  });
+}
+
+function groupHistoryCollections(items: HistoryItem[]): HistoryCollection[] {
+  const repaired = repairHistoryCollectionIds(items);
+  const map = new Map<string, HistoryItem[]>();
+  for (const item of repaired) {
+    const key = resolveCollectionId(item);
+    const list = map.get(key) ?? [];
+    list.push(item);
+    map.set(key, list);
+  }
+
+  const collections: HistoryCollection[] = [];
+  for (const [id, collectionItems] of map) {
+    const sorted = [...collectionItems].sort((a, b) => {
+      // Stable order: reference index (filename) then recency within the same product.
+      const nameA = getReferenceBaseName(a);
+      const nameB = getReferenceBaseName(b);
+      if (nameA !== nameB) {
+        return nameA.localeCompare(nameB);
+      }
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+    const createdAt = sorted.reduce(
+      (latest, item) => (item.createdAt > latest ? item.createdAt : latest),
+      sorted[0]?.createdAt ?? new Date(0).toISOString()
+    );
+    const productKeys = new Set(sorted.map((item) => getHistoryProductKey(item)));
+    collections.push({
+      id,
+      createdAt,
+      items: sorted,
+      isNew: sorted.some((item) => item.isNew),
+      coverUrl: sorted[0]?.imageUrl ?? '',
+      productCount: Math.max(1, productKeys.size)
+    });
+  }
+
+  return collections.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+function groupCollectionsByDate(
+  collections: HistoryCollection[],
+  language: 'tr' | 'en'
+): Array<{ dateKey: string; label: string; collections: HistoryCollection[] }> {
+  const grouped = new Map<string, HistoryCollection[]>();
+  for (const collection of collections) {
+    const dateKey = collection.createdAt.slice(0, 10);
+    const list = grouped.get(dateKey) ?? [];
+    list.push(collection);
+    grouped.set(dateKey, list);
+  }
+
+  return Array.from(grouped.entries()).map(([dateKey, groupCollections]) => ({
+    dateKey,
+    label: new Date(dateKey).toLocaleDateString(resolveDateLocale(language), {
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    }),
+    collections: groupCollections
+  }));
 }
 
 function getPersistedImageBlob(record: Record<string, unknown>, mimeType: string): Blob | null {
@@ -2974,9 +4702,10 @@ function isGenerationConfigSnapshot(value: unknown): value is GenerationConfigSn
         }
 
         const referenceRecord = entry as Record<string, unknown>;
+        // base64 is optional (stripped from history for IndexedDB quota).
         return (
-          typeof referenceRecord.base64 === 'string' &&
           typeof referenceRecord.mimeType === 'string' &&
+          (typeof referenceRecord.base64 === 'undefined' || typeof referenceRecord.base64 === 'string') &&
           (typeof referenceRecord.fileName === 'undefined' || typeof referenceRecord.fileName === 'string')
         );
       }));
@@ -3070,11 +4799,19 @@ type HistoryViewerHeaderProps = {
   item: HistoryItem | undefined;
   onDownload: () => void;
   onRegenerate: () => void;
+  onShowAnalysis: () => void;
   isPromptCollapsed: boolean;
   onToggleCollapsed: () => void;
 };
 
-function HistoryViewerHeader({ item, onDownload, onRegenerate, isPromptCollapsed, onToggleCollapsed }: HistoryViewerHeaderProps) {
+function HistoryViewerHeader({
+  item,
+  onDownload,
+  onRegenerate,
+  onShowAnalysis,
+  isPromptCollapsed,
+  onToggleCollapsed
+}: HistoryViewerHeaderProps) {
   const { t } = useTranslation();
 
   if (!item) {
@@ -3083,6 +4820,7 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate, isPromptCollapsed
 
   const config = item.generationConfig;
   const generatedDescription = item.promptVariant.trim() || config?.basePrompt?.trim() || t('historyViewer');
+  const hasAnalysis = Boolean(item.referenceAnalysis);
 
   const collapseTransition = { duration: 0.22, ease: 'easeInOut' as const };
 
@@ -3148,15 +4886,25 @@ function HistoryViewerHeader({ item, onDownload, onRegenerate, isPromptCollapsed
             <span className="history-viewer-config">{t('historyViewerNoConfig')}</span>
           )}
         </div>
-        <div className="history-viewer-action-row">
-          <button type="button" className="history-viewer-download" onClick={onDownload}>
-            <DownloadIcon />
-            {t('download')}
+        <div className="history-viewer-action-col">
+          <button
+            type="button"
+            className={`history-viewer-analysis${hasAnalysis ? '' : ' is-muted'}`}
+            onClick={onShowAnalysis}
+            title={hasAnalysis ? t('showAnalysis') : t('analysisEmpty')}
+          >
+            {t('showAnalysis')}
           </button>
-          <button type="button" className="history-viewer-regenerate" onClick={onRegenerate}>
-            <RegenerateIcon />
-            {t('regenerate')}
-          </button>
+          <div className="history-viewer-action-row">
+            <button type="button" className="history-viewer-download" onClick={onDownload}>
+              <DownloadIcon />
+              {t('download')}
+            </button>
+            <button type="button" className="history-viewer-regenerate" onClick={onRegenerate}>
+              <RegenerateIcon />
+              {t('regenerate')}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -3270,6 +5018,47 @@ function getBatchRetryDelayMs(message: string, attempt: number): number {
   return Math.min(60_000, BATCH_RETRY_BASE_DELAY_MS * (a + 1));
 }
 
+/** Extract a useful message from thrown API/network values (avoids empty `{}` logs). */
+function getUnknownErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) {
+    const message = error.message?.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  if (typeof error === 'string') {
+    const trimmed = error.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+
+  if (error && typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    for (const key of ['message', 'error', 'detail', 'statusText', 'cause'] as const) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+      if (value instanceof Error && value.message.trim()) {
+        return value.message.trim();
+      }
+    }
+
+    try {
+      const json = JSON.stringify(error);
+      if (json && json !== '{}' && json !== 'null') {
+        return json.length > 400 ? `${json.slice(0, 400)}…` : json;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return fallback;
+}
+
 function formatGenerationError(message: string, t: (key: string, options?: Record<string, unknown>) => string): string {
   const trimmed = message.trim();
   const noImageMatch = /No image returned:\s*([^|]+)$/i.exec(trimmed) ?? /No image returned:\s*([^|]+)/i.exec(trimmed);
@@ -3357,22 +5146,6 @@ function resolveDateLocale(language: 'tr' | 'en'): string {
   return language === 'tr' ? 'tr-TR' : 'en-US';
 }
 
-function getBatchStatusText(
-  state: string,
-  stateLabel: string,
-  stateDetail: string | undefined,
-  t: (key: string, options?: Record<string, unknown>) => string
-): string {
-  const detailSuffix = stateDetail ? ` • ${stateDetail}` : '';
-
-  switch (state) {
-    case 'pending': return `${t('statusBatchPending')}${detailSuffix}`;
-    case 'running': return `${t('statusBatchRunning')}${detailSuffix}`;
-    case 'succeeded': return `${t('statusBatchSucceeded')}${detailSuffix}`;
-    default: return stateLabel;
-  }
-}
-
 function buildRegionalProductScenePrompt(
   region: string,
   atmosphere: string,
@@ -3393,7 +5166,11 @@ function getBatchPromptForReference(submittedPrompt: string, referenceIndex: num
   return BATCH_PROMPT_ROTATION[(selectedPresetIndex + referenceIndex) % BATCH_PROMPT_ROTATION.length];
 }
 
-function buildCommercialCataloguePrompt(_input: {
+function submittedRefsLabel(refs: ReferenceImage[], index: number): string {
+  return refs[index]?.fileName?.trim() || '';
+}
+
+function buildCommercialCataloguePrompt(input: {
   color: ProductColorOption;
   plexiglass: PlexiglassOption;
   mounting: MountingOption;
@@ -3402,57 +5179,24 @@ function buildCommercialCataloguePrompt(_input: {
   roomStyle: RoomStyleOption;
   accentColor: AccentColorOption;
 }): string {
-  return `Create a photorealistic, high-end commercial interior image featuring the provided furniture product.
-Do not start until you see the GENERATE command inside this prompt (or make sure it's ready to be generated).
-
-<main>
-Use the reference image strictly for the product’s geometry, proportions, construction and decorative placement. Preserve the original body dimensions, door count, panel divisions, top surface, legs, laser patterns (and no handles) and all pattern positions exactly as shown. Do not redesign, simplify, reinterpret or add new details to the product.
-</main>
-
-<info>
-Room style: a refined modern interior with geometric balance, polished contemporary surfaces and elegant understated styling
-</info>
-
-<rules>
-NEVER transfer the door color or texture to the body, top surface, legs or other components. Preserve the product’s true color under all lighting conditions.
-
-Reproduce all laser patterns exactly as shown in the product reference. Every laser line must be engraved exactly 1 mm into the door surface. The lines must appear as narrow, precise recessed grooves physically integrated into the material. They must not appear raised, embossed, printed, painted, attached, floating, excessively wide or excessively deep.
-
-When the selected product includes gold or silver mirror plexiglass, create it as a thin, flat mirrored plexiglass detail closely fitted to the door surface. Keep its thickness visually minimal. Do not make it rounded, inflated, heavily bevelled or excessively raised.
-
-Use decorative plexiglass only when the selected product option includes it. Do not automatically add plexiglass to circular patterns, laser lines, handles or other product areas.
-
-Do not use glass anywhere on the furniture.
-
-Use a natural full-frame commercial photography look with an approximately 42 mm lens. Position the camera at human eye level, keep architectural vertical lines straight and avoid wide-angle distortion. Show the complete product clearly, including the full wall-mounted body and underside clearance, doors and outer edges (no handles). Leave comfortable negative space around the product and create natural foreground, midground and background depth.
-
-Illuminate the interior with soft, diffused skylight. Use portal lighting at the windows or openings to guide naturally reflected and surface-bounced daylight into the room. Allow the daylight to spread indirectly after reflecting from the walls, floor and surrounding surfaces, creating soft illumination, realistic ambient depth and a calm atmospheric effect.
-
-Use a subtle sky-toned ambient fill in the room and background without creating an artificial blue cast on the furniture. Add a warm floor lamp as a low-intensity fill light to gently lift dark areas and soften shadows around the product.
-
-Balance the cool skylight, neutral bounced daylight and warm floor-lamp illumination naturally. The lighting must create a welcoming ambience while remaining physically believable and visually unobtrusive. Avoid harsh direct sunlight, hard shadows, clipped highlights and dramatic studio lighting.
-
-Keep the indirect daylight neutral and preserve the exact product colors and material appearance. Do not allow strong blue, yellow or orange color casts to alter the furniture.
-
-Use realistic contact shadows, soft shadow transitions, natural indirect illumination and physically believable reflections. The lighting should feel atmospheric and naturally present rather than visibly staged.
-
-Use realistic furniture materials with subtle surface texture. White and anthracite surfaces must look like premium furniture finishes rather than plastic. Sapphire oak surfaces must show correctly oriented natural wood grain and slight tonal variation. Travertine doors must show restrained natural pores, veins and mineral variation without exaggerated contrast. Gold and silver mirror plexiglass must show controlled reflections without looking like glass, chrome or liquid metal.
-
-Place the product in a professionally styled, premium neutral interior resembling a high-end furniture catalogue photograph. Add a limited number of intentionally placed decorative elements such as plants, books, ceramics, artwork, textiles, a rug or a floor lamp. Keep the room elegant, balanced and uncluttered so the furniture remains the main subject.
-
-Include subtle realism through natural material variation, soft contact shadows and minor surface imperfections. Nothing should look overly smooth, artificial, distorted or factory-generated.
-
-Avoid incorrect proportions, changed door divisions, altered laser patterns, additional patterns, any invented handles, knobs, pulls, handle hardware, recessed grips that are not in the reference, freestanding placement, floor-standing legs that rest on the floor, floating without wall attachment, incorrect wall height, thick circular ornaments, raised laser lines, automatic plexiglass additions, glass panels, plastic-looking surfaces, excessive reflections, texture stretching, oversaturated colors, harsh lighting, excessive bloom, strong vignette, rendering noise and unrealistic decoration.
-
-Comply with premium Wayfair-style furniture photography standards for e-commerce: accurate geometry, realistic scale, true material representation, balanced natural lighting, clean staging, no visual distractions, and catalog-ready composition.
-</rules>
-
-<check>
-Before generating the image make sure:
-The final image must resemble a professionally photographed premium furniture catalogue image, with accurate product geometry, clearly visible 1 mm recessed laser engraving, no handles (handleless product), correct wall-mounted installation, optional flat mirror plexiglass details, natural indirect daylight and a refined atmospheric interior.
-</check>
-
-GENERATE`;
+  const draft: ReferenceAnalysisDraft = {
+    productType: 'console',
+    productTypeLabel: productTypeLabel('console'),
+    productColor: input.color as AnalysisProductColor,
+    mounting: input.mounting,
+    plexiglass: input.plexiglass,
+    handlePresence: input.handlePresence,
+    handleDescription: input.handle,
+    roomStyle: input.roomStyle,
+    accentColor: input.accentColor,
+    hasLaserPatterns: true,
+    doorCount: null,
+    legCount: null,
+    legLayout: '',
+    confidence: 0.7,
+    notes: 'Built from manual product option form (not vision analysis).'
+  };
+  return finalizeAnalysis(draft).prompt;
 }
 
 function isTerminalBatchState(state: string): boolean {
@@ -3517,17 +5261,6 @@ function renderModelOptionLabel(option: UiModelOption): string {
   return `${option.name} (${normalizeModelCode(option.code)})`;
 }
 
-function InfoHint({ text }: { text: string }) {
-  return (
-    <span className="info-hint" tabIndex={0} aria-label={text}>
-      <InfoIcon />
-      <span className="info-hint-tooltip" role="tooltip">
-        {text}
-      </span>
-    </span>
-  );
-}
-
 function SunIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -3539,16 +5272,6 @@ function SunIcon() {
         strokeWidth="1.7"
         strokeLinecap="round"
       />
-    </svg>
-  );
-}
-
-function InfoIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="8.3" fill="none" stroke="currentColor" strokeWidth="1.8" />
-      <circle cx="12" cy="8" r="1.2" fill="currentColor" />
-      <path d="M12 11.3v5.6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
     </svg>
   );
 }

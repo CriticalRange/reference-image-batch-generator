@@ -1,12 +1,12 @@
 const STYLE_MODIFIERS = [
-  'photoreal editorial lighting',
-  'natural daylight and soft shadows',
-  'cinematic contrast with clean focus falloff',
-  'high-detail studio product style',
-  'documentary realism with true-to-life tones',
-  'subtle film grain and balanced color response',
-  'premium magazine look with refined reflections',
-  'minimal composition and modern commercial finish'
+  'photoreal editorial lighting with medium exposure and preserved shadows',
+  'single soft window key light, low fill, natural contact shadows',
+  'gentle natural contrast with clean focus falloff — not high-key',
+  'high-detail catalogue product look, controlled reflections, no overexposure',
+  'documentary realism with true-to-life midtones (no milky wash)',
+  'subtle film grain and balanced color response, restrained ambient',
+  'premium magazine look with refined reflections and medium exposure',
+  'minimal composition, modern commercial finish, soft shadows not erased'
 ];
 
 export function buildPromptVariants(basePrompt: string, count: number): string[] {

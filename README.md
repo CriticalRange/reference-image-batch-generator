@@ -25,25 +25,45 @@ This project only supports compliant generation flows. It does not implement wat
 
 ## HTTP API (UI parity)
 
-The UI is a thin client over these routes. External scripts and websites can call the same endpoints and perform the same generation work (prompt, references, model, auth mode, resize, upscale, polling).
+The UI is a thin client over these routes. External scripts and websites can call the same endpoints for generation (prompt, references, model, auth mode, resize, upscale, polling).
+
+**Interactive docs:** [`/api-docs`](/api-docs) (Swagger UI)  
+**Machine-readable spec:** [`docs/openapi.yaml`](docs/openapi.yaml) · served at `/api/openapi` (OpenAPI 3.1).
 
 | Method | Path | Purpose |
 | ------ | ---- | ------- |
-| `POST` | `/api/generate` | Submit a generation job (same body as the UI) |
-| `GET` | `/api/generate?job=<id>` | Poll async Gemini batch jobs until results are ready |
-| `GET` | `/api/models` | List available models + default model |
+| `POST` | `/api/generate` | Submit a generation job |
+| `GET` | `/api/generate?job=<id>` | Poll async Gemini Developer batch jobs |
+| `GET` | `/api/models` | List curated (+ discovered) models and default |
 | `OPTIONS` | above routes | CORS preflight when `API_CORS_ORIGINS` is set |
 
-History, archive, zip download, and batch-mode looping are **client-side only** (IndexedDB / browser). Re-implement those in your script if needed by calling `POST /api/generate` once per reference.
+History, archive, zip download, and multi-product queueing are **client-side only** (IndexedDB / browser). Scripts that process many product photos should call `POST /api/generate` once per reference (and apply their own rate limit between calls).
 
-### Auth & CORS
+### Auth, CORS, rate limits
 
-- **Local UI / trusted scripts:** leave `APP_ACCESS_TOKEN` unset.
-- **External callers:** set `APP_ACCESS_TOKEN` and send `Authorization: Bearer <token>` on every request.
-- **Browser sites on another origin:** set `API_CORS_ORIGINS` (e.g. `https://app.example.com` or `*`). Prefer a token when using `*`.
-- Rate limit: `API_RATE_LIMIT` / `API_RATE_WINDOW_MS` (per client IP).
+| Concern | Behaviour |
+| ------- | --------- |
+| Access token | If `APP_ACCESS_TOKEN` is set, every request needs `Authorization: Bearer <token>` (`401` otherwise). Leave unset for local UI-only dev. |
+| CORS | Set `API_CORS_ORIGINS` to a comma-separated list or `*`. Same-origin UI needs no CORS. Prefer a strong token when using `*`. |
+| Rate limit | `API_RATE_LIMIT` / `API_RATE_WINDOW_MS` per client IP (default 20 / 60s). Exceeded → `429` + `Retry-After`. |
+| Body size | `MAX_REQUEST_BYTES` (default 16 MiB). Exceeded → `413`. |
 
-### `POST /api/generate` body
+### Provider routing (how jobs run)
+
+| Model / auth | Behaviour |
+| ------------ | --------- |
+| `vertex/*` + `authMode: service_account` | Sync Vertex AI (service account). Response includes `results`. |
+| `vertex/*` + `authMode: vertex_express` | Sync Vertex Express REST via `GEMINI_API_KEY`. Response includes `results`. |
+| `vertex/*` + `authMode: api_key` | **Async** Gemini Developer Batch API. Poll `GET /api/generate?job=…`. |
+| Non-`vertex/` Gemini / Imagen catalog ids | Async Gemini Developer Batch API (same poll path). |
+| Together model codes | Sync Together. Needs `TOGETHER_API_KEY`. |
+| `fal-ai/*` catalog ids | UI label only; generation runs on **Vertex service account** (fal.ai disabled). Sync `results`. |
+
+Default model: `GEMINI_IMAGE_MODEL` / `NEXT_PUBLIC_GEMINI_IMAGE_MODEL` or `vertex/gemini-2.5-flash-image`.
+
+### `POST /api/generate`
+
+Submit one generation job (one logical product; optional multi-image `referenceImages` for multi-ref models).
 
 ```json
 {
@@ -64,20 +84,26 @@ History, archive, zip download, and batch-mode looping are **client-side only** 
 }
 ```
 
-| Field | Notes |
-| ----- | ----- |
-| `prompt` | Required |
-| `count` | Variant count (clamped by `MAX_BATCH_SIZE`) |
-| `model` | e.g. `vertex/gemini-2.5-flash-image`, `fal-ai/nano-banana/edit`, `fal-ai/nano-banana-2/edit`, `fal-ai/nano-banana-pro/edit`, Together codes |
-| `authMode` | Vertex only: `service_account` (default) or `api_key` (`GEMINI_API_KEY`) |
-| `referenceImages` | Preferred multi-ref array; or legacy `referenceImageBase64` + `referenceMimeType` |
-| `aspectRatio` / `imageSize` / `steps` | Provider-dependent |
-| `resizeWidth` + `resizeHeight` | Both required if resizing |
-| `aiUpscale` | `2` or `3` (not supported on Vercel serverless) |
+| Field | Required | Notes |
+| ----- | -------- | ----- |
+| `prompt` | yes | Max 10 000 characters |
+| `negativePrompt` | no | Max 2 000 characters; Together / some backends |
+| `count` | no | Default `5`; clamped by `MAX_BATCH_SIZE` (default `8`) |
+| `model` | no | e.g. `vertex/gemini-2.5-flash-image`, Together, or `fal-ai/…` facade |
+| `authMode` | no | `service_account` (default), `api_key`, `vertex_express`. Sent for all models; only Vertex/Gemini paths use it |
+| `referenceImages` | no* | Array of `{ base64, mimeType }`. MIME: jpeg/png/webp/heic/heif. Size: `MAX_REFERENCE_IMAGE_BYTES` / `MAX_TOTAL_REFERENCE_IMAGE_BYTES` |
+| `referenceImageBase64` + `referenceMimeType` | no* | Legacy single-image fields |
+| `aspectRatio` | no | e.g. `1:1`, `2:3`, `3:2`, `9:16`, `16:9`, `21:9`, … |
+| `imageSize` | no | Gemini-style `512` / `1K` / `2K` / `4K`, or Together pixel sizes like `1024x1024` |
+| `steps` | no | Together (and similar); clamped 1–50 |
+| `resizeWidth` + `resizeHeight` | no | Both required together |
+| `aiUpscale` | no | `2` or `3`. **Not supported on Vercel serverless** (`400`) |
 
-### Response shapes
+\*References are optional at the HTTP layer, but most product workflows need at least one image.
 
-**Sync providers** (Vertex, Together, fal) return results immediately:
+#### Success responses
+
+**Sync** (`provider`: `vertex` | `together` | `fal`, and Vertex Express / SA paths):
 
 ```json
 {
@@ -101,15 +127,80 @@ History, archive, zip download, and batch-mode looping are **client-side only** 
 }
 ```
 
-Prefer `blobUrl` when present (Vercel Blob). Otherwise decode `imageBase64`.
+Prefer `blobUrl` when present (Vercel Blob offload). Otherwise decode `imageBase64`. Empty `imageBase64` with a `blobUrl` is normal after upload.
 
-**Async Gemini batch** returns `{ jobId, provider: "gemini" }` without `results`. Poll:
+**Async** (Gemini Developer Batch — typically `authMode: api_key` or non-Vertex Gemini models):
 
-```http
-GET /api/generate?job=<jobId>
+```json
+{
+  "jobId": "batches/…",
+  "provider": "gemini"
+}
 ```
 
-until `state` is `succeeded` and `results` is populated (or `failed` / `cancelled` / `expired`).
+No `results` yet — poll the status endpoint.
+
+### `GET /api/generate?job=<jobId>`
+
+Poll an async batch job. Requires the same access token / rate-limit rules as `POST`.
+
+| `state` | Meaning |
+| ------- | ------- |
+| `pending` | Queued |
+| `running` | In progress |
+| `succeeded` | Done; `results` present when outputs are ready |
+| `failed` / `cancelled` / `expired` | Terminal error (`error` message) |
+
+**Progress** (when the Batch API reports stats):
+
+```json
+{
+  "jobId": "batches/…",
+  "state": "running",
+  "stateLabel": "Running",
+  "stateDetail": "Running for 45s · 2/5 requests done",
+  "progress": {
+    "requestCount": 5,
+    "successfulCount": 2,
+    "failedCount": 0,
+    "pendingCount": 3
+  }
+}
+```
+
+Use `successfulCount + failedCount` vs `requestCount` for UI progress. Images still arrive in bulk when `state` is `succeeded` and `results` is populated.
+
+Poll interval suggestion: **5 seconds**.
+
+### `GET /api/models`
+
+```json
+{
+  "models": [
+    { "code": "vertex/gemini-2.5-flash-image", "name": "Gemini 2.5 Flash Image (Vertex)", "group": "Vertex AI" }
+  ],
+  "defaultModel": "vertex/gemini-2.5-flash-image",
+  "source": "catalog"
+}
+```
+
+`source` is `api` when Gemini list discovery succeeds, otherwise `catalog` (curated fallback). No access token required today (still subject to CORS if configured).
+
+### Error shape
+
+Most errors:
+
+```json
+{ "error": "Human-readable message" }
+```
+
+| Status | Typical cause |
+| ------ | ------------- |
+| `400` | Validation (prompt, refs, resize pair, AI upscale on Vercel, …) |
+| `401` | Missing/invalid `APP_ACCESS_TOKEN` |
+| `413` | Body too large |
+| `429` | Rate limit (`Retry-After` header) |
+| `500` | Provider/server failure (details in server logs) |
 
 ### Example (Node)
 
@@ -137,6 +228,13 @@ curl -s -X POST http://localhost:3000/api/generate `
     \"aspectRatio\": \"2:3\",
     \"referenceImages\": [{ \"base64\": \"$b64\", \"mimeType\": \"image/jpeg\" }]
   }"
+```
+
+Async poll:
+
+```bash
+curl -s "http://localhost:3000/api/generate?job=$jobId" `
+  -H "Authorization: Bearer $env:APP_ACCESS_TOKEN"
 ```
 
 ## Security notes

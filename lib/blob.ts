@@ -56,15 +56,21 @@ export async function uploadImageToBlob(
 /**
  * Batch-upload multiple base64 images to Vercel Blob in parallel.
  * Each upload is independent — if one fails, others continue.
+ * `startIndex` keeps partial-batch filenames stable across polls (001, 002, …).
  */
 export async function uploadBatchToBlob(
   images: Array<{ imageBase64: string; mimeType: string }>,
-  jobId: string
+  jobId: string,
+  startIndex = 0
 ): Promise<Array<BlobUploadResult | undefined>> {
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     console.warn('[blob] BLOB_READ_WRITE_TOKEN not configured — skipping batch upload');
     return images.map(() => undefined);
   }
 
-  return Promise.all(images.map((image, index) => uploadImageToBlob(image.imageBase64, image.mimeType, jobId, index)));
+  return Promise.all(
+    images.map((image, index) =>
+      uploadImageToBlob(image.imageBase64, image.mimeType, jobId, startIndex + index)
+    )
+  );
 }
