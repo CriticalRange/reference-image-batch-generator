@@ -231,6 +231,13 @@ const DEFAULT_BATCH_RATE_LIMIT_SEC = 120;
 const MAX_BATCH_REFERENCE_RETRIES = 4;
 const BATCH_RETRY_BASE_DELAY_MS = 8_000;
 const MAX_BATCH_RATE_LIMIT_SEC = 600;
+/** Interactive /api/generate POST can hang on provider — fail instead of infinite spinner. */
+const MAX_GENERATE_REQUEST_MS = 15 * 60 * 1000;
+/** Async batch poll wall-clock limit (Gemini queue can be long; still not forever). */
+const MAX_BATCH_POLL_MS = 50 * 60 * 1000;
+/** After job reports completed but dest is empty ("Waiting for results…"). */
+const MAX_WAITING_RESULTS_MS = 12 * 60 * 1000;
+const MAX_ANALYZE_REQUEST_MS = 3 * 60 * 1000;
 const MAX_HISTORY_ITEMS = 120;
 const MIN_RESIZE_DIMENSION = 64;
 const MAX_RESIZE_DIMENSION = 8192;
@@ -890,13 +897,33 @@ export default function HomePage() {
     const seconds = generationElapsedSec;
     const translated = t('generatingProgress', { current, total, seconds });
     // Guard against missing i18n key (stale HMR / cold bundle) showing the raw key name.
-    if (!translated || translated === 'generatingProgress') {
-      return language === 'en'
-        ? `generating ${current} / ${total}  ${seconds}s`
-        : `üretiliyor ${current} / ${total}  ${seconds}s`;
+    let base =
+      !translated || translated === 'generatingProgress'
+        ? language === 'en'
+          ? `generating ${current} / ${total}  ${seconds}s`
+          : `üretiliyor ${current} / ${total}  ${seconds}s`
+        : translated;
+
+    // Surface live job phase so long single-mode POSTs / batch queues don't look frozen.
+    const phaseLabel = batchJobUiStatus?.stateLabel?.trim();
+    if (phaseLabel && !base.toLowerCase().includes(phaseLabel.toLowerCase())) {
+      base = `${base} · ${phaseLabel}`;
     }
-    return translated;
-  }, [isLoading, generationCurrent, generationTotal, generationElapsedSec, language, t]);
+    const detail = batchJobUiStatus?.stateDetail?.trim();
+    if (detail && detail.length <= 80) {
+      base = `${base} · ${detail}`;
+    }
+    return base;
+  }, [
+    isLoading,
+    generationCurrent,
+    generationTotal,
+    generationElapsedSec,
+    language,
+    t,
+    batchJobUiStatus?.stateLabel,
+    batchJobUiStatus?.stateDetail
+  ]);
 
   /**
    * Shared batch phase for pending cards.
@@ -2023,26 +2050,40 @@ export default function HomePage() {
       onPartialResults?: (results: GenerationResult[]) => Promise<void>
     ) {
       assertNotCancelled();
-      const submitResponse = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal,
-        body: JSON.stringify({
-          prompt: promptForRun,
-          negativePrompt: submittedNegativePrompt || undefined,
-          count: submittedCount,
-          model: submittedModel,
-          authMode: submittedAuthMode,
-          renderMode: submittedRenderMode,
-          aspectRatio,
-          steps: supportsTogetherSteps ? steps : undefined,
-          imageSize: supportsResolutionSelector ? imageSize : undefined,
-          resizeWidth: resolvedResize?.width,
-          resizeHeight: resolvedResize?.height,
-          aiUpscale: aiUpscale > 0 ? aiUpscale : undefined,
-          referenceImages: refs
-        })
-      });
+      const requestSignal = createTimeoutLinkedSignal(signal, MAX_GENERATE_REQUEST_MS);
+      let submitResponse: Response;
+      try {
+        submitResponse = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: requestSignal,
+          body: JSON.stringify({
+            prompt: promptForRun,
+            negativePrompt: submittedNegativePrompt || undefined,
+            count: submittedCount,
+            model: submittedModel,
+            authMode: submittedAuthMode,
+            renderMode: submittedRenderMode,
+            aspectRatio,
+            steps: supportsTogetherSteps ? steps : undefined,
+            imageSize: supportsResolutionSelector ? imageSize : undefined,
+            resizeWidth: resolvedResize?.width,
+            resizeHeight: resolvedResize?.height,
+            aiUpscale: aiUpscale > 0 ? aiUpscale : undefined,
+            referenceImages: refs
+          })
+        });
+      } catch (fetchError) {
+        if (generationCancelledRef.current || signal.aborted) {
+          throw Object.assign(new Error('Generation cancelled'), { name: 'AbortError' });
+        }
+        if (isAbortLikeError(fetchError)) {
+          throw new Error(
+            t('errorGenerateTimeout', { minutes: Math.round(MAX_GENERATE_REQUEST_MS / 60_000) })
+          );
+        }
+        throw fetchError;
+      }
 
       const submitPayload = await parseApiJsonOrThrow(submitResponse, '/api/generate');
       if (!submitResponse.ok) {
@@ -2061,12 +2102,28 @@ export default function HomePage() {
         const POLL_INTERVAL_MS = 5000;
         let finalStatus: BatchStatusResponse | undefined;
         let lastPartialCount = 0;
+        const pollStartedAt = Date.now();
+        let waitingResultsSince: number | null = null;
 
         while (true) {
           assertNotCancelled();
-          const statusResponse = await fetch(`/api/generate?job=${encodeURIComponent(jobId)}`, {
-            signal
-          });
+          if (Date.now() - pollStartedAt > MAX_BATCH_POLL_MS) {
+            throw new Error(
+              t('errorBatchPollTimeout', { minutes: Math.round(MAX_BATCH_POLL_MS / 60_000) })
+            );
+          }
+
+          let statusResponse: Response;
+          try {
+            statusResponse = await fetch(`/api/generate?job=${encodeURIComponent(jobId)}`, {
+              signal
+            });
+          } catch (pollFetchError) {
+            if (generationCancelledRef.current || signal.aborted) {
+              throw Object.assign(new Error('Generation cancelled'), { name: 'AbortError' });
+            }
+            throw pollFetchError;
+          }
           finalStatus = (await parseApiJsonOrThrow(statusResponse, '/api/generate')) as BatchStatusResponse;
 
           if (!statusResponse.ok) {
@@ -2081,10 +2138,11 @@ export default function HomePage() {
             }
             const stateLower = (polled.state ?? '').toLowerCase();
             const labelLower = (polled.stateLabel ?? '').toLowerCase();
+            const isWaitingResults = labelLower.includes('waiting for results');
             const enteredRunning =
               stateLower === 'running' ||
               stateLower === 'succeeded' ||
-              labelLower.includes('waiting for results');
+              isWaitingResults;
             setBatchJobUiStatus((previous) => {
               let nextState = polled.state;
               // Avoid flashing "In queue" after retry or after we already saw RUNNING.
@@ -2105,6 +2163,20 @@ export default function HomePage() {
               };
             });
           });
+
+          const waitingLabel = (polled.stateLabel ?? '').toLowerCase();
+          if (waitingLabel.includes('waiting for results')) {
+            if (waitingResultsSince == null) waitingResultsSince = Date.now();
+            else if (Date.now() - waitingResultsSince > MAX_WAITING_RESULTS_MS) {
+              throw new Error(
+                t('errorBatchWaitingResultsTimeout', {
+                  minutes: Math.round(MAX_WAITING_RESULTS_MS / 60_000)
+                })
+              );
+            }
+          } else {
+            waitingResultsSince = null;
+          }
 
           // Stream finished variants into pending history cards as they arrive.
           // Skip heavy partial materialization on the terminal poll — the caller commits
@@ -2245,16 +2317,28 @@ export default function HomePage() {
           submittedRefs.map(async (ref, index) => {
             try {
               assertNotCancelled();
-              const response = await fetch('/api/analyze-reference', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                signal,
-                body: JSON.stringify({
-                  base64: ref.base64,
-                  mimeType: ref.mimeType,
-                  fileName: ref.fileName
-                })
-              });
+              const analyzeSignal = createTimeoutLinkedSignal(signal, MAX_ANALYZE_REQUEST_MS);
+              let response: Response;
+              try {
+                response = await fetch('/api/analyze-reference', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  signal: analyzeSignal,
+                  body: JSON.stringify({
+                    base64: ref.base64,
+                    mimeType: ref.mimeType,
+                    fileName: ref.fileName
+                  })
+                });
+              } catch (analyzeFetchError) {
+                if (generationCancelledRef.current || signal.aborted) {
+                  throw Object.assign(new Error('Generation cancelled'), { name: 'AbortError' });
+                }
+                if (isAbortLikeError(analyzeFetchError)) {
+                  throw new Error(t('errorAnalysisTimeout'));
+                }
+                throw analyzeFetchError;
+              }
               const payload = (await response.json().catch(() => ({}))) as {
                 analysis?: ReferenceAnalysis;
                 error?: string;
@@ -5201,6 +5285,51 @@ function buildCommercialCataloguePrompt(input: {
 
 function isTerminalBatchState(state: string): boolean {
   return state === 'succeeded' || state === 'failed' || state === 'cancelled' || state === 'expired';
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const name = (error as { name?: string }).name;
+  return name === 'AbortError' || name === 'TimeoutError';
+}
+
+/** Abort when parent aborts OR after `ms` — prevents infinite hung spinners. */
+function createTimeoutLinkedSignal(parent: AbortSignal, ms: number): AbortSignal {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function') {
+    try {
+      const timeoutSignal =
+        typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : null;
+      if (timeoutSignal) {
+        return AbortSignal.any([parent, timeoutSignal]);
+      }
+    } catch {
+      // Fall through to manual controller.
+    }
+  }
+
+  const controller = new AbortController();
+  if (parent.aborted) {
+    controller.abort(parent.reason);
+    return controller.signal;
+  }
+  const onParentAbort = () => {
+    window.clearTimeout(timer);
+    controller.abort(parent.reason);
+  };
+  const timer = window.setTimeout(() => {
+    parent.removeEventListener('abort', onParentAbort);
+    controller.abort();
+  }, ms);
+  parent.addEventListener('abort', onParentAbort, { once: true });
+  controller.signal.addEventListener(
+    'abort',
+    () => {
+      window.clearTimeout(timer);
+      parent.removeEventListener('abort', onParentAbort);
+    },
+    { once: true }
+  );
+  return controller.signal;
 }
 
 async function parseApiJsonOrThrow(response: Response, routeLabel: string): Promise<unknown> {

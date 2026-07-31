@@ -174,6 +174,13 @@ const resources = {
       toastReferenceReadFailed: 'Reference image read failed',
       toastReferenceReadFailedDesc: 'Please choose a valid image file and try again.',
       errorGenerationFailed: 'Generation failed.',
+      errorGenerateTimeout:
+        'Generation request timed out after {{minutes}} minutes with no response. Cancel and try again (or switch production mode).',
+      errorBatchPollTimeout:
+        'Batch job did not finish within {{minutes}} minutes. It may still be running on the provider — try again later or use Cancel.',
+      errorBatchWaitingResultsTimeout:
+        'Batch completed but results were not available within {{minutes}} minutes. Retry this product.',
+      errorAnalysisTimeout: 'Reference analysis timed out. Continuing without AI analysis for this product failed — retry or turn off auto-analysis.',
       unexpectedError: 'Unexpected error',
       toastGenerationCompleted: 'Generation completed',
       toastGenerationCompletedDesc: '{{count}} variant(s) are ready to view and download.',
@@ -425,6 +432,14 @@ const resources = {
       toastReferenceReadFailed: 'Referans görsel okunamadı',
       toastReferenceReadFailedDesc: 'Lütfen geçerli bir görsel dosyası seçip tekrar deneyin.',
       errorGenerationFailed: 'Üretim başarısız oldu.',
+      errorGenerateTimeout:
+        'Üretim isteği {{minutes}} dakika içinde yanıt vermedi. İptal edip tekrar deneyin (veya üretim modunu değiştirin).',
+      errorBatchPollTimeout:
+        'Toplu iş {{minutes}} dakika içinde bitmedi. Sağlayıcıda hâlâ çalışıyor olabilir — sonra tekrar deneyin veya İptal’e basın.',
+      errorBatchWaitingResultsTimeout:
+        'İş tamamlandı görünüyor ama sonuçlar {{minutes}} dakika içinde gelmedi. Bu ürünü yeniden deneyin.',
+      errorAnalysisTimeout:
+        'Referans analizi zaman aşımına uğradı. AI otomatik tahmini kapatıp tekrar deneyebilirsiniz.',
       unexpectedError: 'Beklenmeyen hata',
       toastGenerationCompleted: 'Üretim tamamlandı',
       toastGenerationCompletedDesc: '{{count}} varyant görüntüleme ve indirme için hazır.',

@@ -455,13 +455,21 @@ Sparse decor (books, ceramics, art, textile, plant). Optional floor lamp is a pr
 </interior>
 
 <lighting>
-ONE light hierarchy only — do not stack full-strength systems.
-KEY: soft overcast daylight from a single large window (~5000–5500K). No hard sun, no competing skylight, no HDR high-key.
-FILL: 15–25% of key via gentle bounce; keep contact shadows and soft penumbra. Do not milky-lift shadows.
-PRACTICAL: if a lamp is visible, low warm (2700–3000K) only — must not raise overall exposure.
-BOUNCE: at most 1–2 soft wall/floor bounces. No multi-GI ambient soup or sky-fill wash.
-EXPOSURE: medium catalogue midtones and gentle contrast. Walls/floors below pure white. Anthracite stays deep; whites clean not glowing; wood keeps range. No overexposure, bleached plaster, high-key wash, or heavy bloom.
-Do not let lighting alter catalog colors.
+Use one coherent natural lighting system.
+
+KEY: soft overcast daylight from one large off-camera window, entering from the front-side at a gentle angle. Create natural depth, soft directional shadows and gradual light falloff. No hard sun or second key light.
+
+PORTAL / SKY: guide soft exterior daylight naturally through the window, with a restrained cool-neutral sky tone in indirect shadows. Do not create a blue cast, glowing window or flat HDR illumination.
+
+FILL: low neutral bounce fill only to preserve essential shadow-side detail. Keep visible contact shadows, panel depth and soft occlusion; do not flatten the product or lift blacks.
+
+GRAZING: subtle side-grazing daylight from the same window direction to reveal existing wood grain, travertine texture, laser patterns and plexiglass edges. Never invent or exaggerate surface depth.
+
+RIM: only a faint natural edge separation where needed, created by window spill or wall bounce. No studio halo, neon outline or bright border.
+
+PRACTICAL: any visible lamp stays dim and warm and must not become a second key light.
+
+Use medium premium catalogue exposure, controlled reflections, clean whites, deep anthracite and realistic material colors. No high-key wash, blown highlights, milky shadows, heavy bloom or contradictory light directions.
 </lighting>
 
 <avoid>
@@ -472,7 +480,7 @@ Wrong proportions/category (this is a ${analysis.productTypeLabel}), invented ha
   }, recessed/embedded plexiglass, chrome/liquid-metal mirrors, free-form recolor, heavy grade/WB shifts, dual keys, high fill that erases shadows, over-bright bounce, milky midtones, plastic surfaces, strong vignette, noise.
 </avoid>
 
-GENERATE. Same product identity, construction, installation and composition as the reference. ${legGenerateLine} Single soft window key, low fill, preserved contact shadows, realistic materials, medium catalogue exposure — no high-key wash.`;
+GENERATE. Same product identity, construction, installation and composition as the reference. ${legGenerateLine} One coherent natural lighting system (front-side soft window key, low fill, subtle grazing, no second key), realistic materials, medium premium catalogue exposure — no high-key wash.`;
 }
 
 function buildLegsBlock(
