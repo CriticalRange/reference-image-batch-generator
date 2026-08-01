@@ -56,6 +56,8 @@ const resources = {
       toastReferenceRequired: 'Product photo required',
       basePrompt: 'Base Prompt (optional)',
       productColorPlaceholder: 'Product color variant',
+      bodyColorPlaceholder: 'Body color',
+      doorColorPlaceholder: 'Door color',
       plexiglassPlaceholder: 'Decorative plexiglass',
       mountingPlaceholder: 'Mounting type',
       handlePresencePlaceholder: 'Handle',
@@ -63,7 +65,7 @@ const resources = {
       accentColorPlaceholder: 'Accent color',
       handlePlaceholder: 'Handle design and color (optional — defaults to reference match)',
       productOptionsPromptHint:
-        'Choosing a product color fills/overwrites the prompt with the commercial catalogue template. When AI auto-analysis is on, Gemini Flash also analyzes each reference and builds a product-specific prompt (editable on loading cards).',
+        'Choosing body + door colors fills/overwrites the prompt with the commercial catalogue template. When AI auto-analysis is on, Gemini Flash analyzes each reference (separate body/door colors) and builds a product-specific prompt (editable on loading cards).',
       autoAiAnalysis: 'AI auto-analysis',
       analysisFailed: 'Reference analysis failed',
       toastAnalysisFailed: 'Analysis failed: {{product}}',
@@ -98,6 +100,21 @@ const resources = {
         'anthracite-body-travertine-doors': 'Anthracite body + travertine doors',
         'sapphire-oak-body-white-doors': 'Sapphire oak body + white doors',
         'alina-walnut-laser': 'Alina walnut (laser patterned)'
+      },
+      bodyColorOptions: {
+        white: 'Body: white',
+        anthracite: 'Body: anthracite',
+        'sapphire-oak': 'Body: sapphire oak',
+        'alina-walnut': 'Body: Alina walnut',
+        'alina-walnut-laser': 'Body: Alina walnut (laser)'
+      },
+      doorColorOptions: {
+        white: 'Doors: white',
+        anthracite: 'Doors: anthracite',
+        travertine: 'Doors: travertine',
+        'sapphire-oak': 'Doors: sapphire oak',
+        'alina-walnut': 'Doors: Alina walnut',
+        'alina-walnut-laser': 'Doors: Alina walnut (laser)'
       },
       plexiglassOptions: {
         none: 'Plexiglass: none',
@@ -316,6 +333,8 @@ const resources = {
       toastReferenceRequired: 'Ürün fotoğrafı gerekli',
       basePrompt: 'Ana İstem (opsiyonel)',
       productColorPlaceholder: 'Ürün renk varyantı',
+      bodyColorPlaceholder: 'Gövde rengi',
+      doorColorPlaceholder: 'Kapak rengi',
       plexiglassPlaceholder: 'Dekoratif pleksi',
       mountingPlaceholder: 'Montaj tipi',
       handlePresencePlaceholder: 'Kulp',
@@ -323,7 +342,7 @@ const resources = {
       accentColorPlaceholder: 'Aksan rengi',
       handlePlaceholder: 'Kulp tasarımı ve rengi (opsiyonel — boşsa referansa uy)',
       productOptionsPromptHint:
-        'Ürün rengi seçilince prompt katalog şablonuyla dolar. AI otomatik tahmin açıksa her referans Gemini Flash ile analiz edilir; loading kartlara tıklayarak tahminleri ve prompt’u düzenleyebilirsiniz.',
+        'Gövde + kapak rengi seçilince prompt katalog şablonuyla dolar. AI otomatik tahmin açıksa her referans Gemini Flash ile analiz edilir (gövde/kapak ayrı); loading kartlara tıklayarak tahminleri ve prompt’u düzenleyebilirsiniz.',
       autoAiAnalysis: 'AI otomatik tahmin',
       analysisFailed: 'Referans analizi başarısız',
       toastAnalysisFailed: 'Analiz başarısız: {{product}}',
@@ -358,6 +377,21 @@ const resources = {
         'anthracite-body-travertine-doors': 'Antrasit gövde + traverten kapak',
         'sapphire-oak-body-white-doors': 'Safir meşe gövde + beyaz kapak',
         'alina-walnut-laser': 'Alina ceviz (lazer desenli)'
+      },
+      bodyColorOptions: {
+        white: 'Gövde: beyaz',
+        anthracite: 'Gövde: antrasit',
+        'sapphire-oak': 'Gövde: safir meşe',
+        'alina-walnut': 'Gövde: Alina ceviz',
+        'alina-walnut-laser': 'Gövde: Alina ceviz (lazer)'
+      },
+      doorColorOptions: {
+        white: 'Kapak: beyaz',
+        anthracite: 'Kapak: antrasit',
+        travertine: 'Kapak: traverten',
+        'sapphire-oak': 'Kapak: safir meşe',
+        'alina-walnut': 'Kapak: Alina ceviz',
+        'alina-walnut-laser': 'Kapak: Alina ceviz (lazer)'
       },
       plexiglassOptions: {
         none: 'Pleksi: yok',

@@ -3,6 +3,24 @@
  * Predictions are constrained to the same dropdown enums as the base-prompt form.
  */
 
+/** Body (carcass / gövde) finish — no travertine body in catalog. */
+export type BodyColorOption =
+  | 'white'
+  | 'anthracite'
+  | 'sapphire-oak'
+  | 'alina-walnut'
+  | 'alina-walnut-laser';
+
+/** Door / panel (kapak) finish. */
+export type DoorColorOption =
+  | 'white'
+  | 'anthracite'
+  | 'travertine'
+  | 'sapphire-oak'
+  | 'alina-walnut'
+  | 'alina-walnut-laser';
+
+/** @deprecated Combined legacy catalog variant — kept for history migration only. */
 export type ProductColorOption =
   | 'white'
   | 'white-body-travertine-doors'
@@ -23,6 +41,22 @@ export type AccentColorOption =
   | 'champagne-gold'
   | 'charcoal-grey';
 
+export const BODY_COLOR_VALUES: BodyColorOption[] = [
+  'white',
+  'anthracite',
+  'sapphire-oak',
+  'alina-walnut',
+  'alina-walnut-laser'
+];
+export const DOOR_COLOR_VALUES: DoorColorOption[] = [
+  'white',
+  'anthracite',
+  'travertine',
+  'sapphire-oak',
+  'alina-walnut',
+  'alina-walnut-laser'
+];
+/** @deprecated Use BODY_COLOR_VALUES / DOOR_COLOR_VALUES. */
 export const PRODUCT_COLOR_VALUES: ProductColorOption[] = [
   'white',
   'white-body-travertine-doors',
@@ -65,8 +99,10 @@ export const PRODUCT_TYPE_VALUES: ProductTypeOption[] = [
 export type ReferenceAnalysis = {
   productType: ProductTypeOption;
   productTypeLabel: string;
-  /** Same enum as base-prompt product color dropdown */
-  productColor: ProductColorOption;
+  /** Body / carcass finish (gövde). */
+  bodyColor: BodyColorOption;
+  /** Door / panel finish (kapak). */
+  doorColor: DoorColorOption;
   mounting: MountingOption;
   plexiglass: PlexiglassOption;
   handlePresence: HandlePresenceOption;
@@ -93,55 +129,47 @@ export type ReferenceAnalysis = {
 
 export type ReferenceAnalysisDraft = Omit<ReferenceAnalysis, 'prompt'> & {
   prompt?: string;
+  /** Legacy combined field from older history / API responses. */
+  productColor?: string;
 };
 
-const COLOR_MATERIALS: Record<
-  ProductColorOption,
-  { body: string; door: string; top: string; legs: string; summary: string }
-> = {
-  white: {
-    body: 'matte white premium furniture lacquer',
-    door: 'matte white premium furniture lacquer',
-    top: 'matte white premium furniture lacquer',
-    legs: 'as shown in the reference (match white / metal finish)',
-    summary: 'All-white lacquer furniture'
-  },
-  'white-body-travertine-doors': {
-    body: 'matte white premium furniture lacquer',
-    door: 'natural travertine stone-look doors',
-    top: 'matte white premium furniture lacquer',
-    legs: 'as shown in the reference',
-    summary: 'White body with travertine doors'
-  },
-  anthracite: {
-    body: 'anthracite premium furniture finish',
-    door: 'anthracite premium furniture finish',
-    top: 'anthracite premium furniture finish',
-    legs: 'as shown in the reference (match anthracite / metal finish)',
-    summary: 'All-anthracite furniture'
-  },
-  'anthracite-body-travertine-doors': {
-    body: 'anthracite premium furniture finish',
-    door: 'natural travertine stone-look doors',
-    top: 'anthracite premium furniture finish',
-    legs: 'as shown in the reference',
-    summary: 'Anthracite body with travertine doors'
-  },
-  'sapphire-oak-body-white-doors': {
-    body: 'sapphire oak wood veneer with natural grain',
-    door: 'matte white premium furniture lacquer',
-    top: 'sapphire oak wood veneer with natural grain',
-    legs: 'as shown in the reference',
-    summary: 'Sapphire oak body with white doors'
-  },
-  'alina-walnut-laser': {
-    body: 'Alina walnut wood veneer with warm natural grain',
-    door: 'Alina walnut wood veneer with warm natural grain and laser-engraved decorative patterns',
-    top: 'Alina walnut wood veneer with warm natural grain',
-    legs: 'as shown in the reference (match walnut / metal finish)',
-    summary: 'Alina walnut with laser patterns'
-  }
+const FINISH_MATERIAL: Record<string, string> = {
+  white: 'matte white premium furniture lacquer',
+  anthracite: 'anthracite premium furniture finish',
+  travertine: 'natural travertine stone-look finish',
+  'sapphire-oak': 'sapphire oak wood veneer with natural grain',
+  'alina-walnut': 'Alina walnut wood veneer with warm natural grain',
+  'alina-walnut-laser':
+    'Alina walnut wood veneer with warm natural grain and laser-engraved decorative patterns'
 };
+
+function finishLabel(code: string): string {
+  switch (code) {
+    case 'white':
+      return 'white';
+    case 'anthracite':
+      return 'anthracite';
+    case 'travertine':
+      return 'travertine';
+    case 'sapphire-oak':
+      return 'sapphire oak';
+    case 'alina-walnut':
+      return 'Alina walnut';
+    case 'alina-walnut-laser':
+      return 'Alina walnut (laser)';
+    default:
+      return code;
+  }
+}
+
+function legsMaterialForBody(bodyColor: BodyColorOption): string {
+  if (bodyColor === 'white') return 'as shown in the reference (match white / metal finish)';
+  if (bodyColor === 'anthracite') return 'as shown in the reference (match anthracite / metal finish)';
+  if (bodyColor === 'alina-walnut' || bodyColor === 'alina-walnut-laser') {
+    return 'as shown in the reference (match walnut / metal finish)';
+  }
+  return 'as shown in the reference';
+}
 
 const PRODUCT_TYPE_LABELS_EN: Record<ProductTypeOption, string> = {
   console: 'Console',
@@ -167,7 +195,8 @@ Analyze the single furniture product in the image. Ignore background as product 
 Return ONLY valid JSON (no markdown) with exactly these keys and ONLY the allowed enum values:
 {
   "productType": "console|dresser|tv_unit|tv_wall_mounted|tv_stand|tv_with_top_shelf",
-  "productColor": "white|white-body-travertine-doors|anthracite|anthracite-body-travertine-doors|sapphire-oak-body-white-doors|alina-walnut-laser",
+  "bodyColor": "white|anthracite|sapphire-oak|alina-walnut|alina-walnut-laser",
+  "doorColor": "white|anthracite|travertine|sapphire-oak|alina-walnut|alina-walnut-laser",
   "mounting": "floor-standing|wall-mounted",
   "plexiglass": "none|gold-mirror|silver-mirror",
   "handlePresence": "with-handle|no-handle",
@@ -190,14 +219,13 @@ CRITICAL — productType must be ONE of these six catalog types only (Turkish sh
 - tv_stand (TV Sehpası): TV stand / low TV table / media table, often more open or lighter than a full TV unit
 - tv_with_top_shelf (TV Üst Raflı): TV unit that includes a distinct upper shelf / top shelf structure above the main body
 
-CRITICAL — productColor must be ONE of the six catalog variants only. Do NOT invent free-text colors like "light grey" or "beige matte".
-Pick the closest catalog match:
-- white: overall white body+doors
-- white-body-travertine-doors: white body, travertine/stone-look doors
-- anthracite: overall dark grey/anthracite
-- anthracite-body-travertine-doors: anthracite body, travertine doors
-- sapphire-oak-body-white-doors: oak/wood body, white doors
-- alina-walnut-laser: Alina walnut (ceviz) finish overall, typically with laser-engraved decorative patterns — prefer hasLaserPatterns true
+CRITICAL — bodyColor and doorColor are SEPARATE. Do NOT invent free-text colors.
+bodyColor (gövde / carcass / sides / top structure — not door faces): white | anthracite | sapphire-oak | alina-walnut | alina-walnut-laser
+doorColor (kapak / door panels only): white | anthracite | travertine | sapphire-oak | alina-walnut | alina-walnut-laser
+- Judge body and doors independently (e.g. white body + travertine doors, sapphire-oak body + white doors, full alina-walnut-laser).
+- travertine is door-only in this catalog — never use travertine as bodyColor.
+- alina-walnut-laser = Alina walnut (ceviz) with laser engraving on that part; set hasLaserPatterns true if either part is laser or laser lines are visible.
+- If body and doors match, set the same enum on both (e.g. both white).
 
 Rules:
 - Do not invent product types outside the six enums. Prefer the closest match.
@@ -230,8 +258,16 @@ export function buildAnalysisUserText(fileName?: string): string {
   return `Analyze this furniture product reference photo.${name} Return JSON only using the allowed enum values.`;
 }
 
-export function resolveColorMaterials(productColor: ProductColorOption) {
-  return COLOR_MATERIALS[productColor];
+export function resolveColorMaterials(bodyColor: BodyColorOption, doorColor: DoorColorOption) {
+  const body = FINISH_MATERIAL[bodyColor] ?? FINISH_MATERIAL.white;
+  const door = FINISH_MATERIAL[doorColor] ?? FINISH_MATERIAL.white;
+  const top = body;
+  const legs = legsMaterialForBody(bodyColor);
+  const summary =
+    bodyColor === doorColor
+      ? `All-${finishLabel(bodyColor)} furniture`
+      : `${finishLabel(bodyColor)} body with ${finishLabel(doorColor)} doors`;
+  return { body, door, top, legs, summary, bodyColor, doorColor };
 }
 
 export function productTypeLabel(type: ProductTypeOption, language: 'tr' | 'en' = 'tr'): string {
@@ -247,7 +283,7 @@ export function parseAnalysisJson(raw: string): ReferenceAnalysisDraft {
   const parsed = JSON.parse(cleaned) as Record<string, unknown>;
 
   const productType = normalizeProductType(parsed.productType ?? parsed.productTypeLabel);
-  const productColor = normalizeProductColor(parsed.productColor ?? parsed.colorVariant ?? parsed.color);
+  const { bodyColor, doorColor } = resolveBodyDoorColors(parsed);
   const mounting = normalizeEnum(parsed.mounting, MOUNTING_VALUES, 'floor-standing');
   const plexiglass = normalizePlexiglass(parsed.plexiglass);
   const handlePresence = normalizeHandlePresence(parsed.handlePresence);
@@ -256,18 +292,23 @@ export function parseAnalysisJson(raw: string): ReferenceAnalysisDraft {
   const confidence = clamp01(
     typeof parsed.confidence === 'number' ? parsed.confidence : Number(parsed.confidence)
   );
+  const hasLaserPatterns =
+    Boolean(parsed.hasLaserPatterns) ||
+    bodyColor === 'alina-walnut-laser' ||
+    doorColor === 'alina-walnut-laser';
 
   return {
     productType,
     productTypeLabel: productTypeLabel(productType, 'tr'),
-    productColor,
+    bodyColor,
+    doorColor,
     mounting,
     plexiglass,
     handlePresence,
     handleDescription: String(parsed.handleDescription ?? '').trim(),
     roomStyle,
     accentColor,
-    hasLaserPatterns: Boolean(parsed.hasLaserPatterns),
+    hasLaserPatterns,
     doorCount: normalizeDoorCount(parsed.doorCount),
     legCount: normalizeLegCount(parsed.legCount, mounting),
     legLayout: normalizeLegLayout(parsed.legLayout, mounting, parsed.legCount),
@@ -278,25 +319,30 @@ export function parseAnalysisJson(raw: string): ReferenceAnalysisDraft {
 
 export function finalizeAnalysis(draft: ReferenceAnalysisDraft): ReferenceAnalysis {
   const productType = normalizeProductType(draft.productType ?? draft.productTypeLabel);
-  const productColor = normalizeProductColor(draft.productColor);
+  const { bodyColor, doorColor } = resolveBodyDoorColors(draft as unknown as Record<string, unknown>);
   const mounting = normalizeEnum(draft.mounting, MOUNTING_VALUES, 'floor-standing');
   const plexiglass = normalizePlexiglass(draft.plexiglass);
   const handlePresence = normalizeHandlePresence(draft.handlePresence);
   const roomStyle = normalizeEnum(draft.roomStyle, ROOM_STYLE_VALUES, 'modern');
   const accentColor = normalizeEnum(draft.accentColor, ACCENT_COLOR_VALUES, 'warm-beige');
   const legCount = normalizeLegCount(draft.legCount, mounting);
+  const hasLaserPatterns =
+    Boolean(draft.hasLaserPatterns) ||
+    bodyColor === 'alina-walnut-laser' ||
+    doorColor === 'alina-walnut-laser';
 
   const normalized: Omit<ReferenceAnalysis, 'prompt'> = {
     productType,
     productTypeLabel: productTypeLabel(productType, 'tr'),
-    productColor,
+    bodyColor,
+    doorColor,
     mounting,
     plexiglass,
     handlePresence,
     handleDescription: String(draft.handleDescription ?? '').trim(),
     roomStyle,
     accentColor,
-    hasLaserPatterns: Boolean(draft.hasLaserPatterns),
+    hasLaserPatterns,
     doorCount: normalizeDoorCount(draft.doorCount),
     // Wall-mounted / no freestanding legs → leg count is disabled (null).
     legCount,
@@ -352,7 +398,7 @@ function normalizeLegLayout(
 export function buildCommercialCataloguePromptFromAnalysis(
   analysis: Omit<ReferenceAnalysis, 'prompt'>
 ): string {
-  const colors = resolveColorMaterials(analysis.productColor);
+  const colors = resolveColorMaterials(analysis.bodyColor, analysis.doorColor);
   const mountingBlock = buildMountingBlock(analysis.mounting, analysis.legCount);
   const handleBlock =
     analysis.handlePresence === 'with-handle'
@@ -397,10 +443,10 @@ export function buildCommercialCataloguePromptFromAnalysis(
       : analysis.mounting === 'wall-mounted'
         ? 'HARD LEG COUNT: 0 / none (wall-mounted).'
         : '',
-    `Catalog color variant: ${analysis.productColor} — ${colors.summary}.`,
-    `Body: ${colors.body}.`,
-    `Doors: ${colors.door}.`,
-    `Top: ${colors.top}.`,
+    `Body color: ${analysis.bodyColor} — ${colors.body}.`,
+    `Door color: ${analysis.doorColor} — ${colors.door}.`,
+    `Top: ${colors.top} (match body).`,
+    `Catalog finishes: ${colors.summary}.`,
     `Installation: ${analysis.mounting}.`,
     `Room style: ${analysis.roomStyle}. Accent: ${analysis.accentColor.replace(/-/g, ' ')}.`
   ]
@@ -596,32 +642,125 @@ function normalizeProductType(value: unknown): ProductTypeOption {
   return 'console';
 }
 
-function normalizeProductColor(value: unknown): ProductColorOption {
+function resolveBodyDoorColors(source: Record<string, unknown>): {
+  bodyColor: BodyColorOption;
+  doorColor: DoorColorOption;
+} {
+  const hasBody = source.bodyColor != null && String(source.bodyColor).trim() !== '';
+  const hasDoor = source.doorColor != null && String(source.doorColor).trim() !== '';
+
+  if (hasBody || hasDoor) {
+    return {
+      bodyColor: normalizeBodyColor(source.bodyColor ?? source.doorColor),
+      doorColor: normalizeDoorColor(source.doorColor ?? source.bodyColor)
+    };
+  }
+
+  // Legacy combined productColor / free-text color fields
+  return splitLegacyProductColor(
+    source.productColor ?? source.colorVariant ?? source.color ?? source.bodyColorMaterial
+  );
+}
+
+/** Map old single-dropdown codes (and free text) → body + door. */
+export function splitLegacyProductColor(value: unknown): {
+  bodyColor: BodyColorOption;
+  doorColor: DoorColorOption;
+} {
   const raw = String(value ?? '')
     .trim()
     .toLowerCase()
     .replace(/\s+/g, '-')
     .replace(/_/g, '-');
 
-  if (PRODUCT_COLOR_VALUES.includes(raw as ProductColorOption)) {
-    return raw as ProductColorOption;
+  switch (raw as ProductColorOption | string) {
+    case 'white':
+      return { bodyColor: 'white', doorColor: 'white' };
+    case 'white-body-travertine-doors':
+      return { bodyColor: 'white', doorColor: 'travertine' };
+    case 'anthracite':
+      return { bodyColor: 'anthracite', doorColor: 'anthracite' };
+    case 'anthracite-body-travertine-doors':
+      return { bodyColor: 'anthracite', doorColor: 'travertine' };
+    case 'sapphire-oak-body-white-doors':
+      return { bodyColor: 'sapphire-oak', doorColor: 'white' };
+    case 'alina-walnut-laser':
+      return { bodyColor: 'alina-walnut-laser', doorColor: 'alina-walnut-laser' };
+    case 'alina-walnut':
+      return { bodyColor: 'alina-walnut', doorColor: 'alina-walnut' };
+    case 'sapphire-oak':
+      return { bodyColor: 'sapphire-oak', doorColor: 'sapphire-oak' };
+    case 'travertine':
+      return { bodyColor: 'white', doorColor: 'travertine' };
+    default:
+      break;
   }
 
-  // Heuristic closest-match from free-text / legacy fields
   const hasTravertine = /travertine|stone|mermer|traverten/.test(raw);
   const hasOak = /oak|meşe|mese|sapphir|safir/.test(raw);
+  const hasAlinaLaser = /alina.*lazer|alina.*laser|lazer.*ceviz|laser.*walnut/.test(raw);
   const hasAlinaWalnut = /alina|ceviz|walnut|cevizli/.test(raw);
   const hasAnthracite = /anthracite|antrasit|dark.?grey|dark.?gray|charcoal|siyah.?gri/.test(raw);
   const hasWhite = /white|beyaz/.test(raw);
 
-  if (hasAlinaWalnut) return 'alina-walnut-laser';
-  if (hasOak && hasWhite) return 'sapphire-oak-body-white-doors';
-  if (hasAnthracite && hasTravertine) return 'anthracite-body-travertine-doors';
-  if (hasWhite && hasTravertine) return 'white-body-travertine-doors';
-  if (hasAnthracite) return 'anthracite';
-  if (hasWhite) return 'white';
-  if (hasOak) return 'sapphire-oak-body-white-doors';
+  if (hasAlinaLaser) return { bodyColor: 'alina-walnut-laser', doorColor: 'alina-walnut-laser' };
+  if (hasAlinaWalnut) return { bodyColor: 'alina-walnut', doorColor: 'alina-walnut' };
+  if (hasOak && hasWhite) return { bodyColor: 'sapphire-oak', doorColor: 'white' };
+  if (hasAnthracite && hasTravertine) return { bodyColor: 'anthracite', doorColor: 'travertine' };
+  if (hasWhite && hasTravertine) return { bodyColor: 'white', doorColor: 'travertine' };
+  if (hasAnthracite) return { bodyColor: 'anthracite', doorColor: 'anthracite' };
+  if (hasOak) return { bodyColor: 'sapphire-oak', doorColor: 'sapphire-oak' };
+  if (hasWhite) return { bodyColor: 'white', doorColor: 'white' };
+  return { bodyColor: 'white', doorColor: 'white' };
+}
 
+function normalizeBodyColor(value: unknown): BodyColorOption {
+  const raw = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/_/g, '-');
+  if (BODY_COLOR_VALUES.includes(raw as BodyColorOption)) {
+    return raw as BodyColorOption;
+  }
+  // Common mistakes / aliases
+  if (raw === 'travertine' || raw.includes('travert')) return 'white';
+  if (raw.includes('alina') && (raw.includes('laser') || raw.includes('lazer'))) {
+    return 'alina-walnut-laser';
+  }
+  if (raw.includes('alina') || raw.includes('ceviz') || raw.includes('walnut')) return 'alina-walnut';
+  if (raw.includes('oak') || raw.includes('meşe') || raw.includes('safir')) return 'sapphire-oak';
+  if (raw.includes('anthracite') || raw.includes('antrasit')) return 'anthracite';
+  if (raw.includes('white') || raw.includes('beyaz')) return 'white';
+  // Legacy combo codes
+  if (raw.includes('sapphire-oak-body')) return 'sapphire-oak';
+  if (raw.includes('anthracite-body')) return 'anthracite';
+  if (raw.includes('white-body')) return 'white';
+  return 'white';
+}
+
+function normalizeDoorColor(value: unknown): DoorColorOption {
+  const raw = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/_/g, '-');
+  if (DOOR_COLOR_VALUES.includes(raw as DoorColorOption)) {
+    return raw as DoorColorOption;
+  }
+  if (raw.includes('travert') || raw.includes('mermer') || raw.includes('stone')) return 'travertine';
+  if (raw.includes('alina') && (raw.includes('laser') || raw.includes('lazer'))) {
+    return 'alina-walnut-laser';
+  }
+  if (raw.includes('alina') || raw.includes('ceviz') || raw.includes('walnut')) return 'alina-walnut';
+  if (raw.includes('oak') || raw.includes('meşe') || raw.includes('safir')) return 'sapphire-oak';
+  if (raw.includes('anthracite') || raw.includes('antrasit')) return 'anthracite';
+  if (raw.includes('white') || raw.includes('beyaz')) return 'white';
+  // Legacy combo codes → door side
+  if (raw.includes('travertine-doors')) return 'travertine';
+  if (raw.includes('white-doors')) return 'white';
+  if (raw === 'sapphire-oak-body-white-doors') return 'white';
+  if (raw === 'alina-walnut-laser') return 'alina-walnut-laser';
   return 'white';
 }
 

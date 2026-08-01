@@ -24,11 +24,13 @@ import {
 } from '@/lib/modelOptions';
 import { InfoHint, Tooltip } from '@/app/components/tooltip';
 import {
+  BODY_COLOR_VALUES,
+  DOOR_COLOR_VALUES,
   finalizeAnalysis,
-  PRODUCT_COLOR_VALUES,
   PRODUCT_TYPE_VALUES,
   productTypeLabel,
-  type ProductColorOption as AnalysisProductColor,
+  type BodyColorOption,
+  type DoorColorOption,
   type ProductTypeOption,
   type ReferenceAnalysis,
   type ReferenceAnalysisDraft
@@ -213,13 +215,6 @@ type ResolutionOption =  | '512'
   | '1344x768'
   | '1536x672';
 type ResizePresetOption = 'none' | '2000x3000' | '1536x2048' | '1696x2528' | '2048x2048' | 'custom';
-type ProductColorOption =
-  | 'white'
-  | 'white-body-travertine-doors'
-  | 'anthracite'
-  | 'anthracite-body-travertine-doors'
-  | 'sapphire-oak-body-white-doors'
-  | 'alina-walnut-laser';
 type PlexiglassOption = 'none' | 'gold-mirror' | 'silver-mirror';
 type MountingOption = 'floor-standing' | 'wall-mounted';
 type HandlePresenceOption = 'with-handle' | 'no-handle';
@@ -273,14 +268,8 @@ const TOGETHER_RESOLUTION_OPTIONS: ResolutionOption[] = [
 ];
 const ALL_RESOLUTION_OPTIONS: ResolutionOption[] = [...RESOLUTION_OPTIONS, ...TOGETHER_RESOLUTION_OPTIONS];
 const RESIZE_PRESET_OPTIONS: Array<Exclude<ResizePresetOption, 'custom'>> = ['none', '2000x3000', '1536x2048', '1696x2528', '2048x2048'];
-const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = [
-  'white',
-  'white-body-travertine-doors',
-  'anthracite',
-  'anthracite-body-travertine-doors',
-  'sapphire-oak-body-white-doors',
-  'alina-walnut-laser'
-];
+const BODY_COLOR_OPTIONS: BodyColorOption[] = [...BODY_COLOR_VALUES];
+const DOOR_COLOR_OPTIONS: DoorColorOption[] = [...DOOR_COLOR_VALUES];
 const PLEXIGLASS_OPTIONS: PlexiglassOption[] = ['none', 'gold-mirror', 'silver-mirror'];
 const MOUNTING_OPTIONS: MountingOption[] = ['floor-standing', 'wall-mounted'];
 const HANDLE_PRESENCE_OPTIONS: HandlePresenceOption[] = ['with-handle', 'no-handle'];
@@ -710,7 +699,8 @@ const INITIAL_MODEL_OPTIONS = sortModelOptions(
 export default function HomePage() {
   const { t, i18n } = useTranslation();
   const [prompt, setPrompt] = useState('');
-  const [selectedProductColor, setSelectedProductColor] = useState<ProductColorOption | ''>('');
+  const [selectedBodyColor, setSelectedBodyColor] = useState<BodyColorOption | ''>('');
+  const [selectedDoorColor, setSelectedDoorColor] = useState<DoorColorOption | ''>('');
   const [selectedPlexiglass, setSelectedPlexiglass] = useState<PlexiglassOption>('none');
   const [selectedMounting, setSelectedMounting] = useState<MountingOption>('floor-standing');
   const [selectedHandlePresence, setSelectedHandlePresence] = useState<HandlePresenceOption>('with-handle');
@@ -1092,13 +1082,14 @@ export default function HomePage() {
 
   useEffect(() => {
     // Selecting product options overwrites the base prompt with the commercial catalogue template.
-    if (!selectedProductColor) {
+    if (!selectedBodyColor || !selectedDoorColor) {
       return;
     }
 
     setPrompt(
       buildCommercialCataloguePrompt({
-        color: selectedProductColor,
+        bodyColor: selectedBodyColor,
+        doorColor: selectedDoorColor,
         plexiglass: selectedPlexiglass,
         mounting: selectedMounting,
         handlePresence: selectedHandlePresence,
@@ -1108,7 +1099,8 @@ export default function HomePage() {
       })
     );
   }, [
-    selectedProductColor,
+    selectedBodyColor,
+    selectedDoorColor,
     selectedPlexiglass,
     selectedMounting,
     selectedHandlePresence,
@@ -2284,9 +2276,10 @@ export default function HomePage() {
     // Manual catalogue template from product option dropdowns (used when AI auto-analysis is off
     // or as fallback when analysis fails / prompt field is empty).
     const manualCataloguePrompt =
-      selectedProductColor
+      selectedBodyColor && selectedDoorColor
         ? buildCommercialCataloguePrompt({
-            color: selectedProductColor,
+            bodyColor: selectedBodyColor,
+            doorColor: selectedDoorColor,
             plexiglass: selectedPlexiglass,
             mounting: selectedMounting,
             handlePresence: selectedHandlePresence,
@@ -3411,15 +3404,28 @@ export default function HomePage() {
               </span>
               <div className="inline-select-grid product-option-grid">
                 <select
-                  id="product-color"
-                  value={selectedProductColor}
-                  onChange={(event) => setSelectedProductColor(event.target.value as ProductColorOption | '')}
-                  aria-label={t('productColorPlaceholder')}
+                  id="body-color"
+                  value={selectedBodyColor}
+                  onChange={(event) => setSelectedBodyColor(event.target.value as BodyColorOption | '')}
+                  aria-label={t('bodyColorPlaceholder')}
                 >
-                  <option value="">{t('productColorPlaceholder')}</option>
-                  {PRODUCT_COLOR_OPTIONS.map((option) => (
+                  <option value="">{t('bodyColorPlaceholder')}</option>
+                  {BODY_COLOR_OPTIONS.map((option) => (
                     <option key={option} value={option}>
-                      {t(`productColorOptions.${option}`)}
+                      {t(`bodyColorOptions.${option}`)}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  id="door-color"
+                  value={selectedDoorColor}
+                  onChange={(event) => setSelectedDoorColor(event.target.value as DoorColorOption | '')}
+                  aria-label={t('doorColorPlaceholder')}
+                >
+                  <option value="">{t('doorColorPlaceholder')}</option>
+                  {DOOR_COLOR_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {t(`doorColorOptions.${option}`)}
                     </option>
                   ))}
                 </select>
@@ -3503,7 +3509,8 @@ export default function HomePage() {
                     type="button"
                     className="prompt-preset-btn"
                     onClick={() => {
-                      setSelectedProductColor('');
+                      setSelectedBodyColor('');
+                      setSelectedDoorColor('');
                       setSelectedPlexiglass('none');
                       setSelectedMounting('floor-standing');
                       setSelectedHandlePresence('with-handle');
@@ -3969,18 +3976,35 @@ export default function HomePage() {
                       </select>
                     </label>
                     <label>
-                      <span>{t('productColorPlaceholder')}</span>
+                      <span>{t('bodyColorPlaceholder')}</span>
                       <select
-                        value={draft.productColor}
+                        value={draft.bodyColor}
                         onChange={(e) =>
                           updateDraft({
-                            productColor: e.target.value as AnalysisProductColor
+                            bodyColor: e.target.value as BodyColorOption
                           })
                         }
                       >
-                        {PRODUCT_COLOR_VALUES.map((option) => (
+                        {BODY_COLOR_VALUES.map((option) => (
                           <option key={option} value={option}>
-                            {t(`productColorOptions.${option}`)}
+                            {t(`bodyColorOptions.${option}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('doorColorPlaceholder')}</span>
+                      <select
+                        value={draft.doorColor}
+                        onChange={(e) =>
+                          updateDraft({
+                            doorColor: e.target.value as DoorColorOption
+                          })
+                        }
+                      >
+                        {DOOR_COLOR_VALUES.map((option) => (
+                          <option key={option} value={option}>
+                            {t(`doorColorOptions.${option}`)}
                           </option>
                         ))}
                       </select>
@@ -4358,11 +4382,13 @@ async function createHistoryItemFromGenerationResult(
 function isReferenceAnalysis(value: unknown): value is ReferenceAnalysis {
   if (!value || typeof value !== 'object') return false;
   const r = value as Record<string, unknown>;
-  // Accept new enum shape; also tolerate legacy free-text fields if still present.
-  const hasNewShape =
-    typeof r.productColor === 'string' &&
+  // Split body/door colors, combined productColor, or very old free-text materials.
+  const hasSplitColors = typeof r.bodyColor === 'string' && typeof r.doorColor === 'string';
+  const hasCombinedColor = typeof r.productColor === 'string';
+  const hasMaterialShape =
     typeof r.roomStyle === 'string' &&
-    typeof r.accentColor === 'string';
+    typeof r.accentColor === 'string' &&
+    (hasSplitColors || hasCombinedColor);
   const hasLegacyShape =
     typeof r.bodyColorMaterial === 'string' &&
     typeof r.doorColorMaterial === 'string' &&
@@ -4378,7 +4404,7 @@ function isReferenceAnalysis(value: unknown): value is ReferenceAnalysis {
     typeof r.confidence === 'number' &&
     typeof r.notes === 'string' &&
     typeof r.prompt === 'string' &&
-    (hasNewShape || hasLegacyShape)
+    (hasMaterialShape || hasLegacyShape)
   );
 }
 
@@ -5257,7 +5283,8 @@ function submittedRefsLabel(refs: ReferenceImage[], index: number): string {
 }
 
 function buildCommercialCataloguePrompt(input: {
-  color: ProductColorOption;
+  bodyColor: BodyColorOption;
+  doorColor: DoorColorOption;
   plexiglass: PlexiglassOption;
   mounting: MountingOption;
   handlePresence: HandlePresenceOption;
@@ -5268,14 +5295,16 @@ function buildCommercialCataloguePrompt(input: {
   const draft: ReferenceAnalysisDraft = {
     productType: 'console',
     productTypeLabel: productTypeLabel('console'),
-    productColor: input.color as AnalysisProductColor,
+    bodyColor: input.bodyColor,
+    doorColor: input.doorColor,
     mounting: input.mounting,
     plexiglass: input.plexiglass,
     handlePresence: input.handlePresence,
     handleDescription: input.handle,
     roomStyle: input.roomStyle,
     accentColor: input.accentColor,
-    hasLaserPatterns: true,
+    hasLaserPatterns:
+      input.bodyColor === 'alina-walnut-laser' || input.doorColor === 'alina-walnut-laser',
     doorCount: null,
     legCount: null,
     legLayout: '',
