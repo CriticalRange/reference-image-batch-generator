@@ -455,21 +455,23 @@ Sparse decor (books, ceramics, art, textile, plant). Optional floor lamp is a pr
 </interior>
 
 <lighting>
-Use one coherent natural lighting system.
+Use one coherent, directional daylight hierarchy.
 
-KEY: soft overcast daylight from one large off-camera window, entering from the front-side at a gentle angle. Create natural depth, soft directional shadows and gradual light falloff. No hard sun or second key light.
+KEY: one large soft overcast window light from one front-side and slightly above the product. Create a clearly illuminated side, gradual tonal transition and visibly darker shadow side. No hard sun, flat frontal light or second key.
 
-PORTAL / SKY: guide soft exterior daylight naturally through the window, with a restrained cool-neutral sky tone in indirect shadows. Do not create a blue cast, glowing window or flat HDR illumination.
+PORTAL / SKY: guide exterior daylight naturally through the window, with only a restrained cool-neutral sky tone in indirect shadows. No blue cast, glowing window, excessive skylight or HDR wash.
 
-FILL: low neutral bounce fill only to preserve essential shadow-side detail. Keep visible contact shadows, panel depth and soft occlusion; do not flatten the product or lift blacks.
+FILL: use low neutral bounce only to recover essential shadow detail. Preserve panel separation, corner depth, soft ambient occlusion, floor contact and shadows beneath the body and legs. Do not brighten the shadow side to match the key side.
 
-GRAZING: subtle side-grazing daylight from the same window direction to reveal existing wood grain, travertine texture, laser patterns and plexiglass edges. Never invent or exaggerate surface depth.
+GRAZING: use subtle side-grazing daylight from the same window direction to reveal existing wood grain, travertine texture, laser patterns and plexiglass edges. Do not invent or exaggerate surface depth.
 
-RIM: only a faint natural edge separation where needed, created by window spill or wall bounce. No studio halo, neon outline or bright border.
+RIM: allow only faint natural edge separation where needed. No halo, neon outline or bright border.
 
 PRACTICAL: any visible lamp stays dim and warm and must not become a second key light.
 
-Use medium premium catalogue exposure, controlled reflections, clean whites, deep anthracite and realistic material colors. No high-key wash, blown highlights, milky shadows, heavy bloom or contradictory light directions.
+EXPOSURE: use medium-low premium catalogue exposure with controlled highlight roll-off. Keep whites clean and detailed, anthracite deep but readable, materials accurately colored and specular reflections broad and restrained. Use a clean near-white background with slight tonal separation from the product.
+
+All shadows, highlights and reflections must follow the same window direction. No blown highlights, glowing whites, flat illumination, milky shadows, excessive fill, heavy bloom or high-key wash.
 </lighting>
 
 <avoid>
@@ -480,7 +482,7 @@ Wrong proportions/category (this is a ${analysis.productTypeLabel}), invented ha
   }, recessed/embedded plexiglass, chrome/liquid-metal mirrors, free-form recolor, heavy grade/WB shifts, dual keys, high fill that erases shadows, over-bright bounce, milky midtones, plastic surfaces, strong vignette, noise.
 </avoid>
 
-GENERATE. Same product identity, construction, installation and composition as the reference. ${legGenerateLine} One coherent natural lighting system (front-side soft window key, low fill, subtle grazing, no second key), realistic materials, medium premium catalogue exposure — no high-key wash.`;
+GENERATE. Same product identity, geometry, construction, installation and composition as the reference. ${legGenerateLine} Use one directional soft window key, restrained portal-guided sky tone, low fill, subtle grazing detail, faint natural edge separation, protected highlights and preserved contact shadows. Clean near-white background — no clipped whites, flat shading or high-key wash.`;
 }
 
 function buildLegsBlock(
