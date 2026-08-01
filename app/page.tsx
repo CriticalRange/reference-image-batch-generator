@@ -5303,8 +5303,7 @@ function buildCommercialCataloguePrompt(input: {
     handleDescription: input.handle,
     roomStyle: input.roomStyle,
     accentColor: input.accentColor,
-    hasLaserPatterns:
-      input.bodyColor === 'alina-walnut-laser' || input.doorColor === 'alina-walnut-laser',
+    hasLaserPatterns: false,
     doorCount: null,
     legCount: null,
     legLayout: '',

@@ -105,16 +105,14 @@ const resources = {
         white: 'Body: white',
         anthracite: 'Body: anthracite',
         'sapphire-oak': 'Body: sapphire oak',
-        'alina-walnut': 'Body: Alina walnut',
-        'alina-walnut-laser': 'Body: Alina walnut (laser)'
+        'alina-walnut': 'Body: Alina walnut'
       },
       doorColorOptions: {
         white: 'Doors: white',
         anthracite: 'Doors: anthracite',
         travertine: 'Doors: travertine',
         'sapphire-oak': 'Doors: sapphire oak',
-        'alina-walnut': 'Doors: Alina walnut',
-        'alina-walnut-laser': 'Doors: Alina walnut (laser)'
+        'alina-walnut': 'Doors: Alina walnut'
       },
       plexiglassOptions: {
         none: 'Plexiglass: none',
@@ -382,16 +380,14 @@ const resources = {
         white: 'Gövde: beyaz',
         anthracite: 'Gövde: antrasit',
         'sapphire-oak': 'Gövde: safir meşe',
-        'alina-walnut': 'Gövde: Alina ceviz',
-        'alina-walnut-laser': 'Gövde: Alina ceviz (lazer)'
+        'alina-walnut': 'Gövde: Alina ceviz'
       },
       doorColorOptions: {
         white: 'Kapak: beyaz',
         anthracite: 'Kapak: antrasit',
         travertine: 'Kapak: traverten',
         'sapphire-oak': 'Kapak: safir meşe',
-        'alina-walnut': 'Kapak: Alina ceviz',
-        'alina-walnut-laser': 'Kapak: Alina ceviz (lazer)'
+        'alina-walnut': 'Kapak: Alina ceviz'
       },
       plexiglassOptions: {
         none: 'Pleksi: yok',
