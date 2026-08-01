@@ -218,7 +218,8 @@ type ProductColorOption =
   | 'white-body-travertine-doors'
   | 'anthracite'
   | 'anthracite-body-travertine-doors'
-  | 'sapphire-oak-body-white-doors';
+  | 'sapphire-oak-body-white-doors'
+  | 'alina-walnut-laser';
 type PlexiglassOption = 'none' | 'gold-mirror' | 'silver-mirror';
 type MountingOption = 'floor-standing' | 'wall-mounted';
 type HandlePresenceOption = 'with-handle' | 'no-handle';
@@ -277,7 +278,8 @@ const PRODUCT_COLOR_OPTIONS: ProductColorOption[] = [
   'white-body-travertine-doors',
   'anthracite',
   'anthracite-body-travertine-doors',
-  'sapphire-oak-body-white-doors'
+  'sapphire-oak-body-white-doors',
+  'alina-walnut-laser'
 ];
 const PLEXIGLASS_OPTIONS: PlexiglassOption[] = ['none', 'gold-mirror', 'silver-mirror'];
 const MOUNTING_OPTIONS: MountingOption[] = ['floor-standing', 'wall-mounted'];

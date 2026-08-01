@@ -8,7 +8,8 @@ export type ProductColorOption =
   | 'white-body-travertine-doors'
   | 'anthracite'
   | 'anthracite-body-travertine-doors'
-  | 'sapphire-oak-body-white-doors';
+  | 'sapphire-oak-body-white-doors'
+  | 'alina-walnut-laser';
 
 export type PlexiglassOption = 'none' | 'gold-mirror' | 'silver-mirror';
 export type MountingOption = 'floor-standing' | 'wall-mounted';
@@ -27,7 +28,8 @@ export const PRODUCT_COLOR_VALUES: ProductColorOption[] = [
   'white-body-travertine-doors',
   'anthracite',
   'anthracite-body-travertine-doors',
-  'sapphire-oak-body-white-doors'
+  'sapphire-oak-body-white-doors',
+  'alina-walnut-laser'
 ];
 export const PLEXIGLASS_VALUES: PlexiglassOption[] = ['none', 'gold-mirror', 'silver-mirror'];
 export const MOUNTING_VALUES: MountingOption[] = ['floor-standing', 'wall-mounted'];
@@ -131,6 +133,13 @@ const COLOR_MATERIALS: Record<
     top: 'sapphire oak wood veneer with natural grain',
     legs: 'as shown in the reference',
     summary: 'Sapphire oak body with white doors'
+  },
+  'alina-walnut-laser': {
+    body: 'Alina walnut wood veneer with warm natural grain',
+    door: 'Alina walnut wood veneer with warm natural grain and laser-engraved decorative patterns',
+    top: 'Alina walnut wood veneer with warm natural grain',
+    legs: 'as shown in the reference (match walnut / metal finish)',
+    summary: 'Alina walnut with laser patterns'
   }
 };
 
@@ -158,7 +167,7 @@ Analyze the single furniture product in the image. Ignore background as product 
 Return ONLY valid JSON (no markdown) with exactly these keys and ONLY the allowed enum values:
 {
   "productType": "console|dresser|tv_unit|tv_wall_mounted|tv_stand|tv_with_top_shelf",
-  "productColor": "white|white-body-travertine-doors|anthracite|anthracite-body-travertine-doors|sapphire-oak-body-white-doors",
+  "productColor": "white|white-body-travertine-doors|anthracite|anthracite-body-travertine-doors|sapphire-oak-body-white-doors|alina-walnut-laser",
   "mounting": "floor-standing|wall-mounted",
   "plexiglass": "none|gold-mirror|silver-mirror",
   "handlePresence": "with-handle|no-handle",
@@ -181,13 +190,14 @@ CRITICAL — productType must be ONE of these six catalog types only (Turkish sh
 - tv_stand (TV Sehpası): TV stand / low TV table / media table, often more open or lighter than a full TV unit
 - tv_with_top_shelf (TV Üst Raflı): TV unit that includes a distinct upper shelf / top shelf structure above the main body
 
-CRITICAL — productColor must be ONE of the five catalog variants only. Do NOT invent free-text colors like "light grey" or "beige matte".
+CRITICAL — productColor must be ONE of the six catalog variants only. Do NOT invent free-text colors like "light grey" or "beige matte".
 Pick the closest catalog match:
 - white: overall white body+doors
 - white-body-travertine-doors: white body, travertine/stone-look doors
 - anthracite: overall dark grey/anthracite
 - anthracite-body-travertine-doors: anthracite body, travertine doors
 - sapphire-oak-body-white-doors: oak/wood body, white doors
+- alina-walnut-laser: Alina walnut (ceviz) finish overall, typically with laser-engraved decorative patterns — prefer hasLaserPatterns true
 
 Rules:
 - Do not invent product types outside the six enums. Prefer the closest match.
@@ -444,7 +454,7 @@ No bright white glare, blown specular hotspots or exaggerated room reflections o
 <materials>
 Keep body/doors/top/legs materials separate — never transfer door finish onto body/top/legs.
 Catalog under all lighting — Body: ${colors.body}. Doors: ${colors.door}. Top: ${colors.top}. Legs/base: ${legsMaterial}.
-White/anthracite: premium matte-satin furniture finish (not plastic). Sapphire oak: correct grain, restrained tone. Travertine: subtle pores/veins, no stretched texture. Mirror plexi: controlled metal-mirror, not glass/chrome/liquid metal. No transparent glass on the furniture.
+White/anthracite: premium matte-satin furniture finish (not plastic). Sapphire oak / Alina walnut: correct grain, restrained tone. Travertine: subtle pores/veins, no stretched texture. Mirror plexi: controlled metal-mirror, not glass/chrome/liquid metal. No transparent glass on the furniture.
 ${handleBlock}
 </materials>
 
@@ -599,10 +609,12 @@ function normalizeProductColor(value: unknown): ProductColorOption {
 
   // Heuristic closest-match from free-text / legacy fields
   const hasTravertine = /travertine|stone|mermer|traverten/.test(raw);
-  const hasOak = /oak|wood|meşe|mese|sapphir|safir/.test(raw);
+  const hasOak = /oak|meşe|mese|sapphir|safir/.test(raw);
+  const hasAlinaWalnut = /alina|ceviz|walnut|cevizli/.test(raw);
   const hasAnthracite = /anthracite|antrasit|dark.?grey|dark.?gray|charcoal|siyah.?gri/.test(raw);
   const hasWhite = /white|beyaz/.test(raw);
 
+  if (hasAlinaWalnut) return 'alina-walnut-laser';
   if (hasOak && hasWhite) return 'sapphire-oak-body-white-doors';
   if (hasAnthracite && hasTravertine) return 'anthracite-body-travertine-doors';
   if (hasWhite && hasTravertine) return 'white-body-travertine-doors';

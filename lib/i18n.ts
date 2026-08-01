@@ -96,7 +96,8 @@ const resources = {
         'white-body-travertine-doors': 'White body + travertine doors',
         anthracite: 'Anthracite',
         'anthracite-body-travertine-doors': 'Anthracite body + travertine doors',
-        'sapphire-oak-body-white-doors': 'Sapphire oak body + white doors'
+        'sapphire-oak-body-white-doors': 'Sapphire oak body + white doors',
+        'alina-walnut-laser': 'Alina walnut (laser patterned)'
       },
       plexiglassOptions: {
         none: 'Plexiglass: none',
@@ -355,7 +356,8 @@ const resources = {
         'white-body-travertine-doors': 'Beyaz gövde + traverten kapak',
         anthracite: 'Antrasit',
         'anthracite-body-travertine-doors': 'Antrasit gövde + traverten kapak',
-        'sapphire-oak-body-white-doors': 'Safir meşe gövde + beyaz kapak'
+        'sapphire-oak-body-white-doors': 'Safir meşe gövde + beyaz kapak',
+        'alina-walnut-laser': 'Alina ceviz (lazer desenli)'
       },
       plexiglassOptions: {
         none: 'Pleksi: yok',
