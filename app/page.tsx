@@ -25,6 +25,7 @@ import {
 import { InfoHint, Tooltip } from '@/app/components/tooltip';
 import {
   BODY_COLOR_VALUES,
+  buildCommercialCataloguePromptFromAnalysis,
   DOOR_COLOR_VALUES,
   finalizeAnalysis,
   PRODUCT_TYPE_VALUES,
@@ -219,7 +220,7 @@ type PlexiglassOption = 'none' | 'gold-mirror' | 'silver-mirror';
 type MountingOption = 'floor-standing' | 'wall-mounted';
 type HandlePresenceOption = 'with-handle' | 'no-handle';
 type RoomStyleOption = 'minimalist' | 'modern' | 'classic' | 'industrial';
-type AccentColorOption = 'warm-beige' | 'soft-olive' | 'muted-terracotta' | 'slate-blue' | 'champagne-gold' | 'charcoal-grey';
+
 
 const DEFAULT_COUNT = 1;
 const DEFAULT_BATCH_RATE_LIMIT_SEC = 120;
@@ -274,14 +275,7 @@ const PLEXIGLASS_OPTIONS: PlexiglassOption[] = ['none', 'gold-mirror', 'silver-m
 const MOUNTING_OPTIONS: MountingOption[] = ['floor-standing', 'wall-mounted'];
 const HANDLE_PRESENCE_OPTIONS: HandlePresenceOption[] = ['with-handle', 'no-handle'];
 const ROOM_STYLE_OPTIONS: RoomStyleOption[] = ['minimalist', 'modern', 'classic', 'industrial'];
-const ACCENT_COLOR_OPTIONS: AccentColorOption[] = [
-  'warm-beige',
-  'soft-olive',
-  'muted-terracotta',
-  'slate-blue',
-  'champagne-gold',
-  'charcoal-grey'
-];
+
 const DEFAULT_HANDLE_DESCRIPTION =
   'Match the handle design, scale, finish and mounting position exactly as shown in the product reference.';
 const ALLOWED_REFERENCE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
@@ -705,7 +699,8 @@ export default function HomePage() {
   const [selectedMounting, setSelectedMounting] = useState<MountingOption>('floor-standing');
   const [selectedHandlePresence, setSelectedHandlePresence] = useState<HandlePresenceOption>('with-handle');
   const [selectedRoomStyle, setSelectedRoomStyle] = useState<RoomStyleOption>('minimalist');
-  const [selectedAccentColor, setSelectedAccentColor] = useState<AccentColorOption>('warm-beige');
+  /** Free-text room atmosphere; AI analysis overwrites with a product-specific vibe. */
+  const [selectedRoomVibe, setSelectedRoomVibe] = useState('');
   const [handleDescription, setHandleDescription] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
   const [count, setCount] = useState(DEFAULT_COUNT);
@@ -1095,7 +1090,7 @@ export default function HomePage() {
         handlePresence: selectedHandlePresence,
         handle: handleDescription.trim() || DEFAULT_HANDLE_DESCRIPTION,
         roomStyle: selectedRoomStyle,
-        accentColor: selectedAccentColor
+        roomVibe: selectedRoomVibe
       })
     );
   }, [
@@ -1105,7 +1100,7 @@ export default function HomePage() {
     selectedMounting,
     selectedHandlePresence,
     selectedRoomStyle,
-    selectedAccentColor,
+    selectedRoomVibe,
     handleDescription
   ]);
 
@@ -2285,7 +2280,7 @@ export default function HomePage() {
             handlePresence: selectedHandlePresence,
             handle: handleDescription.trim() || DEFAULT_HANDLE_DESCRIPTION,
             roomStyle: selectedRoomStyle,
-            accentColor: selectedAccentColor
+            roomVibe: selectedRoomVibe
           })
         : '';
 
@@ -3477,18 +3472,15 @@ export default function HomePage() {
                     </option>
                   ))}
                 </select>
-                <select
-                  id="accent-color"
-                  value={selectedAccentColor}
-                  onChange={(event) => setSelectedAccentColor(event.target.value as AccentColorOption)}
-                  aria-label={t('accentColorPlaceholder')}
-                >
-                  {ACCENT_COLOR_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {t(`accentColorOptions.${option}`)}
-                    </option>
-                  ))}
-                </select>
+                <input
+                  id="room-vibe"
+                  type="text"
+                  className="product-handle-input"
+                  value={selectedRoomVibe}
+                  onChange={(event) => setSelectedRoomVibe(event.target.value)}
+                  placeholder={t('roomVibePlaceholder')}
+                  aria-label={t('roomVibePlaceholder')}
+                />
                 {selectedHandlePresence === 'with-handle' ? (
                   <input
                     id="handle-description"
@@ -3514,7 +3506,7 @@ export default function HomePage() {
                       setSelectedPlexiglass('none');
                       setSelectedMounting('floor-standing');
                       setSelectedHandlePresence('with-handle');
-                      setSelectedAccentColor('warm-beige');
+                      setSelectedRoomVibe('');
                       setHandleDescription('');
                       setPrompt(preset.prompt);
                     }}
@@ -4118,21 +4110,13 @@ export default function HomePage() {
                       </select>
                     </label>
                     <label>
-                      <span>{t('accentColorPlaceholder')}</span>
-                      <select
-                        value={draft.accentColor}
-                        onChange={(e) =>
-                          updateDraft({
-                            accentColor: e.target.value as ReferenceAnalysis['accentColor']
-                          })
-                        }
-                      >
-                        {ACCENT_COLOR_OPTIONS.map((option) => (
-                          <option key={option} value={option}>
-                            {t(`accentColorOptions.${option}`)}
-                          </option>
-                        ))}
-                      </select>
+                      <span>{t('roomVibePlaceholder')}</span>
+                      <input
+                        type="text"
+                        value={draft.roomVibe || ''}
+                        onChange={(e) => updateDraft({ roomVibe: e.target.value })}
+                        placeholder={t('roomVibeInputHint')}
+                      />
                     </label>
                     {draft.handlePresence === 'with-handle' ? (
                       <label>
@@ -4387,7 +4371,7 @@ function isReferenceAnalysis(value: unknown): value is ReferenceAnalysis {
   const hasCombinedColor = typeof r.productColor === 'string';
   const hasMaterialShape =
     typeof r.roomStyle === 'string' &&
-    typeof r.accentColor === 'string' &&
+    (typeof r.roomVibe === 'string' || typeof r.accentColor === 'string') &&
     (hasSplitColors || hasCombinedColor);
   const hasLegacyShape =
     typeof r.bodyColorMaterial === 'string' &&
@@ -5290,11 +5274,9 @@ function buildCommercialCataloguePrompt(input: {
   handlePresence: HandlePresenceOption;
   handle: string;
   roomStyle: RoomStyleOption;
-  accentColor: AccentColorOption;
+  roomVibe?: string;
 }): string {
-  const draft: ReferenceAnalysisDraft = {
-    productType: 'console',
-    productTypeLabel: productTypeLabel('console'),
+  const manualAnalysis = {
     bodyColor: input.bodyColor,
     doorColor: input.doorColor,
     mounting: input.mounting,
@@ -5302,7 +5284,7 @@ function buildCommercialCataloguePrompt(input: {
     handlePresence: input.handlePresence,
     handleDescription: input.handle,
     roomStyle: input.roomStyle,
-    accentColor: input.accentColor,
+    roomVibe: input.roomVibe?.trim() || '',
     hasLaserPatterns: false,
     doorCount: null,
     legCount: null,
@@ -5310,7 +5292,9 @@ function buildCommercialCataloguePrompt(input: {
     confidence: 0.7,
     notes: 'Built from manual product option form (not vision analysis).'
   };
-  return finalizeAnalysis(draft).prompt;
+  return buildCommercialCataloguePromptFromAnalysis(manualAnalysis, {
+    inferProductTypeFromReference: true
+  });
 }
 
 function isTerminalBatchState(state: string): boolean {

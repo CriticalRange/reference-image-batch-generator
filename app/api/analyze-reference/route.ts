@@ -80,7 +80,8 @@ export async function POST(req: NextRequest) {
         }
       ],
       config: {
-        temperature: 0.2,
+        // Catalogue classification should be deterministic; creativity belongs in image generation.
+        temperature: 0,
         responseMimeType: 'application/json'
       }
     });

@@ -27,6 +27,7 @@ export type PlexiglassOption = 'none' | 'gold-mirror' | 'silver-mirror';
 export type MountingOption = 'floor-standing' | 'wall-mounted';
 export type HandlePresenceOption = 'with-handle' | 'no-handle';
 export type RoomStyleOption = 'minimalist' | 'modern' | 'classic' | 'industrial';
+/** @deprecated Replaced by free-text roomVibe — kept for history migration. */
 export type AccentColorOption =
   | 'warm-beige'
   | 'soft-olive'
@@ -98,10 +99,14 @@ export type ReferenceAnalysis = {
   mounting: MountingOption;
   plexiglass: PlexiglassOption;
   handlePresence: HandlePresenceOption;
-  /** Only free-text allowed field (optional handle description) */
+  /** Free-text handle description (optional). */
   handleDescription: string;
   roomStyle: RoomStyleOption;
-  accentColor: AccentColorOption;
+  /**
+   * Best room atmosphere for this product (AI-written free text).
+   * Complements roomStyle — palette, mood, materials; not a fixed enum.
+   */
+  roomVibe: string;
   hasLaserPatterns: boolean;
   doorCount: number | null;
   /**
@@ -123,7 +128,13 @@ export type ReferenceAnalysisDraft = Omit<ReferenceAnalysis, 'prompt'> & {
   prompt?: string;
   /** Legacy combined field from older history / API responses. */
   productColor?: string;
+  /** Legacy accent enum — mapped into roomVibe when roomVibe empty. */
+  accentColor?: string;
 };
+
+/** Default vibe when AI/user leave roomVibe empty. */
+export const DEFAULT_ROOM_VIBE =
+  'calm premium living interior, soft greige walls, mid-tone neutral floor, sparse elegant decor that lets the furniture stay the hero';
 
 const FINISH_MATERIAL: Record<string, string> = {
   white: 'matte white premium furniture lacquer',
@@ -192,7 +203,7 @@ Return ONLY valid JSON (no markdown) with exactly these keys and ONLY the allowe
   "handlePresence": "with-handle|no-handle",
   "handleDescription": "short description if handles exist, else empty string",
   "roomStyle": "minimalist|modern|classic|industrial",
-  "accentColor": "warm-beige|soft-olive|muted-terracotta|slate-blue|champagne-gold|charcoal-grey",
+  "roomVibe": "short English atmosphere phrase for the best room vibe for THIS product",
   "hasLaserPatterns": boolean,
   "doorCount": number or null,
   "legCount": number or null,
@@ -217,6 +228,14 @@ doorColor (kapak / door panels only): white | anthracite | travertine | sapphire
 - alina-walnut (Alina ceviz): this is a LASER-LESS wood COLOR/finish. It is not a laser material. However, Alina products often have laser-style decorative lines that are an ILLUSION — shallow surface patterns that look laser-cut but the finish code stays alina-walnut only. When those patterns are visible set hasLaserPatterns=true; when not, false. Never invent a separate laser color enum.
 - If body and doors match, set the same enum on both (e.g. both white or both alina-walnut).
 
+COLOR CONSTANCY / SHADOW RULES (CRITICAL):
+- Classify the product's physical base finish from broad, continuous, front-facing or top panel surfaces — especially portions receiving direct or soft light.
+- Completely ignore the background, floor, wall, cast shadow behind/below the product, contact shadow, ambient-occlusion gaps, dark panel seams, reflections and edge shading when choosing bodyColor or doorColor.
+- A white product remains white where it falls into grey shadow. Grey-looking undersides, side edges, gaps or shadows on a white product are NOT anthracite panels.
+- Before returning anthracite, require positive evidence: at least one large illuminated body/door surface itself must remain consistently dark charcoal, not merely a shaded white/grey area.
+- Compare lit and shaded portions of the SAME continuous panel. If its lit portion is white/near-white and only its shaded portion is grey, classify that whole panel as white.
+- When uncertain specifically between white and anthracite because of lighting, prefer white unless a large illuminated panel provides clear anthracite evidence.
+
 Rules:
 - Do not invent product types outside the six enums. Prefer the closest match.
 - mounting: legs visible on floor → floor-standing; clearly wall-hung with underside clearance → wall-mounted. tv_wall_mounted should usually pair with wall-mounted.
@@ -238,7 +257,16 @@ Rules:
 - plexiglass: only gold-mirror / silver-mirror if clearly visible; else none. Never invent.
 - handlePresence: with-handle only if handles are visible.
 - doorCount: optional approximate door/panel count when obvious, else null (not critical).
-- roomStyle / accentColor: best fit for a catalogue scene (not free text).
+- roomStyle: one of minimalist|modern|classic|industrial for the catalogue scene framework.
+- roomVibe (CRITICAL free text — invent a good fit from product type, finish and style):
+  * Write 12–28 English words describing the BEST room atmosphere for THIS exact product.
+  * Template: "[mood] [room type], [wall palette], [floor material tone], [1–2 restrained accent materials], product stays the hero".
+  * Examples:
+    - "Warm contemporary living room, soft greige plaster, mid-tone oak floor, muted brass accents, uncluttered staging"
+    - "Airy modern hallway, cool greige walls, pale stone floor, sparse ceramic decor, quiet luxury mood"
+    - "Soft classic bedroom, warm ivory walls, light wood floor, linen textiles, gentle champagne metal notes"
+  * Match roomStyle loosely but personalize to body/door finishes (e.g. Alina walnut → warmer woods; anthracite → cooler greige).
+  * Do NOT return a color enum. Do NOT overcrowd the scene description.
 - hasLaserPatterns: true only if decorative laser-style lines are actually visible (including Alina illusion patterns). Do not invent laser patterns or hardware.`;
 
 export const ANALYSIS_SYSTEM_PROMPT = ANALYSIS_SYSTEM;
@@ -278,7 +306,7 @@ export function parseAnalysisJson(raw: string): ReferenceAnalysisDraft {
   const plexiglass = normalizePlexiglass(parsed.plexiglass);
   const handlePresence = normalizeHandlePresence(parsed.handlePresence);
   const roomStyle = normalizeEnum(parsed.roomStyle, ROOM_STYLE_VALUES, 'modern');
-  const accentColor = normalizeEnum(parsed.accentColor, ACCENT_COLOR_VALUES, 'warm-beige');
+  const roomVibe = normalizeRoomVibe(parsed.roomVibe ?? parsed.accentColor);
   const confidence = clamp01(
     typeof parsed.confidence === 'number' ? parsed.confidence : Number(parsed.confidence)
   );
@@ -296,7 +324,7 @@ export function parseAnalysisJson(raw: string): ReferenceAnalysisDraft {
     handlePresence,
     handleDescription: String(parsed.handleDescription ?? '').trim(),
     roomStyle,
-    accentColor,
+    roomVibe,
     hasLaserPatterns,
     doorCount: normalizeDoorCount(parsed.doorCount),
     legCount: normalizeLegCount(parsed.legCount, mounting),
@@ -313,7 +341,7 @@ export function finalizeAnalysis(draft: ReferenceAnalysisDraft): ReferenceAnalys
   const plexiglass = normalizePlexiglass(draft.plexiglass);
   const handlePresence = normalizeHandlePresence(draft.handlePresence);
   const roomStyle = normalizeEnum(draft.roomStyle, ROOM_STYLE_VALUES, 'modern');
-  const accentColor = normalizeEnum(draft.accentColor, ACCENT_COLOR_VALUES, 'warm-beige');
+  const roomVibe = normalizeRoomVibe(draft.roomVibe ?? draft.accentColor);
   const legCount = normalizeLegCount(draft.legCount, mounting);
   const legacyColorHint = String(draft.productColor ?? '');
   const hasLaserPatterns =
@@ -329,7 +357,7 @@ export function finalizeAnalysis(draft: ReferenceAnalysisDraft): ReferenceAnalys
     handlePresence,
     handleDescription: String(draft.handleDescription ?? '').trim(),
     roomStyle,
-    accentColor,
+    roomVibe,
     hasLaserPatterns,
     doorCount: normalizeDoorCount(draft.doorCount),
     // Wall-mounted / no freestanding legs → leg count is disabled (null).
@@ -343,6 +371,37 @@ export function finalizeAnalysis(draft: ReferenceAnalysisDraft): ReferenceAnalys
     ...normalized,
     prompt: buildCommercialCataloguePromptFromAnalysis(normalized)
   };
+}
+
+function normalizeRoomVibe(value: unknown): string {
+  const text = String(value ?? '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!text) {
+    return DEFAULT_ROOM_VIBE;
+  }
+
+  // Legacy accent enums → short vibe seeds (AI will rewrite on next analysis).
+  const legacyAccent: Record<string, string> = {
+    'warm-beige':
+      'Warm soft-beige living interior, greige walls, mid-tone wood floor, quiet champagne metal notes',
+    'soft-olive':
+      'Calm modern room with soft olive textile accents, greige walls, light wood floor, airy staging',
+    'muted-terracotta':
+      'Warm contemporary room with muted terracotta accents, soft plaster walls, natural wood floor',
+    'slate-blue':
+      'Cool modern living room with slate-blue soft accents, greige walls, mid-tone neutral floor',
+    'champagne-gold':
+      'Quiet luxury interior with champagne-gold metal accents, warm greige walls, refined staging',
+    'charcoal-grey':
+      'Restrained modern interior with charcoal soft accents, cool greige walls, clean neutral floor'
+  };
+  const key = text.toLowerCase().replace(/\s+/g, '-').replace(/_/g, '-');
+  if (legacyAccent[key]) {
+    return legacyAccent[key];
+  }
+
+  return text.slice(0, 220);
 }
 
 function normalizeDoorCount(value: unknown): number | null {
@@ -383,9 +442,27 @@ function normalizeLegLayout(
   return text;
 }
 
+type CataloguePromptAnalysis = Omit<
+  ReferenceAnalysis,
+  'prompt' | 'productType' | 'productTypeLabel'
+> &
+  Partial<Pick<ReferenceAnalysis, 'productType' | 'productTypeLabel'>>;
+
 export function buildCommercialCataloguePromptFromAnalysis(
-  analysis: Omit<ReferenceAnalysis, 'prompt'>
+  analysis: CataloguePromptAnalysis,
+  options: { inferProductTypeFromReference?: boolean } = {}
 ): string {
+  const inferProductType = options.inferProductTypeFromReference === true;
+  const declaredProductType =
+    analysis.productType && analysis.productTypeLabel
+      ? `${analysis.productTypeLabel} (${analysis.productType})`
+      : '';
+  if (!inferProductType && !declaredProductType) {
+    throw new Error('A declared product type is required when reference inference is disabled.');
+  }
+  const productTypeDescription = inferProductType
+    ? 'the exact furniture category visible in the reference'
+    : analysis.productTypeLabel || 'the declared furniture category';
   const colors = resolveColorMaterials(analysis.bodyColor, analysis.doorColor);
   const mountingBlock = buildMountingBlock(analysis.mounting, analysis.legCount);
   const handleBlock =
@@ -431,7 +508,9 @@ export function buildCommercialCataloguePromptFromAnalysis(
     : '';
 
   const productIdentity = [
-    `Product type: ${analysis.productTypeLabel} (${analysis.productType}).`,
+    inferProductType
+      ? 'Product type: infer it only from the reference image using the visible geometry, proportions, installation and intended use. Do not assign a default category or reshape it into another furniture type.'
+      : `Product type: ${declaredProductType}.`,
     analysis.legCount != null && analysis.mounting !== 'wall-mounted'
       ? `HARD LEG COUNT: ${analysis.legCount}.${layoutNote}`
       : analysis.mounting === 'wall-mounted'
@@ -442,7 +521,8 @@ export function buildCommercialCataloguePromptFromAnalysis(
     `Top: ${colors.top} (match body).`,
     `Catalog finishes: ${colors.summary}.`,
     `Installation: ${analysis.mounting}.`,
-    `Room style: ${analysis.roomStyle}. Accent: ${analysis.accentColor.replace(/-/g, ' ')}.`
+    `Room style: ${analysis.roomStyle}.`,
+    `Room vibe: ${analysis.roomVibe || DEFAULT_ROOM_VIBE}.`
   ]
     .filter(Boolean)
     .join(' ');
@@ -476,8 +556,8 @@ ${mountingBlock}
 ${legsBlock}
 
 <composition>
-Full product in frame (body, doors, edges, legs/base or wall clearance). Keep true proportions — never stretch a low console into a tall cabinet/wardrobe.
-~42–50 mm commercial look, natural camera height for ${analysis.productTypeLabel}, straight verticals, no wide-angle distortion.
+Full product in frame (body, doors, edges, legs/base or wall clearance). Keep true proportions — never stretch, compress or reshape it into a different furniture category.
+~42–50 mm commercial look, natural camera height for ${productTypeDescription}, straight verticals, no wide-angle distortion.
 Product is the hero with comfortable negative space and natural depth. All freestanding legs must be fully visible where the reference shows them.
 </composition>
 
@@ -499,9 +579,9 @@ ${handleBlock}
 </materials>
 
 <interior>
-${analysis.roomStyle} neutral catalogue interior with ${analysis.accentColor.replace(/-/g, ' ')} accents.
-Beige/greige/soft-grey matte plaster walls (not reflective white that floods light). Mid-tone neutral wood or concrete floor — avoid pure white floors.
-Sparse decor (books, ceramics, art, textile, plant). Optional floor lamp is a practical object only, not a second key light. Rug may not hide legs/base/floor contact. Do not block product details. Wall-mounted pieces: no objects under them that look like supports.
+Place the product in a ${analysis.roomStyle} catalogue interior with this vibe: ${analysis.roomVibe || DEFAULT_ROOM_VIBE}.
+Keep walls restrained matte (beige/greige/soft grey — not reflective white that floods light). Floor mid-tone neutral wood or concrete — avoid pure white floors.
+Sparse decor only (books, ceramics, art, textile, plant). Optional floor lamp is a practical object only, not a second key light. Rug may not hide legs/base/floor contact. Do not block product details. Wall-mounted pieces: no objects under them that look like supports. Atmosphere must support the product — never compete with it.
 </interior>
 
 <lighting>
@@ -525,7 +605,11 @@ All shadows, highlights and reflections must follow the same window direction. N
 </lighting>
 
 <avoid>
-Wrong proportions/category (this is a ${analysis.productTypeLabel}), invented hardware, wrong leg count or mounting${
+Wrong proportions/category${
+    inferProductType
+      ? ' (infer the real category from the reference; never force a default category)'
+      : ` (this is a ${analysis.productTypeLabel || 'declared furniture category'})`
+  }, invented hardware, wrong leg count or mounting${
     analysis.legCount != null && analysis.legCount > 0
       ? ` (ILLEGAL: ${analysis.legCount - 1} legs, ${analysis.legCount + 1} legs, merged plinth instead of ${analysis.legCount} separate legs)`
       : ''

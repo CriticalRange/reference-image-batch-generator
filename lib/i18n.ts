@@ -63,6 +63,8 @@ const resources = {
       handlePresencePlaceholder: 'Handle',
       roomStylePlaceholder: 'Room style',
       accentColorPlaceholder: 'Accent color',
+      roomVibePlaceholder: 'Room vibe',
+      roomVibeInputHint: 'e.g. warm contemporary living room, greige walls, mid oak floor…',
       handlePlaceholder: 'Handle design and color (optional — defaults to reference match)',
       productOptionsPromptHint:
         'Choosing body + door colors fills/overwrites the prompt with the commercial catalogue template. When AI auto-analysis is on, Gemini Flash analyzes each reference (separate body/door colors) and builds a product-specific prompt (editable on loading cards).',
@@ -338,6 +340,8 @@ const resources = {
       handlePresencePlaceholder: 'Kulp',
       roomStylePlaceholder: 'Oda stili',
       accentColorPlaceholder: 'Aksan rengi',
+      roomVibePlaceholder: 'Oda vibe’ı',
+      roomVibeInputHint: 'örn. sıcak modern salon, greige duvar, orta ton meşe zemin…',
       handlePlaceholder: 'Kulp tasarımı ve rengi (opsiyonel — boşsa referansa uy)',
       productOptionsPromptHint:
         'Gövde + kapak rengi seçilince prompt katalog şablonuyla dolar. AI otomatik tahmin açıksa her referans Gemini Flash ile analiz edilir (gövde/kapak ayrı); loading kartlara tıklayarak tahminleri ve prompt’u düzenleyebilirsiniz.',
