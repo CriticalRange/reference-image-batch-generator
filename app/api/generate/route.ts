@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { submitBatch, getBatchStatus, type BatchOutput, type BatchResult, type SubmitBatchResult } from '@/lib/gemini';
+import { normalizeSceneVariationStrength, type SceneVariationStrength } from '@/lib/promptVariants';
 import { applyCorsHeaders, corsPreflightResponse, enforceRateLimit, jsonWithCors, requireApiAccess } from '@/lib/security';
 import { uploadBatchToBlob } from '@/lib/blob';
 
@@ -20,6 +21,9 @@ type RequestBody = {
   resizeWidth?: number;
   resizeHeight?: number;
   aiUpscale?: number;
+  sceneVariation?: boolean;
+  /** low | medium | high — how much the surrounding scene should change. Default low. */
+  sceneVariationStrength?: SceneVariationStrength | string;
   referenceImages?: Array<{
     base64?: string;
     mimeType?: string;
@@ -81,6 +85,8 @@ export async function POST(req: NextRequest) {
     const resizeWidth = parseResizeDimension(body.resizeWidth);
     const resizeHeight = parseResizeDimension(body.resizeHeight);
     const aiUpscale = typeof body.aiUpscale === 'number' && body.aiUpscale > 0 ? body.aiUpscale : 0;
+    const sceneVariation = body.sceneVariation === true;
+    const sceneVariationStrength = normalizeSceneVariationStrength(body.sceneVariationStrength);
     const referenceImageBase64 = body.referenceImageBase64?.trim() ?? '';
     const referenceMimeType = body.referenceMimeType?.trim() ?? '';
     const referenceImages =
@@ -155,6 +161,8 @@ export async function POST(req: NextRequest) {
       imageSize,
       resizeTo,
       aiUpscale,
+      sceneVariation,
+      sceneVariationStrength,
       referenceImages: normalizedReferences
     });
 

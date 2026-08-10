@@ -8,7 +8,7 @@ import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { modelSupportsImageSize, normalizeModelCode } from '@/lib/modelOptions';
-import { buildPromptVariants } from '@/lib/promptVariants';
+import { buildPromptVariants, normalizeSceneVariationStrength, type SceneVariationStrength } from '@/lib/promptVariants';
 
 export type AuthMode = 'service_account' | 'api_key' | 'vertex_express';
 /** batch = toplu (async Batch API, cheaper); single = tekli (interactive generateContent, faster). */
@@ -39,6 +39,10 @@ export type BatchInput = {
     height: number;
   };
   aiUpscale?: number;
+  /** Semantic image edit: lock the product and refresh / replace its surrounding scene. */
+  sceneVariation?: boolean;
+  /** Scene change amount when sceneVariation is on. Default: low. */
+  sceneVariationStrength?: SceneVariationStrength;
 };
 
 export type BatchResult = {
@@ -737,10 +741,10 @@ async function runGeminiDeveloperInteractiveBatch(input: {
               {
                 role: 'user',
                 parts: [
-                  { text: promptVariant },
                   ...input.references.map((ref) => ({
                     inlineData: { mimeType: ref.mimeType, data: ref.base64 }
-                  }))
+                  })),
+                  { text: promptVariant }
                 ]
               }
             ],
@@ -849,10 +853,10 @@ async function generateVertexExpressImage(input: {
   aspectRatio: string;
   imageSize: string | undefined;
 }): Promise<BatchResult> {
-  const parts: unknown[] = [{ text: input.promptVariant }];
-  for (const ref of input.references) {
-    parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
-  }
+  const parts: unknown[] = input.references.map((ref) => ({
+    inlineData: { mimeType: ref.mimeType, data: ref.base64 }
+  }));
+  parts.push({ text: input.promptVariant });
 
   const payload: Record<string, unknown> = {
     contents: [{ role: 'user', parts }],
@@ -1183,29 +1187,20 @@ async function runVertexBatch(
   const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
   const jobs = prompts.map((promptVariant) => {
     return async () => {
-      const parts: unknown[] = [{ text: promptVariant }];
-      for (const ref of references) {
-        parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
-      }
-
+      const parts: unknown[] = references.map((ref) => ({
+        inlineData: { mimeType: ref.mimeType, data: ref.base64 }
+      }));
+      parts.push({ text: promptVariant });
       const payload = {
         contents: [{ role: 'user', parts }],
-        generationConfig: {
-          responseModalities: ['IMAGE', 'TEXT']
-        }
+        generationConfig: { responseModalities: ['IMAGE', 'TEXT'] }
       };
-
       const response = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(payload)
       });
-
       const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-
       if (!response.ok) {
         const errDetail = (data.error as Record<string, unknown> | undefined)?.message;
         const errMsg = firstStringValue([errDetail, data.message]) ?? `Vertex AI request failed (${response.status})`;
@@ -1215,15 +1210,6 @@ async function runVertexBatch(
       const extracted = extractVertexImageFromResponse(data);
       if (!extracted) {
         const textResponse = extractVertexTextFromResponse(data);
-        console.error('[vertex] no image in response:', {
-          status: response.status,
-          model: modelName,
-          location: region,
-          hasTextResponse: !!textResponse,
-          textPreview: textResponse?.substring(0, 200),
-          responseKeys: Object.keys(data),
-          candidateCount: Array.isArray(data.candidates) ? (data.candidates as unknown[]).length : 0
-        });
         throw getNoImageReturnedError(`Vertex AI returned no image in response.${textResponse ? ` Model said: "${textResponse.slice(0, 150)}"` : ''}`);
       }
 
@@ -1935,7 +1921,10 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
   const clampedCount = Math.max(1, Math.min(input.count, parseMaxBatch()));
   const maxReferenceImages = parseMaxReferenceImages();
   const model = normalizeRequestedModel(input.model) ?? process.env.GEMINI_IMAGE_MODEL ?? DEFAULT_MODEL;
-  const prompts = buildPromptVariants(input.basePrompt, clampedCount);
+  const prompts = buildPromptVariants(input.basePrompt, clampedCount, {
+    sceneVariation: input.sceneVariation === true,
+    sceneVariationStrength: normalizeSceneVariationStrength(input.sceneVariationStrength)
+  });
   const references = (input.referenceImages ?? []).slice(0, maxReferenceImages);
   const aspectRatio = normalizeAspectRatio(input.aspectRatio);
   const imageSize = normalizeImageSize(input.imageSize, model);

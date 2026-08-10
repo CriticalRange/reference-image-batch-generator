@@ -36,6 +36,11 @@ import {
   type ReferenceAnalysis,
   type ReferenceAnalysisDraft
 } from '@/lib/referenceAnalysis';
+import {
+  isSceneVariationStrength,
+  normalizeSceneVariationStrength,
+  type SceneVariationStrength
+} from '@/lib/promptVariants';
 
 type GenerationResult = {
   promptVariant: string;
@@ -148,6 +153,8 @@ type GenerationConfigSnapshot = {
   resizeWidth?: number;
   resizeHeight?: number;
   aiUpscale?: number;
+  sceneVariation?: boolean;
+  sceneVariationStrength?: SceneVariationStrength;
   requestedCount: number;
   /**
    * Reference metadata only in history/IDB — never store base64 here (quota).
@@ -252,6 +259,9 @@ const RENDER_MODE_STORAGE_KEY = 'reference-batch-render-mode-v1';
 const BATCH_RATE_LIMIT_STORAGE_KEY = 'reference-batch-ratelimit-v1';
 const LAST_PROMPT_STORAGE_KEY = 'reference-batch-last-prompt-v1';
 const AUTO_AI_ANALYSIS_STORAGE_KEY = 'reference-batch-auto-ai-analysis-v1';
+const SCENE_VARIATION_STORAGE_KEY = 'reference-batch-scene-variation-v1';
+const SCENE_VARIATION_STRENGTH_STORAGE_KEY = 'reference-batch-scene-variation-strength-v1';
+const DEFAULT_SCENE_VARIATION_STRENGTH: SceneVariationStrength = 'low';
 const DEFAULT_MODEL = 'vertex/gemini-2.5-flash-image';
 const ASPECT_RATIO_OPTIONS: AspectRatioOption[] = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
 const RESOLUTION_OPTIONS: ResolutionOption[] = ['512', '1K', '2K', '4K'];
@@ -741,6 +751,12 @@ export default function HomePage() {
   const [aiUpscale, setAiUpscale] = useState(0);
   /** When on, Gemini Flash analyzes each reference on generate and builds product prompts. */
   const [autoAiAnalysis, setAutoAiAnalysis] = useState(true);
+  /** Semantic edit mode: preserve the product and generate a different environment per variant. */
+  const [sceneVariation, setSceneVariation] = useState(false);
+  /** How much the surrounding scene should change (only when sceneVariation is on). Default: low. */
+  const [sceneVariationStrength, setSceneVariationStrength] = useState<SceneVariationStrength>(
+    DEFAULT_SCENE_VARIATION_STRENGTH
+  );
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [authMode, setAuthMode] = useState<AuthModeOption>('api_key');
   /** batch = toplu (async, cheaper); single = tekli (interactive, faster). */
@@ -1348,6 +1364,14 @@ export default function HomePage() {
     } else if (storedAutoAi === '1' || storedAutoAi === 'true') {
       setAutoAiAnalysis(true);
     }
+    const storedSceneVariation = window.localStorage.getItem(SCENE_VARIATION_STORAGE_KEY);
+    if (storedSceneVariation === '1' || storedSceneVariation === 'true') {
+      setSceneVariation(true);
+    }
+    const storedStrength = window.localStorage.getItem(SCENE_VARIATION_STRENGTH_STORAGE_KEY);
+    if (isSceneVariationStrength(storedStrength)) {
+      setSceneVariationStrength(storedStrength);
+    }
   }, []);
 
   useEffect(() => {
@@ -1369,6 +1393,16 @@ export default function HomePage() {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(AUTO_AI_ANALYSIS_STORAGE_KEY, autoAiAnalysis ? '1' : '0');
   }, [autoAiAnalysis]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(SCENE_VARIATION_STORAGE_KEY, sceneVariation ? '1' : '0');
+  }, [sceneVariation]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(SCENE_VARIATION_STRENGTH_STORAGE_KEY, sceneVariationStrength);
+  }, [sceneVariationStrength]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1753,6 +1787,8 @@ export default function HomePage() {
     const restoredResizePreset = toResizePresetOption(config.resizePreset, config.resizeWidth, config.resizeHeight);
     setResizePreset(restoredResizePreset);
     setAiUpscale(typeof config.aiUpscale === 'number' && config.aiUpscale > 0 ? config.aiUpscale : 0);
+    setSceneVariation(config.sceneVariation === true);
+    setSceneVariationStrength(normalizeSceneVariationStrength(config.sceneVariationStrength));
     if (restoredResizePreset === 'custom') {
       const restoredWidth = clampResizeDimension(config.resizeWidth ?? DEFAULT_CUSTOM_RESIZE_WIDTH);
       const restoredHeight = clampResizeDimension(config.resizeHeight ?? DEFAULT_CUSTOM_RESIZE_HEIGHT);
@@ -1950,6 +1986,8 @@ export default function HomePage() {
     const submittedAuthMode = authMode;
     const submittedRenderMode = renderMode;
     const submittedAutoAiAnalysis = autoAiAnalysis;
+    const submittedSceneVariation = sceneVariation;
+    const submittedSceneVariationStrength = normalizeSceneVariationStrength(sceneVariationStrength);
     const submittedRefs = referenceImages.map((img) => ({ base64: img.base64, mimeType: img.mimeType, fileName: img.fileName }));
 
     if (submittedRefs.length === 0) {
@@ -1970,6 +2008,9 @@ export default function HomePage() {
       resizePreset,
       ...(resolvedResize ? { resizeWidth: resolvedResize.width, resizeHeight: resolvedResize.height } : {}),
       ...(aiUpscale > 0 ? { aiUpscale } : {}),
+      ...(submittedSceneVariation
+        ? { sceneVariation: true, sceneVariationStrength: submittedSceneVariationStrength }
+        : {}),
       requestedCount: submittedCount,
     };
 
@@ -2059,6 +2100,10 @@ export default function HomePage() {
             resizeWidth: resolvedResize?.width,
             resizeHeight: resolvedResize?.height,
             aiUpscale: aiUpscale > 0 ? aiUpscale : undefined,
+            sceneVariation: submittedSceneVariation,
+            sceneVariationStrength: submittedSceneVariation
+              ? submittedSceneVariationStrength
+              : undefined,
             referenceImages: refs
           })
         });
@@ -3756,6 +3801,37 @@ export default function HomePage() {
               )}
             </label>
 
+            <label className={`checkbox-row scene-variation-row${sceneVariation ? ' is-active' : ''}`} htmlFor="scene-variation">
+              <input
+                id="scene-variation"
+                type="checkbox"
+                checked={sceneVariation}
+                onChange={(event) => setSceneVariation(event.target.checked)}
+                disabled={isLoading}
+              />
+              <span className="field-head">
+                <span>{t('sceneVariation')}</span>
+                <span className="experimental-chip">{t('semanticEdit')}</span>
+                <InfoHint text={t('fieldInfo.sceneVariation')} />
+              </span>
+              {sceneVariation && (
+                <select
+                  className="field-select scene-variation-strength-select"
+                  value={sceneVariationStrength}
+                  onChange={(event) =>
+                    setSceneVariationStrength(normalizeSceneVariationStrength(event.target.value))
+                  }
+                  disabled={isLoading}
+                  aria-label={t('sceneVariationStrength')}
+                  title={t('sceneVariationStrength')}
+                >
+                  <option value="low">{t('sceneVariationStrengthLow')}</option>
+                  <option value="medium">{t('sceneVariationStrengthMedium')}</option>
+                  <option value="high">{t('sceneVariationStrengthHigh')}</option>
+                </select>
+              )}
+            </label>
+
             <div className={`generate-btn-bar${isLoading ? ' has-cancel' : ''}`}>
               <motion.button
                 type="submit"
@@ -4811,6 +4887,9 @@ function isGenerationConfigSnapshot(value: unknown): value is GenerationConfigSn
   const hasResizeHeight = typeof record.resizeHeight === 'number';
   const hasValidResizePair = (!hasResizeWidth && !hasResizeHeight) || (hasResizeWidth && hasResizeHeight);
   const hasValidAiUpscale = typeof record.aiUpscale === 'undefined' || typeof record.aiUpscale === 'number';
+  const hasValidSceneVariation = typeof record.sceneVariation === 'undefined' || typeof record.sceneVariation === 'boolean';
+  const hasValidSceneVariationStrength =
+    typeof record.sceneVariationStrength === 'undefined' || isSceneVariationStrength(record.sceneVariationStrength);
   return (
     typeof record.basePrompt === 'string' &&
     typeof record.model === 'string' &&
@@ -4821,6 +4900,8 @@ function isGenerationConfigSnapshot(value: unknown): value is GenerationConfigSn
     hasValidResizePreset &&
     hasValidResizePair &&
     hasValidAiUpscale &&
+    hasValidSceneVariation &&
+    hasValidSceneVariationStrength &&
     hasValidReferences
   );
 }

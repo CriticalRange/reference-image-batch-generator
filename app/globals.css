@@ -704,6 +704,43 @@ label {
   flex: 0 0 auto;
 }
 
+.scene-variation-row {
+  padding: 0.72rem 0.78rem;
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--surface) 92%, var(--brand) 8%);
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+  flex-wrap: wrap;
+  row-gap: 0.45rem;
+}
+
+.scene-variation-row.is-active {
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--border));
+  background: color-mix(in srgb, var(--surface) 84%, var(--brand) 16%);
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+
+.scene-variation-strength-select {
+  margin-left: auto;
+  min-width: 5.5rem;
+  max-width: 8rem;
+  flex: 0 0 auto;
+}
+
+.experimental-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.2rem;
+  padding: 0.08rem 0.42rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  color: var(--brand);
+  font-size: 0.65rem;
+  font-weight: 750;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
 .inline-select-grid {
   display: grid;
   gap: 0.6rem;

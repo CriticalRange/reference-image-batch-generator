@@ -69,6 +69,12 @@ const resources = {
       productOptionsPromptHint:
         'Choosing body + door colors fills/overwrites the prompt with the commercial catalogue template. When AI auto-analysis is on, Gemini Flash analyzes each reference (separate body/door colors) and builds a product-specific prompt (editable on loading cards).',
       autoAiAnalysis: 'AI auto-analysis',
+      sceneVariation: 'Preserve product, renew scene',
+      semanticEdit: 'Semantic edit',
+      sceneVariationStrength: 'Scene change amount',
+      sceneVariationStrengthLow: 'Low',
+      sceneVariationStrengthMedium: 'Medium',
+      sceneVariationStrengthHigh: 'High',
       analysisFailed: 'Reference analysis failed',
       toastAnalysisFailed: 'Analysis failed: {{product}}',
       toastAnalysisSaved: 'Analysis & prompt saved for this product',
@@ -274,6 +280,8 @@ const resources = {
         resizeOutput: 'Optionally resize generated images to export-friendly dimensions. For marketplaces like Trendyol and Hepsiburada, 2000x3000 is recommended.',
         autoAiAnalysis:
           'When enabled, Gemini Flash analyzes each product photo on generate and builds a product-specific catalogue prompt (editable on loading cards). Turn off to skip analysis and use the base prompt / product option template only.',
+        sceneVariation:
+          'Preserves product geometry, colors, materials, details, camera angle, scale and placement while refreshing the surrounding scene. Choose change amount: Low = subtle restyle of the same room; Medium = clear material/prop redesign; High = full environment replacement. Semantic editing only — Gemini image models do not expose a pixel-mask background swap.',
         aiUpscale: 'Runs ESRGAN Thick upscale (selectable 2x or 3x) after generation, then applies the selected resize/export size. Uses more CPU/RAM and takes longer per image.',
         batchRateLimit: 'Seconds to wait between each batch generation run. Set to 0 for no delay. Recommended: 120s (2 min) to avoid API exhaustion. Failed products also auto-retry up to 5 times with backoff (500/timeout/rate limit).'
       }
@@ -346,6 +354,12 @@ const resources = {
       productOptionsPromptHint:
         'Gövde + kapak rengi seçilince prompt katalog şablonuyla dolar. AI otomatik tahmin açıksa her referans Gemini Flash ile analiz edilir (gövde/kapak ayrı); loading kartlara tıklayarak tahminleri ve prompt’u düzenleyebilirsiniz.',
       autoAiAnalysis: 'AI otomatik tahmin',
+      sceneVariation: 'Ürünü koru, sahneyi yenile',
+      semanticEdit: 'Semantik düzenleme',
+      sceneVariationStrength: 'Sahne değişim miktarı',
+      sceneVariationStrengthLow: 'Az',
+      sceneVariationStrengthMedium: 'Orta',
+      sceneVariationStrengthHigh: 'Çok',
       analysisFailed: 'Referans analizi başarısız',
       toastAnalysisFailed: 'Analiz başarısız: {{product}}',
       toastAnalysisSaved: 'Bu ürün için analiz ve prompt kaydedildi',
@@ -551,6 +565,8 @@ const resources = {
         resizeOutput: 'Üretilen görselleri dışa aktarıma uygun boyutlara yeniden ölçekler. Özellikle Trendyol, Hepsiburada gibi sitelere 2000x3000 boyutlandırması önerilir.',
         autoAiAnalysis:
           'Açıkken üretimde her ürün fotoğrafı Gemini Flash ile analiz edilir ve ürüne özel katalog prompt üretilir (loading kartlardan düzenlenebilir). Kapalıyken analiz atlanır; sadece ana istem / ürün seçenekleri şablonu kullanılır.',
+        sceneVariation:
+          'Ürünün geometrisini, renklerini, malzemelerini, detaylarını, kamera açısını, ölçeğini ve kadrajdaki yerini korurken çevreyi yeniler. Değişim miktarı: Az = aynı odada hafif makyaj; Orta = malzeme ve prop’larda belirgin yenileme; Çok = ortamın tamamen değişmesi. Semantik düzenlemedir; Gemini görsel modelleri piksel maskeli arka plan swap sunmuyor.',
         aiUpscale: 'Uretimden sonra ESRGAN Thick (2x veya 3x) calistirir, ardindan secili yeniden boyutlandirma/dis aktarim boyutunu uygular. Daha fazla CPU/RAM kullanir ve gorsel basina daha uzun surer.',
         batchRateLimit: 'Her toplu üretim turu arasındaki bekleme süresi (saniye). Gecikme istemiyorsanız 0 girin. Önerilen: 120s (2 dk). Hata olursa ürün başına en fazla 5 deneme (500/timeout/rate limit için backoff ile otomatik tekrar).'
       }

@@ -446,6 +446,20 @@ components:
           description: |
             ESRGAN upscale factor (`2` or `3`). Not supported on Vercel serverless.
           enum: [2, 3]
+        sceneVariation:
+          type: boolean
+          default: false
+          description: >-
+            Semantic image-editing mode. Preserves the referenced product's identity,
+            geometry, materials and composition while refreshing or replacing the surrounding scene.
+        sceneVariationStrength:
+          type: string
+          enum: [low, medium, high]
+          default: low
+          description: >-
+            How much the surrounding scene should change when `sceneVariation` is true.
+            `low` = subtle restyle of the same room; `medium` = clear redesign of materials and props;
+            `high` = full environment replacement. Defaults to `low`.
         referenceImages:
           type: array
           description: Preferred multi-reference input
