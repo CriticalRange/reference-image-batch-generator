@@ -245,7 +245,9 @@ const resources = {
         'Model returned text instead of an image: "{{modelText}}". Try another image model, simplify the prompt, or adjust references.',
       modelReturnedNoImage: 'Model returned no image. Try another image model, simplify the prompt, or adjust references.',
       payloadTooLarge:
-        'Generated images are too large for one response. Reduce variant count, choose a smaller aspect/output size, or turn on resize.',
+        'Request or response exceeded the host size limit (~4.5 MB on Vercel). Product photos are auto-compressed on upload; also reduce variant count, enable resize, or set BLOB_READ_WRITE_TOKEN for large outputs.',
+      referenceOriginalTooLarge:
+        'This photo is larger than {{maxMb}} MB. Please choose a smaller file.',
       providerInvalidApiKey: 'API key is invalid. Please update your provider API key and try again.',
       providerRateLimitExceeded: 'Rate limit exceeded. Please wait a moment and try again.',
       providerModelNotAvailable: 'This model is not available on Together AI.',
@@ -269,7 +271,7 @@ const resources = {
         authMode:
           'Credentials for single production: Service Account (Vertex AI), API Key (Gemini Developer API), or Vertex Express Mode. Batch production uses GEMINI_API_KEY via the Batch API.',
         referenceImages:
-          'Upload product photos for bulk generation. Each photo is processed as its own job (variants × that photo). No photo count cap.',
+          'Upload product photos for bulk generation. Each photo is processed as its own job (variants × that photo). Large files are auto-compressed in the browser (max ~2.2 MB / 2048 px) before the API call so Vercel’s payload limit is not hit.',
         basePrompt:
           'Optional. When AI auto-analysis is on, Gemini Flash builds a per-product catalogue prompt. Use this field as manual override / fallback.',
         negativePrompt: 'Describe what the model should avoid in outputs.',
@@ -530,7 +532,9 @@ const resources = {
         'Model görsel yerine metin döndürdü: "{{modelText}}". Başka bir görsel model deneyin, istemi sadeleştirin veya referansları ayarlayın.',
       modelReturnedNoImage: 'Model görsel döndürmedi. Başka bir görsel model deneyin, istemi sadeleştirin veya referansları ayarlayın.',
       payloadTooLarge:
-        'Üretilen görseller tek bir yanıt için çok büyük. Varyant sayısını azaltın, daha küçük bir oran/çıktı boyutu seçin veya yeniden boyutlandırmayı açın.',
+        'İstek veya yanıt sunucu boyut limitini aştı (Vercel’de ~4.5 MB). Ürün fotoğrafları yüklemede otomatik sıkıştırılır; ayrıca varyant sayısını azaltın, yeniden boyutlandırmayı açın veya büyük çıktılar için BLOB_READ_WRITE_TOKEN ayarlayın.',
+      referenceOriginalTooLarge:
+        'Bu fotoğraf {{maxMb}} MB sınırından büyük. Lütfen daha küçük bir dosya seçin.',
       providerInvalidApiKey: 'API anahtarı geçersiz. Sağlayıcı API anahtarınızı güncelleyip tekrar deneyin.',
       providerRateLimitExceeded: 'İstek limiti aşıldı. Lütfen kısa bir süre bekleyip tekrar deneyin.',
       providerModelNotAvailable: 'Bu model Together AI üzerinde kullanılamıyor.',
@@ -554,7 +558,7 @@ const resources = {
         authMode:
           'Tekli üretim kimlik bilgisi: Service Account (Vertex AI), API Key (Gemini Developer API) veya Vertex Express. Toplu üretim Batch API için GEMINI_API_KEY kullanır.',
         referenceImages:
-          'Toplu üretim için ürün fotoğrafları yükleyin. Her fotoğraf kendi işi olarak işlenir (varyant × o foto). Fotoğraf sayısı limiti yok.',
+          'Toplu üretim için ürün fotoğrafları yükleyin. Her fotoğraf kendi işi olarak işlenir (varyant × o foto). Büyük dosyalar tarayıcıda API’ye gitmeden otomatik sıkıştırılır (yaklaşık en fazla 2.2 MB / 2048 px) — Vercel payload limiti için.',
         basePrompt:
           'Opsiyonel. AI otomatik tahmin açıkken Gemini Flash ürün bazlı katalog prompt üretir. Bu alan elle müdahale / analiz yedeği içindir.',
         negativePrompt: 'Çıktılarda modelin kaçınması gereken öğeleri yazın.',

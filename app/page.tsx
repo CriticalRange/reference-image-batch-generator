@@ -41,6 +41,10 @@ import {
   normalizeSceneVariationStrength,
   type SceneVariationStrength
 } from '@/lib/promptVariants';
+import {
+  compressReferenceImageFile,
+  REFERENCE_ORIGINAL_MAX_BYTES
+} from '@/lib/compressReferenceImage';
 
 type GenerationResult = {
   promptVariant: string;
@@ -248,7 +252,8 @@ const MAX_RESIZE_DIMENSION = 8192;
 const DEFAULT_CUSTOM_RESIZE_WIDTH = 2000;
 const DEFAULT_CUSTOM_RESIZE_HEIGHT = 3000;
 const DEFAULT_TOGETHER_STEPS = 28;
-const MAX_REFERENCE_FILE_BYTES = 8 * 1024 * 1024;
+/** Soft UI cap before compression; hard original limit is REFERENCE_ORIGINAL_MAX_BYTES. */
+const MAX_REFERENCE_FILE_BYTES = REFERENCE_ORIGINAL_MAX_BYTES;
 const HISTORY_STORAGE_KEY = 'reference-batch-history-v1';
 const ARCHIVE_STORAGE_KEY = 'reference-batch-archive-v1';
 const ARCHIVE_TTL_DAYS = 15;
@@ -1849,30 +1854,34 @@ export default function HomePage() {
 
       if (file.size > MAX_REFERENCE_FILE_BYTES) {
         toast.error(t('toastReferenceReadFailed'), {
-          description: t('payloadTooLarge'),
+          description: t('referenceOriginalTooLarge', {
+            maxMb: Math.round(MAX_REFERENCE_FILE_BYTES / (1024 * 1024))
+          }),
           duration: 5000
         });
         continue;
       }
 
-      const dataUrl = await readFileAsDataUrl(file);
-      const parsed = parseDataUrlImage(dataUrl);
-
-      if (!parsed) {
+      try {
+        // browser-image-compression: downscale + JPEG so base64 request stays under Vercel 4.5 MB.
+        const compressed = await compressReferenceImageFile(file);
+        createdReferences.push({
+          id: makeId(),
+          base64: compressed.base64,
+          mimeType: compressed.mimeType,
+          previewDataUrl: compressed.previewDataUrl,
+          fileName: file.name
+        });
+      } catch (compressError) {
+        console.error('[reference] compress failed', compressError);
         toast.error(t('toastReferenceReadFailed'), {
-          description: t('toastReferenceReadFailedDesc'),
+          description:
+            compressError instanceof Error && compressError.message.trim()
+              ? compressError.message
+              : t('toastReferenceReadFailedDesc'),
           duration: 5000
         });
-        continue;
       }
-
-      createdReferences.push({
-        id: makeId(),
-        base64: parsed.base64,
-        mimeType: parsed.mimeType,
-        previewDataUrl: dataUrl,
-        fileName: file.name
-      });
     }
 
     if (createdReferences.length > 0) {
@@ -4364,29 +4373,6 @@ export default function HomePage() {
   );
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('File read error'));
-    reader.readAsDataURL(file);
-  });
-}
-
-function parseDataUrlImage(dataUrl: string): { mimeType: string; base64: string } | null {
-  const [prefix, base64 = ''] = dataUrl.split(',');
-  const mimeMatch = /^data:(.*);base64$/.exec(prefix);
-
-  if (!mimeMatch || !base64) {
-    return null;
-  }
-
-  return {
-    mimeType: mimeMatch[1],
-    base64
-  };
-}
-
 function base64ToBlob(base64: string, mimeType: string): Blob {
   const binary = atob(base64);
   const chunkSize = 1024;
@@ -5249,7 +5235,12 @@ function formatGenerationError(message: string, t: (key: string, options?: Recor
     return t('modelReturnedNoImage');
   }
 
-  if (trimmed.includes('Generated payload too large')) {
+  if (
+    trimmed.includes('Generated payload too large') ||
+    trimmed.includes('FUNCTION_PAYLOAD_TOO_LARGE') ||
+    /payload too large/i.test(trimmed) ||
+    /\b413\b/.test(trimmed)
+  ) {
     return t('payloadTooLarge');
   }
 
