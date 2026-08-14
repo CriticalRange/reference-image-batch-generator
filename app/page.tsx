@@ -1863,7 +1863,7 @@ export default function HomePage() {
       }
 
       try {
-        // browser-image-compression: downscale + JPEG so base64 request stays under Vercel 4.5 MB.
+        // browser-image-compression: downscale + high-quality JPEG before base64.
         const compressed = await compressReferenceImageFile(file);
         createdReferences.push({
           id: makeId(),

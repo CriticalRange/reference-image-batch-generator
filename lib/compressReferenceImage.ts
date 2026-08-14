@@ -1,11 +1,14 @@
 import imageCompression from 'browser-image-compression';
 
 /**
- * Client-side reference prep for Vercel’s ~4.5 MB function payload limit.
- * Base64 inflates size by ~33%, so the raw file target stays well under 4.5 MB.
+ * Client-side reference prep before base64 upload.
+ * Higher quality/size preserves product detail for generation.
+ * Note: base64 inflates ~33%; on Vercel (~4.5 MB body limit) very large
+ * payloads may still fail — prefer Blob/VPS or fewer references if that happens.
  */
-export const REFERENCE_COMPRESS_MAX_SIZE_MB = 2.2;
-export const REFERENCE_COMPRESS_MAX_DIMENSION = 2048;
+export const REFERENCE_COMPRESS_MAX_SIZE_MB = 5;
+/** Long-edge cap; product shots are typically up to 2000×3000. */
+export const REFERENCE_COMPRESS_MAX_DIMENSION = 3000;
 /** Reject originals larger than this before attempting compression. */
 export const REFERENCE_ORIGINAL_MAX_BYTES = 20 * 1024 * 1024;
 
@@ -56,9 +59,9 @@ export async function compressReferenceImageFile(file: File): Promise<Compressed
     maxSizeMB: REFERENCE_COMPRESS_MAX_SIZE_MB,
     maxWidthOrHeight: REFERENCE_COMPRESS_MAX_DIMENSION,
     useWebWorker: true,
-    // JPEG keeps payload small while remaining widely supported by Gemini / Vertex.
+    // JPEG keeps payload reasonable while remaining widely supported by Gemini / Vertex.
     fileType: 'image/jpeg',
-    initialQuality: 0.85,
+    initialQuality: 0.95,
     // Prefer quality when the source is already small enough.
     alwaysKeepResolution: false
   });

@@ -271,7 +271,7 @@ const resources = {
         authMode:
           'Credentials for single production: Service Account (Vertex AI), API Key (Gemini Developer API), or Vertex Express Mode. Batch production uses GEMINI_API_KEY via the Batch API.',
         referenceImages:
-          'Upload product photos for bulk generation. Each photo is processed as its own job (variants × that photo). Large files are auto-compressed in the browser (max ~2.2 MB / 2048 px) before the API call so Vercel’s payload limit is not hit.',
+          'Upload product photos for bulk generation. Each photo is processed as its own job (variants × that photo). Large files are auto-compressed in the browser (max ~5 MB / 3000 px, high JPEG quality) before the API call.',
         basePrompt:
           'Optional. When AI auto-analysis is on, Gemini Flash builds a per-product catalogue prompt. Use this field as manual override / fallback.',
         negativePrompt: 'Describe what the model should avoid in outputs.',
@@ -558,7 +558,7 @@ const resources = {
         authMode:
           'Tekli üretim kimlik bilgisi: Service Account (Vertex AI), API Key (Gemini Developer API) veya Vertex Express. Toplu üretim Batch API için GEMINI_API_KEY kullanır.',
         referenceImages:
-          'Toplu üretim için ürün fotoğrafları yükleyin. Her fotoğraf kendi işi olarak işlenir (varyant × o foto). Büyük dosyalar tarayıcıda API’ye gitmeden otomatik sıkıştırılır (yaklaşık en fazla 2.2 MB / 2048 px) — Vercel payload limiti için.',
+          'Toplu üretim için ürün fotoğrafları yükleyin. Her fotoğraf kendi işi olarak işlenir (varyant × o foto). Büyük dosyalar tarayıcıda API’ye gitmeden otomatik sıkıştırılır (yaklaşık en fazla 5 MB / 3000 px, yüksek JPEG kalitesi).',
         basePrompt:
           'Opsiyonel. AI otomatik tahmin açıkken Gemini Flash ürün bazlı katalog prompt üretir. Bu alan elle müdahale / analiz yedeği içindir.',
         negativePrompt: 'Çıktılarda modelin kaçınması gereken öğeleri yazın.',
