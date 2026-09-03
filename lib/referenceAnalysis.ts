@@ -119,6 +119,13 @@ export type ReferenceAnalysis = {
    * Example: "2 left + 2 right + 1 center-front only (no rear center)".
    */
   legLayout: string;
+  /** Handle metal when handles exist. none = handleless. */
+  handleMetal?: 'none' | 'gold' | 'silver' | 'black';
+  /**
+   * Leg hardware finish from the photo.
+   * none = no separate legs; body-match = wood legs that follow the carcass (not metal).
+   */
+  legFinish?: 'none' | 'gold' | 'silver' | 'black' | 'white' | 'body-match';
   confidence: number;
   notes: string;
   prompt: string;
@@ -134,13 +141,15 @@ export type ReferenceAnalysisDraft = Omit<ReferenceAnalysis, 'prompt'> & {
 
 /** Default vibe when AI/user leave roomVibe empty. */
 export const DEFAULT_ROOM_VIBE =
-  'calm premium living interior, soft greige walls, mid-tone neutral floor, sparse elegant decor that lets the furniture stay the hero';
+  'calm premium living interior, mid-tone greige walls, mid-tone wood floor, sparse elegant decor, north-window daylight with opposite bounce fill';
 
 const FINISH_MATERIAL: Record<string, string> = {
   white: 'matte white premium furniture lacquer',
   anthracite: 'anthracite premium furniture finish',
-  travertine: 'natural travertine stone-look finish',
-  'sapphire-oak': 'sapphire oak wood veneer with natural grain',
+  travertine:
+    'Traverten (catalogue lock): light ivory–cream limestone-look laminate on the door faces, cool-warm pale beige / greige — NEVER yellow honey oak. Soft wavy sedimentary veins in muted taupe, plus fine sand-grain pores and tiny speckles (stone, not wood fiber). Matte or very soft satin, dry stone look — not glossy marble, not oak veneer. SLAT / CHEVRON / HERRINGBONE doors: the slat layout is geometry only. Each slat face is still this same travertine stone laminate — do NOT turn slats into oak, walnut, or linear wood grain. HARD LOCK: keep ivory–cream stone; do not drift to sapphire-oak, amber wood, espresso, rust-orange, terracotta, charcoal, or bright white Carrara. Shadows may deepen slightly; lit door faces stay light cream travertine.',
+  'sapphire-oak':
+    'Safir meşe (catalogue lock): light–medium yellowish natural oak veneer, straw/pale-honey base with a slight golden-yellow cast — not walnut, not grey, not blue. Straight longitudinal oak grain, medium contrast only (soft darker streaks, no rustic high-contrast grain). Matte or very soft satin lacquer, factory laminate/veneer look. HARD LOCK: keep this same lightness in every light; do not drift to espresso, dark walnut, smoked oak, amber-heavy honey oak, bleached white oak, or bluish “sapphire” wood. Shadows may darken slightly; the lit surface must stay light–medium yellow oak.',
   // Alina is a laser-less wood color; laser lines (if any) are separate shallow illusion-like patterns.
   'alina-walnut':
     'Alina walnut wood veneer with warm natural grain (color finish is not laser-cut; any laser pattern is a separate decorative illusion on the surface)'
@@ -153,9 +162,9 @@ function finishLabel(code: string): string {
     case 'anthracite':
       return 'anthracite';
     case 'travertine':
-      return 'travertine';
+      return 'Traverten (light ivory–cream stone)';
     case 'sapphire-oak':
-      return 'sapphire oak';
+      return 'Safir meşe (light–medium yellowish oak)';
     case 'alina-walnut':
       return 'Alina walnut';
     default:
@@ -202,6 +211,8 @@ Return ONLY valid JSON (no markdown) with exactly these keys and ONLY the allowe
   "plexiglass": "none|gold-mirror|silver-mirror",
   "handlePresence": "with-handle|no-handle",
   "handleDescription": "short description if handles exist, else empty string",
+  "handleMetal": "none|gold|silver|black",
+  "legFinish": "none|gold|silver|black|white|body-match",
   "roomStyle": "minimalist|modern|classic|industrial",
   "roomVibe": "short English atmosphere phrase for the best room vibe for THIS product",
   "hasLaserPatterns": boolean,
@@ -225,6 +236,9 @@ bodyColor (gövde / carcass / sides / top structure — not door faces): white |
 doorColor (kapak / door panels only): white | anthracite | travertine | sapphire-oak | alina-walnut
 - Judge body and doors independently (e.g. white body + travertine doors, sapphire-oak body + white doors, both alina-walnut).
 - travertine is door-only in this catalog — never use travertine as bodyColor.
+- travertine (Traverten, door faces only): LIGHT ivory–cream / pale beige limestone-look with soft taupe veins, fine pores and speckles. It is NOT rust-orange, terracotta, dark brown stone, grey concrete, or polished Carrara.
+- SLATTED / CHEVRON / HERRINGBONE / DIAGONAL door faces (CRITICAL): slat geometry is NOT a material. Pale cream slats with pores, speckles or wavy stone veins = travertine even if they look “wood-like” at a glance. Do NOT classify those doors as sapphire-oak just because they are slatted. sapphire-oak requires continuous yellow-oak wood fiber along the slat. When unsure between pale stone slats vs pale oak slats, prefer travertine if you see pinholes/speckles/cloudy limestone; prefer sapphire-oak only if you see clear linear wood grain and honey-yellow timber.
+- sapphire-oak (Safir meşe): LIGHT–MEDIUM yellowish natural oak only (straw / pale honey, slight gold). Straight grain, medium contrast, matte/satin. It is NOT dark walnut, smoked oak, grey oak, blue-tinted wood, or heavy amber honey oak. If the wood is clearly dark brown (Alina/walnut), use alina-walnut — not sapphire-oak.
 - alina-walnut (Alina ceviz): this is a LASER-LESS wood COLOR/finish. It is not a laser material. However, Alina products often have laser-style decorative lines that are an ILLUSION — shallow surface patterns that look laser-cut but the finish code stays alina-walnut only. When those patterns are visible set hasLaserPatterns=true; when not, false. Never invent a separate laser color enum.
 - If body and doors match, set the same enum on both (e.g. both white or both alina-walnut).
 
@@ -256,15 +270,32 @@ Rules:
   * legLayout: brief English positions string (empty when no freestanding legs). Prefer phrases like "four corners", "four corners + center-front only", "four corners + center-front + center-rear", "two front legs only".
 - plexiglass: only gold-mirror / silver-mirror if clearly visible; else none. Never invent.
 - handlePresence: with-handle only if handles are visible.
+- handleMetal (CRITICAL — metal color of pulls/knobs only):
+  * no-handle → "none".
+  * gold = clearly brass / champagne / yellow-gold metal.
+  * silver = chrome, nickel, steel, cool grey mirror metal. Warm studio glare on chrome is STILL silver — do not call chrome gold.
+  * black = matte black metal hardware.
+  * Do not copy plexiglass gold/silver onto handles. Judge the handle itself.
+- legFinish (CRITICAL — look only at freestanding legs/feet that reach the floor):
+  * wall-mounted / no floor legs / plinth only → "none".
+  * gold = brass / champagne metal legs.
+  * silver = chrome, nickel, steel, tapered metal pins. Cool grey shine = silver. Do NOT call chrome gold because the room light is warm or because plexiglass is gold.
+  * black = matte black metal legs.
+  * white = painted/lacquered white legs (not just a highlight on chrome).
+  * body-match = wooden / laminate legs that match the carcass wood or paint — not a separate metal color.
+  * Ignore filename letters (AG/BG/ATG). Those are not the leg color.
+  * Do not invent metal legs if the photo shows wood feet or a plinth.
 - doorCount: optional approximate door/panel count when obvious, else null (not critical).
 - roomStyle: one of minimalist|modern|classic|industrial for the catalogue scene framework.
 - roomVibe (CRITICAL free text — invent a good fit from product type, finish and style):
   * Write 12–28 English words describing the BEST room atmosphere for THIS exact product.
-  * Template: "[mood] [room type], [wall palette], [floor material tone], [1–2 restrained accent materials], product stays the hero".
+  * Template: "[mood] [room type], [wall palette], [floor material tone], [1–2 restrained accent materials], even wrap lighting on the product".
+  * LIGHTING IN THE VIBE: north-facing / overcast window daylight with a white bounce on the shadow side. One real light direction. Not high-key, not cinematic, not a sunbeam.
+  * FORBIDDEN vibe words: bright, airy, sunlit, sun-drenched, high-key, floodlit, luminous, glowing, daylight-flooded, sun-soaked, sun patch, window splash, shaft of light, IKEA-bright. Never write "bright contemporary".
   * Examples:
-    - "Warm contemporary living room, soft greige plaster, mid-tone oak floor, muted brass accents, uncluttered staging"
-    - "Airy modern hallway, cool greige walls, pale stone floor, sparse ceramic decor, quiet luxury mood"
-    - "Soft classic bedroom, warm ivory walls, light wood floor, linen textiles, gentle champagne metal notes"
+    - "Warm contemporary living room, mid-tone greige plaster, mid oak floor, muted brass accents, north-window daylight and bounce fill"
+    - "Modern hallway, cool greige walls, pale stone floor, sparse ceramic decor, overcast window light"
+    - "Soft classic bedroom, warm ivory walls, light wood floor, linen textiles, natural window light, no high-key"
   * Match roomStyle loosely but personalize to body/door finishes (e.g. Alina walnut → warmer woods; anthracite → cooler greige).
   * Do NOT return a color enum. Do NOT overcrowd the scene description.
 - hasLaserPatterns: true only if decorative laser-style lines are actually visible (including Alina illusion patterns). Do not invent laser patterns or hardware.`;
@@ -329,6 +360,8 @@ export function parseAnalysisJson(raw: string): ReferenceAnalysisDraft {
     doorCount: normalizeDoorCount(parsed.doorCount),
     legCount: normalizeLegCount(parsed.legCount, mounting),
     legLayout: normalizeLegLayout(parsed.legLayout, mounting, parsed.legCount),
+    handleMetal: normalizeHandleMetal(parsed.handleMetal, handlePresence, parsed.handleDescription),
+    legFinish: normalizeLegFinish(parsed.legFinish, mounting, parsed.legCount),
     confidence,
     notes: String(parsed.notes ?? '').trim()
   };
@@ -363,6 +396,8 @@ export function finalizeAnalysis(draft: ReferenceAnalysisDraft): ReferenceAnalys
     // Wall-mounted / no freestanding legs → leg count is disabled (null).
     legCount,
     legLayout: normalizeLegLayout(draft.legLayout, mounting, legCount),
+    handleMetal: normalizeHandleMetal(draft.handleMetal, handlePresence, draft.handleDescription),
+    legFinish: normalizeLegFinish(draft.legFinish, mounting, legCount),
     confidence: clamp01(draft.confidence),
     notes: String(draft.notes ?? '').trim()
   };
@@ -371,6 +406,33 @@ export function finalizeAnalysis(draft: ReferenceAnalysisDraft): ReferenceAnalys
     ...normalized,
     prompt: buildCommercialCataloguePromptFromAnalysis(normalized)
   };
+}
+
+/** Lighting-intensity adjectives that push the image model into a one-sided blast. */
+const ROOM_VIBE_FORBIDDEN_LIGHTING =
+  /\b(bright|airy|sunlit|sun-drenched|sundrenched|high-key|highkey|floodlit|luminous|glowing|daylight-flooded|sun-soaked|sunsoaked)\b/gi;
+
+function hasEvenProductLightingPhrase(text: string): boolean {
+  return /\beven (wrap|commercial|catalogue)?\s*(light|lighting|illumination)\b|\bbalanced (wrap |commercial )?(light|lighting|illumination)\b|\bwrap lighting\b/i.test(
+    text
+  );
+}
+
+function sanitizeRoomVibeLighting(text: string): string {
+  let next = text
+    .replace(ROOM_VIBE_FORBIDDEN_LIGHTING, '')
+    .replace(/\s+,/g, ',')
+    .replace(/,\s*,+/g, ',')
+    .replace(/\s+/g, ' ')
+    .replace(/^[,.\s]+|[,.\s]+$/g, '')
+    .trim();
+  if (!next) {
+    return DEFAULT_ROOM_VIBE;
+  }
+  if (!hasEvenProductLightingPhrase(next)) {
+    next = `${next.replace(/[.,;]+$/, '')}, even wrap lighting on all camera-visible product faces`;
+  }
+  return next.slice(0, 240);
 }
 
 function normalizeRoomVibe(value: unknown): string {
@@ -384,24 +446,24 @@ function normalizeRoomVibe(value: unknown): string {
   // Legacy accent enums → short vibe seeds (AI will rewrite on next analysis).
   const legacyAccent: Record<string, string> = {
     'warm-beige':
-      'Warm soft-beige living interior, greige walls, mid-tone wood floor, quiet champagne metal notes',
+      'Warm soft-beige living interior, greige walls, mid-tone wood floor, quiet champagne metal notes, even wrap lighting on the product',
     'soft-olive':
-      'Calm modern room with soft olive textile accents, greige walls, light wood floor, airy staging',
+      'Calm modern room with soft olive textile accents, greige walls, light wood floor, even wrap lighting on the product',
     'muted-terracotta':
-      'Warm contemporary room with muted terracotta accents, soft plaster walls, natural wood floor',
+      'Warm contemporary room with muted terracotta accents, soft plaster walls, natural wood floor, even wrap lighting on the product',
     'slate-blue':
-      'Cool modern living room with slate-blue soft accents, greige walls, mid-tone neutral floor',
+      'Cool modern living room with slate-blue soft accents, greige walls, mid-tone neutral floor, even wrap lighting on the product',
     'champagne-gold':
-      'Quiet luxury interior with champagne-gold metal accents, warm greige walls, refined staging',
+      'Quiet luxury interior with champagne-gold metal accents, warm greige walls, even wrap lighting on the product',
     'charcoal-grey':
-      'Restrained modern interior with charcoal soft accents, cool greige walls, clean neutral floor'
+      'Restrained modern interior with charcoal soft accents, cool greige walls, clean neutral floor, even wrap lighting on the product'
   };
   const key = text.toLowerCase().replace(/\s+/g, '-').replace(/_/g, '-');
   if (legacyAccent[key]) {
     return legacyAccent[key];
   }
 
-  return text.slice(0, 220);
+  return sanitizeRoomVibeLighting(text);
 }
 
 function normalizeDoorCount(value: unknown): number | null {
@@ -542,8 +604,10 @@ export function buildCommercialCataloguePromptFromAnalysis(
   return `Create a photorealistic premium furniture catalogue image of the provided product.
 
 <main>
-Reference image is ground truth for geometry, proportions, construction, installation, colors, materials and decorative placement.
-Preserve body dimensions, silhouette, top, handles, patterns, legs/base and mounting exactly. Prefer reference over any conflicting text.
+Reference image is ground truth for geometry, proportions, construction, installation, catalog colors, materials and decorative placement — NOT for exposure, brightness, lighting intensity or highlight clipping.
+Preserve body dimensions, silhouette, top, handles, patterns, legs/base and mounting exactly.
+Prefer the reference over text for product shape and catalog finish. Prefer this prompt over the reference for lighting, exposure and room brightness.
+If the reference is photographically bright, high-key or blown on the window side, do not match that look — treat it as an identity plate shot in too much light.
 Do not redesign, stretch, squash, invent details, or invent free-form colors outside the catalog variant.
 Product identity: ${productIdentity}
 </main>
@@ -557,7 +621,7 @@ ${legsBlock}
 
 <composition>
 Full product in frame (body, doors, edges, legs/base or wall clearance). Keep true proportions — never stretch, compress or reshape it into a different furniture category.
-~42–50 mm commercial look, natural camera height for ${productTypeDescription}, straight verticals, no wide-angle distortion.
+Shot like a real catalog still: full-frame camera, ~42–50 mm, ISO 100, f/5.6–f/8, tripod, natural camera height for ${productTypeDescription}, straight verticals, no wide-angle distortion, no beauty glow.
 Product is the hero with comfortable negative space and natural depth. All freestanding legs must be fully visible where the reference shows them.
 </composition>
 
@@ -574,34 +638,33 @@ No bright white glare, blown specular hotspots or exaggerated room reflections o
 <materials>
 Keep body/doors/top/legs materials separate — never transfer door finish onto body/top/legs.
 Catalog under all lighting — Body: ${colors.body}. Doors: ${colors.door}. Top: ${colors.top}. Legs/base: ${legsMaterial}.
-White/anthracite: premium matte-satin furniture finish (not plastic). Sapphire oak / Alina walnut: correct grain, restrained tone. Travertine: subtle pores/veins, no stretched texture. Mirror plexi: controlled metal-mirror, not glass/chrome/liquid metal. No transparent glass on the furniture.
+White/anthracite: premium matte-satin furniture finish (not plastic). Sapphire oak / Alina walnut: correct grain, restrained tone. Travertine: ivory–cream stone laminate with taupe veins and fine pores — if doors are slatted/chevron/herringbone, keep TRAVERTINE on each slat (never convert slats to oak). Mirror plexi: controlled metal-mirror, not glass/chrome/liquid metal. No transparent glass on the furniture.
 ${handleBlock}
 </materials>
 
 <interior>
 Place the product in a ${analysis.roomStyle} catalogue interior with this vibe: ${analysis.roomVibe || DEFAULT_ROOM_VIBE}.
-Keep walls restrained matte (beige/greige/soft grey — not reflective white that floods light). Floor mid-tone neutral wood or concrete — avoid pure white floors.
-Sparse decor only (books, ceramics, art, textile, plant). Optional floor lamp is a practical object only, not a second key light. Rug may not hide legs/base/floor contact. Do not block product details. Wall-mounted pieces: no objects under them that look like supports. Atmosphere must support the product — never compete with it.
+Keep walls mid-tone matte greige with real pigment (not pale, not reflective white). Floor mid-tone wood or concrete with visible grain — not bleached.
+A large north-facing or overcast window may sit at the frame edge; sheer curtains diffuse it. Mirrors must not bounce a bright window onto the furniture.
+Sparse decor only (books, ceramics, art, textile, plant). Turn off mixed indoor lights. Floor lamps / sconces if present are unlit props — they must not glow, bloom or wall-wash.
+Rug may not hide legs/base/floor contact. Do not block product details. Wall-mounted pieces: no objects under them that look like supports.
 </interior>
 
 <lighting>
-Use one coherent, directional daylight hierarchy.
+Light this as a real furniture catalog still — one physical setup, photographed in-camera. Not a 3D render, not HDR, not a high-key e-commerce composite, not cinematic.
 
-KEY: one large soft overcast window light from one front-side and slightly above the product. Create a clearly illuminated side, gradual tonal transition and visibly darker shadow side. No hard sun, flat frontal light or second key.
+RECIPE (use only this):
+1. KEY — large north-facing / overcast window to camera-left (or camera-right; pick one). The window is a wall-sized soft source, further softened by sheer curtains or a diffusion sheet. Never direct sun, never a small nearby pane dumping a patch.
+2. ANGLE — the product faces the camera; the window sits ~45° off-axis so form reads (gentle raking), not flat frontal light and not a hard side blast.
+3. FILL — a large white bounce (foamcore / opposite wall) on the shadow side. Bounce recovers shadow detail; it does not erase shadows or match the key side. About 3:1 on the room, ~2:1 on the product.
+4. COLOR — one daylight white balance (~5200K). No mixed tungsten. Practicals in frame do not emit.
+5. PHYSICS — every shadow, highlight and floor contact follows that single window. Soft contact shadows under legs (dark at the contact, fading out). Subtle color bounce from the floor onto the underside. Inverse-square falloff: far corners and the wall away from the window are slightly darker. Speculars on handles/plexi are large and dim like a window, not pin-spot LEDs.
 
-PORTAL / SKY: guide exterior daylight naturally through the window, with only a restrained cool-neutral sky tone in indirect shadows. No blue cast, glowing window, excessive skylight or HDR wash.
+PRODUCT: camera-facing doors/panels stay close in brightness so the catalog finish is readable (leftmost ≈ rightmost), with only gentle modeling. Do not clip the window-facing end. White is paint, not a light source.
 
-FILL: use low neutral bounce only to recover essential shadow detail. Preserve panel separation, corner depth, soft ambient occlusion, floor contact and shadows beneath the body and legs. Do not brighten the shadow side to match the key side.
+EXPOSURE: expose for the furniture (protect whites). Mid-tone walls, textured floor. Sheer is muted, not blown. No beauty glow, no bloom, no milky wash.
 
-GRAZING: use subtle side-grazing daylight from the same window direction to reveal existing wood grain, travertine texture, laser patterns and plexiglass edges. Do not invent or exaggerate surface depth.
-
-RIM: allow only faint natural edge separation where needed. No halo, neon outline or bright border.
-
-PRACTICAL: any visible lamp stays dim and warm and must not become a second key light.
-
-EXPOSURE: use medium-low premium catalogue exposure with controlled highlight roll-off. Keep whites clean and detailed, anthracite deep but readable, materials accurately colored and specular reflections broad and restrained. Use a clean near-white background with slight tonal separation from the product.
-
-All shadows, highlights and reflections must follow the same window direction. No blown highlights, glowing whites, flat illumination, milky shadows, excessive fill, heavy bloom or high-key wash.
+Failed if: two keys, lamp bloom, sun patch, everywhere-light with no shadow logic, plastic CGI sheen, a light pool on one corner, or a pale high-key catalog page.
 </lighting>
 
 <avoid>
@@ -613,10 +676,10 @@ Wrong proportions/category${
     analysis.legCount != null && analysis.legCount > 0
       ? ` (ILLEGAL: ${analysis.legCount - 1} legs, ${analysis.legCount + 1} legs, merged plinth instead of ${analysis.legCount} separate legs)`
       : ''
-  }, recessed/embedded plexiglass, chrome/liquid-metal mirrors, free-form recolor, heavy grade/WB shifts, dual keys, high fill that erases shadows, over-bright bounce, milky midtones, plastic surfaces, strong vignette, noise.
+  }, recessed/embedded plexiglass, chrome/liquid-metal mirrors, free-form recolor, heavy grade/WB shifts, mixed color temperatures, dual keys, copying the reference photo’s brightness, CGI everywhere-light, HDR bloom, floor-lamp glow, sun patch, light pool on one door, plastic sheen, milky high-key wash, erased contact shadows.
 </avoid>
 
-GENERATE. Same product identity, geometry, construction, installation and composition as the reference. ${legGenerateLine} Use one directional soft window key, restrained portal-guided sky tone, low fill, subtle grazing detail, faint natural edge separation, protected highlights and preserved contact shadows. Clean near-white background — no clipped whites, flat shading or high-key wash.`;
+GENERATE. Same product identity, geometry, construction, installation and composition as the reference. ${legGenerateLine} Photograph with one north/overcast window key at ~45° plus opposite white bounce. One shadow direction, real contact shadows, inverse-square falloff. Product doors even enough to read the finish. Expose for the furniture — mid-tone room, protected whites, no HDR, no CGI glow.`;
 }
 
 function buildLegsBlock(
@@ -853,6 +916,71 @@ function normalizeHandlePresence(value: unknown): HandlePresenceOption {
   if (v.includes('no') || v.includes('without') || v.includes('handleless')) return 'no-handle';
   if (v === 'with-handle') return 'with-handle';
   return 'with-handle';
+}
+
+function normalizeHandleMetal(
+  value: unknown,
+  handlePresence: HandlePresenceOption,
+  handleDescription?: unknown
+): ReferenceAnalysis['handleMetal'] {
+  if (handlePresence === 'no-handle') {
+    return 'none';
+  }
+  const raw = `${String(value ?? '')} ${String(handleDescription ?? '')}`
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, '-');
+  if (/\b(chrome|nickel|steel|stainless|silver|gumus|gümüş)\b/.test(raw)) {
+    return 'silver';
+  }
+  if (/\b(black|siyah|matte-black)\b/.test(raw)) {
+    return 'black';
+  }
+  if (/\b(gold|brass|champagne|altin|altın)\b/.test(raw) && !/\bchrome\b/.test(raw)) {
+    return 'gold';
+  }
+  return undefined;
+}
+
+function normalizeLegFinish(
+  value: unknown,
+  mounting: MountingOption,
+  legCount: unknown
+): ReferenceAnalysis['legFinish'] {
+  if (mounting === 'wall-mounted') {
+    return 'none';
+  }
+  const count =
+    typeof legCount === 'number' && Number.isFinite(legCount) ? Math.round(legCount) : null;
+  if (count === 0) {
+    return 'none';
+  }
+  const raw = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, '-');
+  if (!raw) {
+    return undefined;
+  }
+  if (raw === 'none' || raw === 'yok' || raw.includes('plinth') || raw.includes('no-leg')) {
+    return 'none';
+  }
+  if (raw.includes('body') || raw.includes('wood') || raw.includes('match') || raw.includes('ahsap') || raw.includes('ahşap')) {
+    return 'body-match';
+  }
+  if (raw.includes('white') || raw.includes('beyaz')) {
+    return 'white';
+  }
+  if (raw.includes('black') || raw.includes('siyah')) {
+    return 'black';
+  }
+  if (raw.includes('chrome') || raw.includes('nickel') || raw.includes('steel') || raw.includes('silver') || raw.includes('gümüş') || raw.includes('gumus')) {
+    return 'silver';
+  }
+  if (raw.includes('gold') || raw.includes('brass') || raw.includes('champagne') || raw.includes('altın') || raw.includes('altin')) {
+    return 'gold';
+  }
+  return undefined;
 }
 
 function clamp01(n: number): number {

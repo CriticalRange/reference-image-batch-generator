@@ -8,7 +8,22 @@ import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { modelSupportsImageSize, normalizeModelCode } from '@/lib/modelOptions';
-import { buildPromptVariants, normalizeSceneVariationStrength, type SceneVariationStrength } from '@/lib/promptVariants';
+import {
+  buildPromptVariants,
+  normalizeAreaChangeStrength,
+  normalizeSceneVariationStrength,
+  parseBodyColorOption,
+  parseDoorColorOption,
+  parsePlexiglassOption,
+  parseHardwareMetalOption,
+  parseLegFinishOption,
+  type AreaChangeStrength,
+  type HardwareMetalOption,
+  type LegFinishOption,
+  type SceneVariationStrength
+} from '@/lib/promptVariants';
+import type { BodyColorOption, DoorColorOption, PlexiglassOption } from '@/lib/referenceAnalysis';
+import { normalizeBrightCatalogueReferences } from '@/lib/referenceExposure';
 
 export type AuthMode = 'service_account' | 'api_key' | 'vertex_express';
 /** batch = toplu (async Batch API, cheaper); single = tekli (interactive generateContent, faster). */
@@ -43,6 +58,17 @@ export type BatchInput = {
   sceneVariation?: boolean;
   /** Scene change amount when sceneVariation is on. Default: low. */
   sceneVariationStrength?: SceneVariationStrength;
+  /** Recolor the product in the first reference (scene) using the second (variant). */
+  variantRecolor?: boolean;
+  /** How much the scene area may change during a variant recolor. Default: none. */
+  areaChangeStrength?: AreaChangeStrength;
+  /** User-picked catalogue finishes for variant recolor (not AI-inferred). */
+  targetBodyColor?: BodyColorOption;
+  targetDoorColor?: DoorColorOption;
+  targetPlexiglass?: PlexiglassOption;
+  targetHandleMetal?: HardwareMetalOption;
+  targetLegMetal?: LegFinishOption;
+  targetLegBodyMatch?: boolean;
 };
 
 export type BatchResult = {
@@ -410,6 +436,75 @@ function buildReferenceDataUrl(reference: { base64: string; mimeType: string }):
   return `data:${reference.mimeType};base64,${reference.base64}`;
 }
 
+type GeminiInlinePart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } };
+
+/**
+ * Label each reference so image models actually bind IMAGE 1 / IMAGE 2
+ * instead of treating extra photos as optional style hints.
+ */
+function buildGenerateContentParts(
+  prompt: string,
+  references: Array<{ base64: string; mimeType: string }>,
+  variantRecolor: boolean
+): GeminiInlinePart[] {
+  const parts: GeminiInlinePart[] = [];
+
+  if (variantRecolor && references.length >= 2) {
+    parts.push({
+      text: 'IMAGE 1 — SCENE PHOTO (master frame to edit). Keep this camera, crop, room and lighting.'
+    });
+    parts.push({
+      inlineData: { mimeType: references[0].mimeType, data: references[0].base64 }
+    });
+    parts.push({
+      text: 'IMAGE 2 — VARIANT PRODUCT PHOTO (target colourway only). Ignore its background. Copy this product color/material/finish onto the product in IMAGE 1.'
+    });
+    parts.push({
+      inlineData: { mimeType: references[1].mimeType, data: references[1].base64 }
+    });
+    parts.push({ text: prompt });
+    return parts;
+  }
+
+  if (references.length > 0) {
+    parts.push({
+      text: 'REFERENCE PHOTO — product identity only (silhouette, construction, catalog colors, hardware, legs). Do NOT copy this photo’s exposure, sun patch, lamp glow or CGI lighting. Relight as a real catalog shoot: large north/overcast window at ~45° + white bounce on the shadow side; one daylight color; contact shadows; inverse-square falloff. Camera-facing doors stay readable and close in brightness. Mid-tone greige room. Looks like a photograph, not a render.'
+    });
+  }
+  references.forEach((ref, index) => {
+    if (references.length > 1) {
+      parts.push({ text: `REFERENCE IMAGE ${index + 1}:` });
+    }
+    parts.push({
+      inlineData: { mimeType: ref.mimeType, data: ref.base64 }
+    });
+  });
+  parts.push({ text: prompt });
+  return parts;
+}
+
+function assertReferencesSupportedForModel(
+  modelName: string,
+  references: Array<{ base64: string; mimeType: string }>,
+  variantRecolor: boolean
+): void {
+  if (references.length === 0) {
+    return;
+  }
+
+  if (isVertexImagenModel(modelName)) {
+    throw new Error(
+      'Imagen models cannot consume reference photos. Choose a Gemini image model (for example vertex/gemini-2.5-flash-image) for catalogue or variant generation.'
+    );
+  }
+
+  if (variantRecolor && references.length < 2) {
+    throw new Error('Variant recolor requires a scene photo and a variant product photo.');
+  }
+}
+
 function resolveTogetherDimensions(aspectRatio: string): { width: number; height: number } {
   return TOGETHER_DIMENSIONS_BY_ASPECT[aspectRatio] ?? TOGETHER_DIMENSIONS_BY_ASPECT[DEFAULT_ASPECT_RATIO];
 }
@@ -622,6 +717,7 @@ async function createGeminiDeveloperBatchJob(input: {
   requestedCount: number;
   resizeTo: { width: number; height: number } | undefined;
   aiUpscale: number;
+  variantRecolor: boolean;
 }): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
@@ -635,6 +731,7 @@ async function createGeminiDeveloperBatchJob(input: {
       'Imagen models require Service Account (Vertex AI) authentication. Switch auth mode to Service Account or choose a Gemini image model.'
     );
   }
+  assertReferencesSupportedForModel(modelName, input.references, input.variantRecolor);
 
   console.error('[gemini-api-key] createGeminiDeveloperBatchJob:', {
     model: modelName,
@@ -651,12 +748,7 @@ async function createGeminiDeveloperBatchJob(input: {
       contents: [
         {
           role: 'user',
-          parts: [
-            { text: promptVariant },
-            ...input.references.map((ref) => ({
-              inlineData: { mimeType: ref.mimeType, data: ref.base64 }
-            }))
-          ]
+          parts: buildGenerateContentParts(promptVariant, input.references, input.variantRecolor)
         }
       ],
       config: {
@@ -708,6 +800,7 @@ async function runGeminiDeveloperInteractiveBatch(input: {
   requestedCount: number;
   resizeTo: { width: number; height: number } | undefined;
   aiUpscale: number;
+  variantRecolor: boolean;
 }): Promise<BatchOutput> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
@@ -720,6 +813,7 @@ async function runGeminiDeveloperInteractiveBatch(input: {
       'Imagen models require Service Account (Vertex AI) authentication. Switch auth mode to Service Account or use batch mode with a Gemini image model.'
     );
   }
+  assertReferencesSupportedForModel(modelName, input.references, input.variantRecolor);
 
   const maxParallel = input.aiUpscale > 0 ? 1 : parseMaxParallelRequests();
   console.error('[gemini-api-key] runGeminiDeveloperInteractiveBatch:', {
@@ -740,12 +834,11 @@ async function runGeminiDeveloperInteractiveBatch(input: {
             contents: [
               {
                 role: 'user',
-                parts: [
-                  ...input.references.map((ref) => ({
-                    inlineData: { mimeType: ref.mimeType, data: ref.base64 }
-                  })),
-                  { text: promptVariant }
-                ]
+                parts: buildGenerateContentParts(
+                  promptVariant,
+                  input.references,
+                  input.variantRecolor
+                )
               }
             ],
             config: {
@@ -788,7 +881,8 @@ async function runVertexExpressBatch(
   resizeTo: { width: number; height: number } | undefined,
   aiUpscale: number,
   aspectRatio: string,
-  imageSize: string | undefined
+  imageSize: string | undefined,
+  variantRecolor: boolean
 ): Promise<BatchOutput> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
@@ -803,6 +897,7 @@ async function runVertexExpressBatch(
       'Imagen models require Service Account (Vertex AI) authentication. Switch auth mode to Service Account.'
     );
   }
+  assertReferencesSupportedForModel(modelName, references, variantRecolor);
 
   const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
 
@@ -824,7 +919,8 @@ async function runVertexExpressBatch(
           promptVariant,
           references,
           aspectRatio,
-          imageSize
+          imageSize,
+          variantRecolor
         });
         const processed = await processGeneratedImage(extracted, resizeTo, aiUpscale);
         return { ...processed, promptVariant } satisfies BatchResult;
@@ -852,11 +948,13 @@ async function generateVertexExpressImage(input: {
   references: Array<{ base64: string; mimeType: string }>;
   aspectRatio: string;
   imageSize: string | undefined;
+  variantRecolor: boolean;
 }): Promise<BatchResult> {
-  const parts: unknown[] = input.references.map((ref) => ({
-    inlineData: { mimeType: ref.mimeType, data: ref.base64 }
-  }));
-  parts.push({ text: input.promptVariant });
+  const parts: unknown[] = buildGenerateContentParts(
+    input.promptVariant,
+    input.references,
+    input.variantRecolor
+  );
 
   const payload: Record<string, unknown> = {
     contents: [{ role: 'user', parts }],
@@ -1084,12 +1182,16 @@ async function runVertexBatch(
   prompts: string[],
   references: Array<{ base64: string; mimeType: string }>,
   resizeTo: { width: number; height: number } | undefined,
-  aiUpscale: number
+  aiUpscale: number,
+  aspectRatio: string,
+  imageSize: string | undefined,
+  variantRecolor: boolean
 ): Promise<BatchOutput> {
   const { token, projectId } = await getVertexAccessToken();
   const modelName = model.replace(VERTEX_MODEL_PATTERN, '');
   const region = resolveVertexServiceAccountLocation(modelName);
   const useImagenApi = isVertexImagenModel(modelName);
+  assertReferencesSupportedForModel(modelName, references, variantRecolor);
   const apiEndpoint = useImagenApi ? 'predict' : 'generateContent';
   const url = buildVertexModelUrl(projectId, region, modelName, apiEndpoint);
 
@@ -1187,13 +1289,24 @@ async function runVertexBatch(
   const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
   const jobs = prompts.map((promptVariant) => {
     return async () => {
-      const parts: unknown[] = references.map((ref) => ({
-        inlineData: { mimeType: ref.mimeType, data: ref.base64 }
-      }));
-      parts.push({ text: promptVariant });
+      const parts: unknown[] = buildGenerateContentParts(
+        promptVariant,
+        references,
+        variantRecolor
+      );
       const payload = {
         contents: [{ role: 'user', parts }],
-        generationConfig: { responseModalities: ['IMAGE', 'TEXT'] }
+        generationConfig: {
+          responseModalities: ['IMAGE', 'TEXT'],
+          ...(aspectRatio || imageSize
+            ? {
+                imageConfig: {
+                  ...(aspectRatio ? { aspectRatio } : {}),
+                  ...(imageSize ? { imageSize } : {})
+                }
+              }
+            : {})
+        }
       };
       const response = await fetch(url, {
         method: 'POST',
@@ -1232,7 +1345,10 @@ async function runFalBatchViaVertexServiceAccount(
   prompts: string[],
   references: Array<{ base64: string; mimeType: string }>,
   resizeTo: { width: number; height: number } | undefined,
-  aiUpscale: number
+  aiUpscale: number,
+  aspectRatio: string,
+  imageSize: string | undefined,
+  variantRecolor: boolean
 ): Promise<BatchOutput> {
   const backendModel = mapFalModelToVertexBackend(publicFalModel);
 
@@ -1250,7 +1366,10 @@ async function runFalBatchViaVertexServiceAccount(
       prompts,
       references,
       resizeTo,
-      aiUpscale
+      aiUpscale,
+      aspectRatio,
+      imageSize,
+      variantRecolor
     );
 
     return {
@@ -1787,6 +1906,7 @@ async function runTogetherBatch(
   references: Array<{ base64: string; mimeType: string }>,
   aspectRatio: string,
   requestedDimensions: { width: number; height: number } | undefined,
+  variantRecolor: boolean,
   steps: number | undefined,
   resizeTo: { width: number; height: number } | undefined,
   aiUpscale: number
@@ -1801,6 +1921,21 @@ async function runTogetherBatch(
   const dimensions = requestedDimensions ?? resolveTogetherDimensions(aspectRatio);
   const maxParallel = aiUpscale > 0 ? 1 : parseMaxParallelRequests();
   const referenceMode = resolveTogetherReferenceMode(model);
+  if (variantRecolor) {
+    if (referenceMode === 'none') {
+      throw new Error(
+        'This Together model does not accept reference photos. Variant recolor needs a Gemini image model that can read both the scene and the variant product.'
+      );
+    }
+    if (referenceMode === 'image_url' && references.length > 1) {
+      throw new Error(
+        'This Together model accepts only one reference image. Variant recolor needs both the scene photo and the variant product photo — use a Gemini image model.'
+      );
+    }
+    if (references.length < 2) {
+      throw new Error('Variant recolor requires a scene photo and a variant product photo.');
+    }
+  }
   const referencePayload =
     referenceMode === 'image_url'
       ? referenceImageUrls[0]
@@ -1921,11 +2056,26 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
   const clampedCount = Math.max(1, Math.min(input.count, parseMaxBatch()));
   const maxReferenceImages = parseMaxReferenceImages();
   const model = normalizeRequestedModel(input.model) ?? process.env.GEMINI_IMAGE_MODEL ?? DEFAULT_MODEL;
+  const variantRecolor = input.variantRecolor === true;
   const prompts = buildPromptVariants(input.basePrompt, clampedCount, {
     sceneVariation: input.sceneVariation === true,
-    sceneVariationStrength: normalizeSceneVariationStrength(input.sceneVariationStrength)
+    sceneVariationStrength: normalizeSceneVariationStrength(input.sceneVariationStrength),
+    variantRecolor,
+    areaChangeStrength: normalizeAreaChangeStrength(input.areaChangeStrength),
+    targetBodyColor: parseBodyColorOption(input.targetBodyColor),
+    targetDoorColor: parseDoorColorOption(input.targetDoorColor),
+    targetPlexiglass: parsePlexiglassOption(input.targetPlexiglass),
+    targetHandleMetal: parseHardwareMetalOption(input.targetHandleMetal),
+    targetLegMetal: parseLegFinishOption(input.targetLegMetal),
+    targetLegBodyMatch: input.targetLegBodyMatch === true
   });
-  const references = (input.referenceImages ?? []).slice(0, maxReferenceImages);
+  const rawReferences = (input.referenceImages ?? []).slice(
+    0,
+    Math.max(maxReferenceImages, variantRecolor ? 2 : 0)
+  );
+  const references = variantRecolor
+    ? rawReferences
+    : await normalizeBrightCatalogueReferences(rawReferences);
   const aspectRatio = normalizeAspectRatio(input.aspectRatio);
   const imageSize = normalizeImageSize(input.imageSize, model);
   const togetherRequestedDimensions = parseTogetherRequestedDimensions(input.imageSize);
@@ -1945,6 +2095,7 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       references,
       aspectRatio,
       togetherRequestedDimensions,
+      variantRecolor,
       steps,
       resizeTo,
       aiUpscale
@@ -1961,7 +2112,10 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       prompts,
       references,
       resizeTo,
-      aiUpscale
+      aiUpscale,
+      aspectRatio,
+      imageSize,
+      variantRecolor
     );
     return { jobId, provider: 'fal', results: result };
   }
@@ -1979,7 +2133,8 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       imageSize,
       requestedCount: clampedCount,
       resizeTo,
-      aiUpscale
+      aiUpscale,
+      variantRecolor
     });
     return { jobId, provider: 'gemini' };
   }
@@ -1996,7 +2151,8 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
         resizeTo,
         aiUpscale,
         aspectRatio,
-        imageSize
+        imageSize,
+        variantRecolor
       );
       return { jobId, provider: 'gemini', results: result };
     }
@@ -2011,7 +2167,8 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
         imageSize,
         requestedCount: clampedCount,
         resizeTo,
-        aiUpscale
+        aiUpscale,
+        variantRecolor
       });
       return { jobId, provider: 'gemini', results: result };
     }
@@ -2023,7 +2180,10 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
       prompts,
       references,
       resizeTo,
-      aiUpscale
+      aiUpscale,
+      aspectRatio,
+      imageSize,
+      variantRecolor
     );
     return { jobId, provider: 'vertex', results: result };
   }
@@ -2038,7 +2198,8 @@ export async function submitBatch(input: BatchInput): Promise<SubmitBatchResult>
     imageSize,
     requestedCount: clampedCount,
     resizeTo,
-    aiUpscale
+    aiUpscale,
+    variantRecolor
   });
   return { jobId, provider: 'gemini', results: result };
 }

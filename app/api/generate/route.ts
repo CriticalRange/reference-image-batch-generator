@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { submitBatch, getBatchStatus, type BatchOutput, type BatchResult, type SubmitBatchResult } from '@/lib/gemini';
-import { normalizeSceneVariationStrength, type SceneVariationStrength } from '@/lib/promptVariants';
+import {
+  normalizeAreaChangeStrength,
+  normalizeSceneVariationStrength,
+  parseBodyColorOption,
+  parseDoorColorOption,
+  parsePlexiglassOption,
+  parseHardwareMetalOption,
+  parseLegFinishOption,
+  type AreaChangeStrength,
+  type SceneVariationStrength
+} from '@/lib/promptVariants';
 import { applyCorsHeaders, corsPreflightResponse, enforceRateLimit, jsonWithCors, requireApiAccess } from '@/lib/security';
 import { uploadBatchToBlob } from '@/lib/blob';
 
@@ -24,6 +34,17 @@ type RequestBody = {
   sceneVariation?: boolean;
   /** low | medium | high — how much the surrounding scene should change. Default low. */
   sceneVariationStrength?: SceneVariationStrength | string;
+  /** Recolor the product in the first reference (scene) using later references (variant). */
+  variantRecolor?: boolean;
+  /** none | low | medium | high — how much the scene area may change. Default none. */
+  areaChangeStrength?: AreaChangeStrength | string;
+  /** User-picked catalogue body/door finishes for variant recolor. */
+  targetBodyColor?: string;
+  targetDoorColor?: string;
+  targetPlexiglass?: string;
+  targetHandleMetal?: string;
+  targetLegMetal?: string;
+  targetLegBodyMatch?: boolean;
   referenceImages?: Array<{
     base64?: string;
     mimeType?: string;
@@ -72,7 +93,12 @@ export async function POST(req: NextRequest) {
       return applyCorsHeaders(req, bodyTooLarge);
     }
 
-    const body = (await req.json()) as RequestBody;
+    let body: RequestBody;
+    try {
+      body = (await req.json()) as RequestBody;
+    } catch {
+      return jsonWithCors(req, { error: 'Request body must be valid JSON.' }, { status: 400 });
+    }
     const prompt = body.prompt?.trim() ?? '';
     const negativePrompt = body.negativePrompt?.trim() ?? undefined;
     const count = body.count ?? 5;
@@ -87,6 +113,14 @@ export async function POST(req: NextRequest) {
     const aiUpscale = typeof body.aiUpscale === 'number' && body.aiUpscale > 0 ? body.aiUpscale : 0;
     const sceneVariation = body.sceneVariation === true;
     const sceneVariationStrength = normalizeSceneVariationStrength(body.sceneVariationStrength);
+    const variantRecolor = body.variantRecolor === true;
+    const areaChangeStrength = normalizeAreaChangeStrength(body.areaChangeStrength);
+    const targetBodyColor = parseBodyColorOption(body.targetBodyColor);
+    const targetDoorColor = parseDoorColorOption(body.targetDoorColor);
+    const targetPlexiglass = parsePlexiglassOption(body.targetPlexiglass);
+    const targetHandleMetal = parseHardwareMetalOption(body.targetHandleMetal);
+    const targetLegMetal = parseLegFinishOption(body.targetLegMetal);
+    const targetLegBodyMatch = body.targetLegBodyMatch === true;
     const referenceImageBase64 = body.referenceImageBase64?.trim() ?? '';
     const referenceMimeType = body.referenceMimeType?.trim() ?? '';
     const referenceImages =
@@ -97,7 +131,7 @@ export async function POST(req: NextRequest) {
         }))
         .filter((image) => image.base64 && image.mimeType) ?? [];
 
-    if (!prompt) {
+    if (!prompt && !variantRecolor) {
       return jsonWithCors(req, { error: 'Prompt is required.' }, { status: 400 });
     }
 
@@ -134,11 +168,21 @@ export async function POST(req: NextRequest) {
       arrayCount: referenceImages.length,
       hasLegacySingle: !!(referenceImageBase64 && referenceMimeType),
       normalizedCount: normalizedReferences.length,
+      variantRecolor,
+      sceneVariation,
       sizes: normalizedReferences.map(r => ({ mime: r.mimeType, kb: (r.base64.length / 1024).toFixed(1) }))
     });
     const referenceValidationError = validateReferenceImages(normalizedReferences);
     if (referenceValidationError) {
       return jsonWithCors(req, { error: referenceValidationError }, { status: 400 });
+    }
+
+    if (variantRecolor && normalizedReferences.length < 2) {
+      return jsonWithCors(
+        req,
+        { error: 'Variant recolor requires a scene photo and at least one variant product photo.' },
+        { status: 400 }
+      );
     }
 
     const resizeTo =
@@ -163,6 +207,14 @@ export async function POST(req: NextRequest) {
       aiUpscale,
       sceneVariation,
       sceneVariationStrength,
+      variantRecolor,
+      areaChangeStrength,
+      targetBodyColor,
+      targetDoorColor,
+      targetPlexiglass,
+      targetHandleMetal,
+      targetLegMetal,
+      targetLegBodyMatch,
       referenceImages: normalizedReferences
     });
 

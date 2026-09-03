@@ -189,6 +189,71 @@ h1 {
   gap: 1rem;
 }
 
+.generator-mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  margin: 0.7rem 0.7rem 0;
+  padding: 0.22rem;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--bg) 72%, var(--card));
+}
+
+.generator-mode-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  min-height: 2.35rem;
+  border-radius: 9px;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.generator-mode-tab:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.generator-mode-tab.is-active {
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 1px 0 color-mix(in oklab, var(--line) 80%, transparent),
+    0 6px 16px color-mix(in oklab, var(--brand) 14%, transparent);
+}
+
+.generator-mode-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.generator-mode-tab:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.variant-recolor-block {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.variant-drop-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.variant-drop-column .reference-drop-surface {
+  min-height: 8.5rem;
+}
+
 /* Stick to viewport while scrolling; snaps back into document flow at natural position. */
 .generate-btn-bar {
   position: sticky;
@@ -622,6 +687,7 @@ label {
 }
 
 .ref-preview-circle {
+  position: relative;
   border: 2px solid var(--line);
   overflow: hidden;
   background: var(--surface);
@@ -632,6 +698,61 @@ label {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.variant-product-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  width: 118px;
+}
+
+.variant-auto-row {
+  padding: 0.62rem 0.74rem;
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--surface) 92%, var(--brand) 8%);
+  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.variant-auto-row.is-active {
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--border));
+  background: color-mix(in srgb, var(--surface) 84%, var(--brand) 16%);
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+
+.variant-color-picks {
+  display: grid;
+  gap: 0.22rem;
+  overflow: hidden;
+}
+
+.variant-color-picks select {
+  width: 100%;
+  min-height: 1.65rem;
+  padding: 0.12rem 0.28rem;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  border-radius: 7px;
+}
+
+.ref-pair-index {
+  position: absolute;
+  left: 0.3rem;
+  bottom: 0.3rem;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.28rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in oklab, var(--card) 82%, var(--brand));
+  color: var(--text);
+  font-size: 0.68rem;
+  font-weight: 750;
+  line-height: 1;
 }
 
 .ref-add-circle {
@@ -683,6 +804,11 @@ label {
   margin: 0;
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.reference-note.is-warning {
+  color: color-mix(in oklab, #b42318 72%, var(--text));
+  font-weight: 600;
 }
 
 .resize-custom-grid {
@@ -2875,6 +3001,14 @@ button:disabled {
 
   .resize-custom-grid {
     grid-template-columns: 1fr;
+  }
+
+  .variant-drop-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .generator-mode-tabs {
+    margin: 0.55rem 0.55rem 0;
   }
 
   .history-viewer-header {

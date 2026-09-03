@@ -64,7 +64,8 @@ const resources = {
       roomStylePlaceholder: 'Room style',
       accentColorPlaceholder: 'Accent color',
       roomVibePlaceholder: 'Room vibe',
-      roomVibeInputHint: 'e.g. warm contemporary living room, greige walls, mid oak floor…',
+      roomVibeInputHint:
+        'e.g. warm contemporary living room, greige walls, mid oak floor, even wrap lighting on the product…',
       handlePlaceholder: 'Handle design and color (optional — defaults to reference match)',
       productOptionsPromptHint:
         'Choosing body + door colors fills/overwrites the prompt with the commercial catalogue template. When AI auto-analysis is on, Gemini Flash analyzes each reference (separate body/door colors) and builds a product-specific prompt (editable on loading cards).',
@@ -75,6 +76,70 @@ const resources = {
       sceneVariationStrengthLow: 'Low',
       sceneVariationStrengthMedium: 'Medium',
       sceneVariationStrengthHigh: 'High',
+      generatorModeCatalogue: 'Catalogue',
+      generatorModeVariant: 'Variant photos',
+      generatorModeCatalogueHint: 'Generate catalogue scenes from product photos.',
+      generatorModeVariantHint:
+        'Upload one or more room/scene photos and as many variant products as you need. Every scene is processed against every variant. Image amount only repeats each pair.',
+      variantSceneImage: 'Scene photos',
+      variantSceneDropTitle: 'Drop scene photos here',
+      variantSceneDropSubtitle: 'Room photos with the original-color product · each scene uses every variant',
+      variantSceneDropActive: 'Release to add scene photos',
+      variantSceneAlt: 'Scene photo {{index}}',
+      addVariantSceneImage: 'Add scene photo',
+      removeVariantSceneImage: 'Remove scene photo {{index}}',
+      variantProductImages: 'Variant product photos',
+      variantProductDropTitle: 'Drop variant products here',
+      variantProductDropSubtitle: 'Same product, different catalogue colors · applied to every scene',
+      variantProductDropActive: 'Release to add variant product photos',
+      variantProductAlt: 'Variant product photo {{index}}',
+      addVariantProductImage: 'Add variant product photo',
+      removeVariantProductImage: 'Remove variant product photo {{index}}',
+      variantProductBodyColor: 'Body color for this variant',
+      variantProductDoorColor: 'Door color for this variant',
+      variantProductPlexiglass: 'Plexiglass for this variant',
+      variantPlexiglassOptions: {
+        none: 'None',
+        'gold-mirror': 'Gold',
+        'silver-mirror': 'Silver'
+      },
+      variantProductHandleMetal: 'Handle color for this variant',
+      variantProductLegMetal: 'Leg color for this variant',
+      variantHandleOptions: {
+        none: 'Handle: none',
+        gold: 'Handle: gold',
+        silver: 'Handle: silver',
+        black: 'Handle: black'
+      },
+      variantLegOptions: {
+        none: 'Legs: none',
+        gold: 'Legs: gold',
+        silver: 'Legs: silver',
+        black: 'Legs: black',
+        white: 'Legs: white'
+      },
+      variantManualColorHint:
+        'Pick body, door, plexiglass, handle and leg colors under each variant yourself. There is no automatic color analysis.',
+      variantAutoPredict: 'Auto-predict finishes',
+      variantExtraPrompt: 'Additional prompt (optional)',
+      variantExtraPromptPlaceholder:
+        'Optional notes, e.g. keep gold handles, only change door color…',
+      areaChangeStrength: 'Area change',
+      areaChangeStrengthNone: 'No change',
+      areaChangeStrengthLow: 'Low',
+      areaChangeStrengthMedium: 'Medium',
+      areaChangeStrengthHigh: 'High',
+      variantRepeatCount: 'Repeat count',
+      variantPairHint:
+        '{{scenes}} scene(s) × {{variants}} variant(s) = {{jobs}} job(s). Each scene runs through every variant.',
+      errorVariantSceneRequired: 'Add at least one scene photo for variant generation.',
+      errorVariantProductRequired: 'Add at least one variant product photo.',
+      errorVariantCountMismatch:
+        'Add one scene photo and at least one variant product photo.',
+      toastVariantSceneRequired: 'Scene photo required',
+      toastVariantProductRequired: 'Variant product photo required',
+      toastVariantCountMismatch: 'Scene or variant photo missing',
+      toastVariantSceneSingleOnly: 'Only one scene photo is used. Extra files were ignored.',
       analysisFailed: 'Reference analysis failed',
       toastAnalysisFailed: 'Analysis failed: {{product}}',
       toastAnalysisSaved: 'Analysis & prompt saved for this product',
@@ -89,6 +154,9 @@ const resources = {
       analysisMounting: 'Installation',
       analysisPlexiglass: 'Plexiglass',
       analysisHandles: 'Handles',
+      analysisHandleMetal: 'Handle color',
+      analysisLegFinish: 'Leg color',
+      analysisLegFinishBodyMatch: 'Match body (wood)',
       analysisLegCount: 'Leg count',
       analysisLegCountPlaceholder: 'e.g. 4',
       analysisLegCountDisabled: 'N/A (wall-mounted)',
@@ -284,6 +352,17 @@ const resources = {
           'When enabled, Gemini Flash analyzes each product photo on generate and builds a product-specific catalogue prompt (editable on loading cards). Turn off to skip analysis and use the base prompt / product option template only.',
         sceneVariation:
           'Preserves product geometry, colors, materials, details, camera angle, scale and placement while refreshing the surrounding scene. Choose change amount: Low = subtle restyle of the same room; Medium = clear material/prop redesign; High = full environment replacement. Semantic editing only — Gemini image models do not expose a pixel-mask background swap.',
+        variantSceneImage:
+          'Finished room photographs with the original-color product. Each scene is processed against every variant product. Lighting and the room stay locked unless Area change allows nearby restyle.',
+        variantProductImages:
+          'Studio or catalogue shots of the same product in other colors. Each photo is applied to every scene. Pick body, door, plexiglass, handle and leg colors under each thumbnail — nothing is inferred automatically.',
+        variantRepeatCount:
+          'How many times to repeat each scene × variant pair. Output count = scenes × variant products × this value.',
+        variantAutoPredict:
+          'When on, Gemini Flash reads each variant product photo and fills body, door, plexiglass, handle and leg finishes. The manual menus hide. Turn off to pick finishes yourself.',
+        variantExtraPrompt: 'Optional extra instructions added on top of the color-transfer lock.',
+        areaChangeStrength:
+          'How much of the scene besides the product may change. No change = color only. Low = tiny shadow/reflection tint. Medium = nearby surfaces may harmonize. High = nearby props may restyle, room and lighting stay.',
         aiUpscale: 'Runs ESRGAN Thick upscale (selectable 2x or 3x) after generation, then applies the selected resize/export size. Uses more CPU/RAM and takes longer per image.',
         batchRateLimit: 'Seconds to wait between each batch generation run. Set to 0 for no delay. Recommended: 120s (2 min) to avoid API exhaustion. Failed products also auto-retry up to 5 times with backoff (500/timeout/rate limit).'
       }
@@ -351,7 +430,8 @@ const resources = {
       roomStylePlaceholder: 'Oda stili',
       accentColorPlaceholder: 'Aksan rengi',
       roomVibePlaceholder: 'Oda vibe’ı',
-      roomVibeInputHint: 'örn. sıcak modern salon, greige duvar, orta ton meşe zemin…',
+      roomVibeInputHint:
+        'örn. sıcak modern salon, greige duvar, orta ton meşe zemin, üründe eşit sarma ışık…',
       handlePlaceholder: 'Kulp tasarımı ve rengi (opsiyonel — boşsa referansa uy)',
       productOptionsPromptHint:
         'Gövde + kapak rengi seçilince prompt katalog şablonuyla dolar. AI otomatik tahmin açıksa her referans Gemini Flash ile analiz edilir (gövde/kapak ayrı); loading kartlara tıklayarak tahminleri ve prompt’u düzenleyebilirsiniz.',
@@ -362,6 +442,70 @@ const resources = {
       sceneVariationStrengthLow: 'Az',
       sceneVariationStrengthMedium: 'Orta',
       sceneVariationStrengthHigh: 'Çok',
+      generatorModeCatalogue: 'Katalog',
+      generatorModeVariant: 'Varyant fotoğraf',
+      generatorModeCatalogueHint: 'Ürün fotoğraflarından katalog sahneleri üretin.',
+      generatorModeVariantHint:
+        'Bir veya daha fazla oda/sahne fotoğrafı ve istediğiniz kadar varyant ürün yükleyin. Her sahne, bütün varyantlara uygulanır. Görsel sayısı yalnızca her çifti kaç kez tekrarlayacağını belirler.',
+      variantSceneImage: 'Sahne fotoğrafları',
+      variantSceneDropTitle: 'Sahne fotoğraflarını buraya bırakın',
+      variantSceneDropSubtitle: 'Orijinal renkli ürünün oda fotoğrafları · her sahne tüm varyantları kullanır',
+      variantSceneDropActive: 'Sahne fotoğraflarını eklemek için bırakın',
+      variantSceneAlt: '{{index}}. sahne fotoğrafı',
+      addVariantSceneImage: 'Sahne fotoğrafı ekle',
+      removeVariantSceneImage: '{{index}}. sahne fotoğrafını kaldır',
+      variantProductImages: 'Varyant ürün fotoğrafları',
+      variantProductDropTitle: 'Varyant ürünleri buraya bırakın',
+      variantProductDropSubtitle: 'Aynı ürün, farklı katalog renkleri · her sahneye uygulanır',
+      variantProductDropActive: 'Varyant ürün fotoğraflarını eklemek için bırakın',
+      variantProductAlt: '{{index}}. varyant ürün fotoğrafı',
+      addVariantProductImage: 'Varyant ürün fotoğrafı ekle',
+      removeVariantProductImage: '{{index}}. varyant ürün fotoğrafını kaldır',
+      variantProductBodyColor: 'Bu varyantın gövde rengi',
+      variantProductDoorColor: 'Bu varyantın kapak rengi',
+      variantProductPlexiglass: 'Bu varyantın pleksisi',
+      variantPlexiglassOptions: {
+        none: 'Yok',
+        'gold-mirror': 'Gold',
+        'silver-mirror': 'Silver'
+      },
+      variantProductHandleMetal: 'Bu varyantın kulp rengi',
+      variantProductLegMetal: 'Bu varyantın ayak rengi',
+      variantHandleOptions: {
+        none: 'Kulp: yok',
+        gold: 'Kulp: gold',
+        silver: 'Kulp: silver',
+        black: 'Kulp: black'
+      },
+      variantLegOptions: {
+        none: 'Ayak: yok',
+        gold: 'Ayak: gold',
+        silver: 'Ayak: silver',
+        black: 'Ayak: black',
+        white: 'Ayak: beyaz'
+      },
+      variantManualColorHint:
+        'Her varyantın altında gövde, kapak, pleksi, kulp ve ayak seçimini siz yapın. Otomatik renk analizi yok.',
+      variantAutoPredict: 'Otomatik tahmin et',
+      variantExtraPrompt: 'Ek prompt (opsiyonel)',
+      variantExtraPromptPlaceholder:
+        'İsteğe bağlı notlar, örn. altın kulpları koru, sadece kapak rengini değiştir…',
+      areaChangeStrength: 'Alan değişimi',
+      areaChangeStrengthNone: 'Değiştirme',
+      areaChangeStrengthLow: 'Az',
+      areaChangeStrengthMedium: 'Orta',
+      areaChangeStrengthHigh: 'Çok',
+      variantRepeatCount: 'Tekrar sayısı',
+      variantPairHint:
+        '{{scenes}} sahne × {{variants}} varyant = {{jobs}} iş. Her sahne bütün varyantlardan geçer.',
+      errorVariantSceneRequired: 'Varyant üretimi için en az bir sahne fotoğrafı ekleyin.',
+      errorVariantProductRequired: 'En az bir varyant ürün fotoğrafı ekleyin.',
+      errorVariantCountMismatch:
+        'Bir sahne fotoğrafı ve en az bir varyant ürün fotoğrafı ekleyin.',
+      toastVariantSceneRequired: 'Sahne fotoğrafı gerekli',
+      toastVariantProductRequired: 'Varyant ürün fotoğrafı gerekli',
+      toastVariantCountMismatch: 'Sahne veya varyant fotoğrafı eksik',
+      toastVariantSceneSingleOnly: 'Yalnızca bir sahne fotoğrafı kullanılır. Fazladan dosyalar yok sayıldı.',
       analysisFailed: 'Referans analizi başarısız',
       toastAnalysisFailed: 'Analiz başarısız: {{product}}',
       toastAnalysisSaved: 'Bu ürün için analiz ve prompt kaydedildi',
@@ -376,6 +520,9 @@ const resources = {
       analysisMounting: 'Montaj',
       analysisPlexiglass: 'Plexiglass',
       analysisHandles: 'Kulp',
+      analysisHandleMetal: 'Kulp rengi',
+      analysisLegFinish: 'Ayak rengi',
+      analysisLegFinishBodyMatch: 'Gövdeye uyumlu (ahşap)',
       analysisLegCount: 'Ayak adedi',
       analysisLegCountPlaceholder: 'örn. 4',
       analysisLegCountDisabled: 'Yok (duvara monte)',
@@ -571,6 +718,17 @@ const resources = {
           'Açıkken üretimde her ürün fotoğrafı Gemini Flash ile analiz edilir ve ürüne özel katalog prompt üretilir (loading kartlardan düzenlenebilir). Kapalıyken analiz atlanır; sadece ana istem / ürün seçenekleri şablonu kullanılır.',
         sceneVariation:
           'Ürünün geometrisini, renklerini, malzemelerini, detaylarını, kamera açısını, ölçeğini ve kadrajdaki yerini korurken çevreyi yeniler. Değişim miktarı: Az = aynı odada hafif makyaj; Orta = malzeme ve prop’larda belirgin yenileme; Çok = ortamın tamamen değişmesi. Semantik düzenlemedir; Gemini görsel modelleri piksel maskeli arka plan swap sunmuyor.',
+        variantSceneImage:
+          'Orijinal renkli ürünün bulunduğu bitmiş oda fotoğrafları. Her sahne bütün varyant ürünlere uygulanır. Işık ve mekan — Alan değişimi izin vermedikçe — aynı kalır.',
+        variantProductImages:
+          'Aynı ürünün farklı katalog renklerindeki stüdyo/katalog çekimleri. Her fotoğraf her sahneye uygulanır. Gövde, kapak, pleksi, kulp ve ayağı küçük menülerden siz seçin — otomatik tahmin yok.',
+        variantRepeatCount:
+          'Her sahne × varyant çiftinin kaç kez üretileceği. Çıktı sayısı = sahne × varyant ürün × bu değer.',
+        variantAutoPredict:
+          'Açıkken Gemini Flash her varyant ürün fotoğrafını okur; gövde, kapak, pleksi, kulp ve ayak seçimlerini doldurur. Elle menüler gizlenir. Kapalıyken renkleri siz seçersiniz.',
+        variantExtraPrompt: 'Renk aktarım kilitlerinin üzerine eklenen isteğe bağlı notlar.',
+        areaChangeStrength:
+          'Ürün dışındaki alanın ne kadar değişebileceği. Değiştirme = yalnızca renk. Az = hafif gölge/yansıma tonu. Orta = yakındaki yüzeyler uyumlanabilir. Çok = yakındaki proplar yenilenebilir, mekan ve ışık aynı kalır.',
         aiUpscale: 'Uretimden sonra ESRGAN Thick (2x veya 3x) calistirir, ardindan secili yeniden boyutlandirma/dis aktarim boyutunu uygular. Daha fazla CPU/RAM kullanir ve gorsel basina daha uzun surer.',
         batchRateLimit: 'Her toplu üretim turu arasındaki bekleme süresi (saniye). Gecikme istemiyorsanız 0 girin. Önerilen: 120s (2 dk). Hata olursa ürün başına en fazla 5 deneme (500/timeout/rate limit için backoff ile otomatik tekrar).'
       }

@@ -10,6 +10,8 @@ info:
 
     **Client-only features** (not part of this API): history, archive, zip packing, and multi-product
     queues. Call `POST /api/generate` once per product photo when batching many references.
+    For variant recolor, send one scene as IMAGE 1 with one variant product as IMAGE 2.
+    Repeat for every scene × variant pair.
 
     ### Auth
     - If `APP_ACCESS_TOKEN` is set on the server, send `Authorization: Bearer <token>`.
@@ -392,13 +394,11 @@ components:
 
     GenerateRequest:
       type: object
-      required: [prompt]
       additionalProperties: false
       properties:
         prompt:
           type: string
-          description: Base generation prompt
-          minLength: 1
+          description: Base generation prompt. Optional when `variantRecolor` is true.
           maxLength: 10000
         negativePrompt:
           type: string
@@ -460,6 +460,46 @@ components:
             How much the surrounding scene should change when `sceneVariation` is true.
             `low` = subtle restyle of the same room; `medium` = clear redesign of materials and props;
             `high` = full environment replacement. Defaults to `low`.
+        variantRecolor:
+          type: boolean
+          default: false
+          description: >-
+            Color-variant transfer. Send one scene as IMAGE 1 and one variant
+            product as IMAGE 2. Call once per scene × variant pair.
+            Recolors only the product in the scene. Prompt may be empty; extra notes are optional.
+            Optional `targetBodyColor` / `targetDoorColor` / `targetPlexiglass` /
+            `targetHandleMetal` / `targetLegMetal` lock the catalogue finish
+            (user-selected; not inferred).
+        areaChangeStrength:
+          type: string
+          enum: [none, low, medium, high]
+          default: none
+          description: >-
+            How much non-product area may change during `variantRecolor`.
+            `none` = color-only; `low` / `medium` / `high` allow increasing nearby restyle
+            while keeping lighting and room identity.
+        targetBodyColor:
+          type: string
+          enum: [white, anthracite, sapphire-oak, alina-walnut]
+          description: User-selected catalogue body finish for variant recolor. Not inferred.
+        targetDoorColor:
+          type: string
+          enum: [white, anthracite, travertine, sapphire-oak, alina-walnut]
+          description: User-selected catalogue door finish for variant recolor. Not inferred.
+        targetPlexiglass:
+          type: string
+          enum: [none, gold-mirror, silver-mirror]
+          description: >-
+            User-selected plexiglass for variant recolor: none (yok), gold-mirror (gold),
+            silver-mirror (silver). Not inferred.
+        targetHandleMetal:
+          type: string
+          enum: [none, gold, silver, black]
+          description: User-selected handle metal for variant recolor. none = handleless.
+        targetLegMetal:
+          type: string
+          enum: [none, gold, silver, black, white]
+          description: User-selected leg finish for variant recolor. none = keep IMAGE 1 legs.
         referenceImages:
           type: array
           description: Preferred multi-reference input

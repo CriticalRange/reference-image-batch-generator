@@ -14,4 +14,15 @@ pnpm-debug.log*
 *.tsbuildinfo
 .codex
 *-service-account.json
+serviceaccount.json
 free-*.json
+
+# Local MCP / Vertex / batch scratch (never commit)
+_aff_*
+_affinity_*
+_args.json
+_args_preamble.json
+_batch_*
+_gap_*
+_lifestyle_*
+_vertex_*

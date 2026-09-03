@@ -2,7 +2,7 @@
 
 import '@/lib/i18n';
 import { get, set } from 'idb-keyval';
-import { AnimatePresence, LayoutGroup, motion } from 'framer-motion';
+import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from 'framer-motion';
 import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -37,14 +37,31 @@ import {
   type ReferenceAnalysisDraft
 } from '@/lib/referenceAnalysis';
 import {
+  isAreaChangeStrength,
   isSceneVariationStrength,
+  normalizeAreaChangeStrength,
   normalizeSceneVariationStrength,
+  parseBodyColorOption,
+  parseDoorColorOption,
+  parsePlexiglassOption,
+  parseHardwareMetalOption,
+  parseLegFinishOption,
+  HARDWARE_METAL_OPTIONS,
+  LEG_FINISH_OPTIONS,
+  type AreaChangeStrength,
+  type HardwareMetalOption,
+  type LegFinishOption,
   type SceneVariationStrength
 } from '@/lib/promptVariants';
 import {
   compressReferenceImageFile,
   REFERENCE_ORIGINAL_MAX_BYTES
 } from '@/lib/compressReferenceImage';
+import {
+  buildCatalogOutputFileName,
+  parseCatalogSku,
+  pickCatalogSourceFileName
+} from '@/lib/catalogFileName';
 
 type GenerationResult = {
   promptVariant: string;
@@ -115,6 +132,12 @@ type ReferenceImage = {
   mimeType: string;
   previewDataUrl: string;
   fileName: string;
+  /** Manual catalogue finish for variant products — never AI-inferred. */
+  bodyColor?: BodyColorOption | '';
+  doorColor?: DoorColorOption | '';
+  plexiglass?: PlexiglassOption;
+  handleMetal?: HardwareMetalOption;
+  legMetal?: LegFinishOption;
 };
 
 type BatchRunResult = {
@@ -128,6 +151,8 @@ type BatchQueueItem = {
   ref: ReferenceImage;
   refIndex: number;
   attempt: number;
+  /** Variant mode: the scene this product is applied to. */
+  scene?: ReferenceImage;
 };
 
 /** Loading-card slots for the full generate submit (all refs × variants). */
@@ -159,6 +184,13 @@ type GenerationConfigSnapshot = {
   aiUpscale?: number;
   sceneVariation?: boolean;
   sceneVariationStrength?: SceneVariationStrength;
+  variantRecolor?: boolean;
+  areaChangeStrength?: AreaChangeStrength;
+  targetBodyColor?: BodyColorOption;
+  targetDoorColor?: DoorColorOption;
+  targetPlexiglass?: PlexiglassOption;
+  targetHandleMetal?: HardwareMetalOption;
+  targetLegMetal?: LegFinishOption;
   requestedCount: number;
   /**
    * Reference metadata only in history/IDB — never store base64 here (quota).
@@ -209,6 +241,8 @@ type ArchiveItem = HistoryItem & {
 type ArchiveStorageItem = Omit<ArchiveItem, 'imageUrl'>;
 
 type ThemeMode = 'light' | 'dark';
+type GeneratorMode = 'catalogue' | 'variant';
+type ReferencePickerTarget = 'catalogue' | 'variant-scene' | 'variant-product';
 type AuthModeOption = 'service_account' | 'api_key' | 'vertex_express';
 type RenderModeOption = 'batch' | 'single';
 type AspectRatioOption = '1:1' | '2:3' | '3:2' | '3:4' | '4:3' | '4:5' | '5:4' | '9:16' | '16:9' | '21:9';
@@ -266,7 +300,12 @@ const LAST_PROMPT_STORAGE_KEY = 'reference-batch-last-prompt-v1';
 const AUTO_AI_ANALYSIS_STORAGE_KEY = 'reference-batch-auto-ai-analysis-v1';
 const SCENE_VARIATION_STORAGE_KEY = 'reference-batch-scene-variation-v1';
 const SCENE_VARIATION_STRENGTH_STORAGE_KEY = 'reference-batch-scene-variation-strength-v1';
+const GENERATOR_MODE_STORAGE_KEY = 'reference-batch-generator-mode-v1';
+const VARIANT_EXTRA_PROMPT_STORAGE_KEY = 'reference-batch-variant-extra-prompt-v1';
+const AREA_CHANGE_STRENGTH_STORAGE_KEY = 'reference-batch-area-change-strength-v1';
+const VARIANT_AUTO_PREDICT_STORAGE_KEY = 'reference-batch-variant-auto-predict-v1';
 const DEFAULT_SCENE_VARIATION_STRENGTH: SceneVariationStrength = 'low';
+const DEFAULT_AREA_CHANGE_STRENGTH: AreaChangeStrength = 'none';
 const DEFAULT_MODEL = 'vertex/gemini-2.5-flash-image';
 const ASPECT_RATIO_OPTIONS: AspectRatioOption[] = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
 const RESOLUTION_OPTIONS: ResolutionOption[] = ['512', '1K', '2K', '4K'];
@@ -707,6 +746,7 @@ const INITIAL_MODEL_OPTIONS = sortModelOptions(
 
 export default function HomePage() {
   const { t, i18n } = useTranslation();
+  const reduceMotion = useReducedMotion();
   const [prompt, setPrompt] = useState('');
   const [selectedBodyColor, setSelectedBodyColor] = useState<BodyColorOption | ''>('');
   const [selectedDoorColor, setSelectedDoorColor] = useState<DoorColorOption | ''>('');
@@ -762,6 +802,17 @@ export default function HomePage() {
   const [sceneVariationStrength, setSceneVariationStrength] = useState<SceneVariationStrength>(
     DEFAULT_SCENE_VARIATION_STRENGTH
   );
+  /** Catalogue generation vs scene+variant color transfer. */
+  const [generatorMode, setGeneratorMode] = useState<GeneratorMode>('catalogue');
+  const [variantSceneImages, setVariantSceneImages] = useState<ReferenceImage[]>([]);
+  const [variantProductImages, setVariantProductImages] = useState<ReferenceImage[]>([]);
+  const [variantExtraPrompt, setVariantExtraPrompt] = useState('');
+  const [areaChangeStrength, setAreaChangeStrength] = useState<AreaChangeStrength>(
+    DEFAULT_AREA_CHANGE_STRENGTH
+  );
+  const [variantAutoPredict, setVariantAutoPredict] = useState(false);
+  const [isVariantSceneDragOver, setIsVariantSceneDragOver] = useState(false);
+  const [isVariantProductDragOver, setIsVariantProductDragOver] = useState(false);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [authMode, setAuthMode] = useState<AuthModeOption>('api_key');
   /** batch = toplu (async, cheaper); single = tekli (interactive, faster). */
@@ -796,8 +847,10 @@ export default function HomePage() {
   /** All history items produced by the active generate submit (one collection). */
   const batchHistoryItemsRef = useRef<HistoryItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const referencePickerTargetRef = useRef<ReferencePickerTarget>('catalogue');
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const negativePromptTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const variantExtraPromptTextareaRef = useRef<HTMLTextAreaElement>(null);
   /** Avoid double-showing images that are still in the live pending grid. */
   const pendingFilledIds = useMemo(
     () => new Set(pendingSlots.map((slot) => slot.item?.id).filter((id): id is string => Boolean(id))),
@@ -872,10 +925,21 @@ export default function HomePage() {
   const newHistoryCount = useMemo(() => historyItems.filter((item) => item.isNew).length, [historyItems]);
 
   const generationTotal = useMemo(() => {
-    const refs = Math.max(1, batchTotalRefs || referenceImages.length || 1);
+    const fallbackRefs =
+      generatorMode === 'variant'
+        ? Math.max(1, variantSceneImages.length) * Math.max(1, variantProductImages.length)
+        : referenceImages.length;
+    const refs = Math.max(1, batchTotalRefs || fallbackRefs || 1);
     const perRef = Math.max(1, batchCountPerRef || 1);
     return refs * perRef;
-  }, [batchTotalRefs, batchCountPerRef, referenceImages.length]);
+  }, [
+    batchTotalRefs,
+    batchCountPerRef,
+    generatorMode,
+    referenceImages.length,
+    variantProductImages.length,
+    variantSceneImages.length
+  ]);
 
   const generationCurrent = useMemo(() => {
     if (!isLoading) return 0;
@@ -1085,16 +1149,29 @@ export default function HomePage() {
   }, [batchRateLimitInput, t]);
 
   const canSubmit = useMemo(() => {
-    // Base prompt is optional — per-reference Flash analysis builds the catalogue prompt.
+    const hasSources =
+      generatorMode === 'variant'
+        ? variantSceneImages.length > 0 && variantProductImages.length > 0
+        : referenceImages.length > 0;
     return (
-      referenceImages.length > 0 &&
+      hasSources &&
       !isLoading &&
       !countError &&
       !resizeWidthError &&
       !resizeHeightError &&
       !batchRateLimitError
     );
-  }, [referenceImages.length, isLoading, countError, resizeWidthError, resizeHeightError, batchRateLimitError]);
+  }, [
+    generatorMode,
+    variantSceneImages.length,
+    variantProductImages.length,
+    referenceImages.length,
+    isLoading,
+    countError,
+    resizeWidthError,
+    resizeHeightError,
+    batchRateLimitError
+  ]);
 
   useEffect(() => {
     // Selecting product options overwrites the base prompt with the commercial catalogue template.
@@ -1377,6 +1454,24 @@ export default function HomePage() {
     if (isSceneVariationStrength(storedStrength)) {
       setSceneVariationStrength(storedStrength);
     }
+    const storedGeneratorMode = window.localStorage.getItem(GENERATOR_MODE_STORAGE_KEY);
+    if (storedGeneratorMode === 'catalogue' || storedGeneratorMode === 'variant') {
+      setGeneratorMode(storedGeneratorMode);
+    }
+    const storedAreaChange = window.localStorage.getItem(AREA_CHANGE_STRENGTH_STORAGE_KEY);
+    if (isAreaChangeStrength(storedAreaChange)) {
+      setAreaChangeStrength(storedAreaChange);
+    }
+    const storedVariantPrompt = window.localStorage.getItem(VARIANT_EXTRA_PROMPT_STORAGE_KEY);
+    if (storedVariantPrompt) {
+      setVariantExtraPrompt(storedVariantPrompt);
+    }
+    const storedVariantAuto = window.localStorage.getItem(VARIANT_AUTO_PREDICT_STORAGE_KEY);
+    if (storedVariantAuto === '1' || storedVariantAuto === 'true') {
+      setVariantAutoPredict(true);
+    } else if (storedVariantAuto === '0' || storedVariantAuto === 'false') {
+      setVariantAutoPredict(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -1408,6 +1503,35 @@ export default function HomePage() {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(SCENE_VARIATION_STRENGTH_STORAGE_KEY, sceneVariationStrength);
   }, [sceneVariationStrength]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(GENERATOR_MODE_STORAGE_KEY, generatorMode);
+  }, [generatorMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(AREA_CHANGE_STRENGTH_STORAGE_KEY, areaChangeStrength);
+  }, [areaChangeStrength]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(VARIANT_AUTO_PREDICT_STORAGE_KEY, variantAutoPredict ? '1' : '0');
+  }, [variantAutoPredict]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const next = variantExtraPrompt.trim();
+    if (next) {
+      window.localStorage.setItem(VARIANT_EXTRA_PROMPT_STORAGE_KEY, variantExtraPrompt);
+    } else {
+      window.localStorage.removeItem(VARIANT_EXTRA_PROMPT_STORAGE_KEY);
+    }
+  }, [variantExtraPrompt]);
+
+  useEffect(() => {
+    autoResizeTextarea(variantExtraPromptTextareaRef.current);
+  }, [variantExtraPrompt]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1569,7 +1693,7 @@ export default function HomePage() {
       const fileExt = mimeTypeToFileExtension(item.mimeType);
       const anchor = document.createElement('a');
       anchor.href = item.imageUrl;
-      anchor.download = getHistoryImageDownloadName(item, 1, fileExt);
+      anchor.download = getHistoryImageDownloadName(item, 1, fileExt, [item]);
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -1582,7 +1706,7 @@ export default function HomePage() {
       for (let i = 0; i < selected.length; i++) {
         const item = selected[i];
         const fileExt = mimeTypeToFileExtension(item.mimeType);
-        const fileName = getHistoryImageDownloadName(item, i + 1, fileExt);
+        const fileName = getHistoryImageDownloadName(item, i + 1, fileExt, selected);
         zip.file(fileName, item.imageBlob);
       }
       const blob = await zip.generateAsync({ type: 'blob' });
@@ -1621,7 +1745,7 @@ export default function HomePage() {
         for (let i = 0; i < folderItems.length; i++) {
           const item = folderItems[i];
           const fileExt = mimeTypeToFileExtension(item.mimeType);
-          folder.file(getHistoryImageDownloadName(item, i + 1, fileExt), item.imageBlob);
+          folder.file(getHistoryImageDownloadName(item, i + 1, fileExt, folderItems), item.imageBlob);
         }
       };
 
@@ -1669,8 +1793,12 @@ export default function HomePage() {
     await downloadHistoryItemsAsZip(collection.items, folderName, { rootFolderName: folderName });
   }
 
-  function openReferencePicker() {
-    fileInputRef.current?.click();
+  function openReferencePicker(target: ReferencePickerTarget = 'catalogue') {
+    referencePickerTargetRef.current = target;
+    if (fileInputRef.current) {
+      fileInputRef.current.multiple = true;
+      fileInputRef.current.click();
+    }
   }
 
   function openHistoryViewer(itemId: string) {
@@ -1736,6 +1864,9 @@ export default function HomePage() {
   }
 
   function downloadHistoryItem(item: HistoryItem, index = 1) {
+    const siblings = item.collectionId
+      ? historyItems.filter((entry) => entry.collectionId === item.collectionId)
+      : [item];
     if (typeof document === 'undefined') {
       return;
     }
@@ -1743,7 +1874,7 @@ export default function HomePage() {
     const fileExt = mimeTypeToFileExtension(item.mimeType);
     const anchor = document.createElement('a');
     anchor.href = item.imageUrl;
-    anchor.download = getHistoryImageDownloadName(item, index, fileExt);
+    anchor.download = getHistoryImageDownloadName(item, index, fileExt, siblings);
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -1780,7 +1911,9 @@ export default function HomePage() {
       )
     );
     setSelectedModel(normalizedModel);
-    setPrompt(config.basePrompt);
+    if (config.variantRecolor !== true) {
+      setPrompt(config.basePrompt);
+    }
     setNegativePrompt(config.negativePrompt?.trim() ?? '');
     setAspectRatio(toAspectRatioOption(config.aspectRatio));
     if (typeof config.steps === 'number' && Number.isFinite(config.steps)) {
@@ -1794,6 +1927,13 @@ export default function HomePage() {
     setAiUpscale(typeof config.aiUpscale === 'number' && config.aiUpscale > 0 ? config.aiUpscale : 0);
     setSceneVariation(config.sceneVariation === true);
     setSceneVariationStrength(normalizeSceneVariationStrength(config.sceneVariationStrength));
+    if (config.variantRecolor === true) {
+      setGeneratorMode('variant');
+      setVariantExtraPrompt(config.basePrompt);
+      setAreaChangeStrength(normalizeAreaChangeStrength(config.areaChangeStrength));
+    } else {
+      setGeneratorMode('catalogue');
+    }
     if (restoredResizePreset === 'custom') {
       const restoredWidth = clampResizeDimension(config.resizeWidth ?? DEFAULT_CUSTOM_RESIZE_WIDTH);
       const restoredHeight = clampResizeDimension(config.resizeHeight ?? DEFAULT_CUSTOM_RESIZE_HEIGHT);
@@ -1816,7 +1956,25 @@ export default function HomePage() {
         previewDataUrl: `data:${reference.mimeType};base64,${reference.base64}`,
         fileName: reference.fileName ?? ''
       }));
-    setReferenceImages(restoredReferences);
+    if (config.variantRecolor === true) {
+      setVariantSceneImages(restoredReferences[0] ? [restoredReferences[0]] : []);
+      setVariantProductImages(
+        restoredReferences[1]
+          ? [
+              {
+                ...restoredReferences[1],
+                bodyColor: parseBodyColorOption(config.targetBodyColor) ?? '',
+                doorColor: parseDoorColorOption(config.targetDoorColor) ?? '',
+                plexiglass: parsePlexiglassOption(config.targetPlexiglass) ?? 'none',
+                handleMetal: parseHardwareMetalOption(config.targetHandleMetal) ?? 'none',
+                legMetal: parseLegFinishOption(config.targetLegMetal) ?? 'none'
+              }
+            ]
+          : []
+      );
+    } else {
+      setReferenceImages(restoredReferences);
+    }
     setIsHistoryViewerOpen(false);
 
     if (restoredReferences.length === 0) {
@@ -1870,7 +2028,10 @@ export default function HomePage() {
           base64: compressed.base64,
           mimeType: compressed.mimeType,
           previewDataUrl: compressed.previewDataUrl,
-          fileName: file.name
+          fileName: file.name,
+          plexiglass: 'none',
+          handleMetal: 'none',
+          legMetal: 'none'
         });
       } catch (compressError) {
         console.error('[reference] compress failed', compressError);
@@ -1884,9 +2045,20 @@ export default function HomePage() {
       }
     }
 
-    if (createdReferences.length > 0) {
-      setReferenceImages((previous) => [...previous, ...createdReferences]);
+    if (createdReferences.length === 0) {
+      return;
     }
+
+    const target = referencePickerTargetRef.current;
+    if (target === 'variant-scene') {
+      setVariantSceneImages((previous) => [...previous, ...createdReferences]);
+      return;
+    }
+    if (target === 'variant-product') {
+      setVariantProductImages((previous) => [...previous, ...createdReferences]);
+      return;
+    }
+    setReferenceImages((previous) => [...previous, ...createdReferences]);
   }
 
   function onReferenceDragOver(event: DragEvent<HTMLElement>) {
@@ -1915,8 +2087,46 @@ export default function HomePage() {
   function onReferenceDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     setIsReferenceDragOver(false);
+    referencePickerTargetRef.current = 'catalogue';
     void handleFileInput(event.dataTransfer.files);
   }
+
+  function makeDropZoneHandlers(
+    setDragOver: (value: boolean) => void,
+    target: ReferencePickerTarget
+  ) {
+    return {
+      onDragOver: (event: DragEvent<HTMLElement>) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        setDragOver(true);
+      },
+      onDragEnter: (event: DragEvent<HTMLElement>) => {
+        event.preventDefault();
+        setDragOver(true);
+      },
+      onDragLeave: (event: DragEvent<HTMLElement>) => {
+        event.preventDefault();
+        const nextTarget = event.relatedTarget as Node | null;
+        if (nextTarget && event.currentTarget.contains(nextTarget)) {
+          return;
+        }
+        setDragOver(false);
+      },
+      onDrop: (event: DragEvent<HTMLElement>) => {
+        event.preventDefault();
+        setDragOver(false);
+        referencePickerTargetRef.current = target;
+        void handleFileInput(event.dataTransfer.files);
+      }
+    };
+  }
+
+  const variantSceneDropHandlers = makeDropZoneHandlers(setIsVariantSceneDragOver, 'variant-scene');
+  const variantProductDropHandlers = makeDropZoneHandlers(
+    setIsVariantProductDragOver,
+    'variant-product'
+  );
 
   /** Abort all in-flight work and reset UI as if Generate was never pressed. */
   function cancelGeneration() {
@@ -1994,10 +2204,40 @@ export default function HomePage() {
     const submittedModel = selectedModel;
     const submittedAuthMode = authMode;
     const submittedRenderMode = renderMode;
-    const submittedAutoAiAnalysis = autoAiAnalysis;
-    const submittedSceneVariation = sceneVariation;
+    const submittedAutoAiAnalysis = generatorMode === 'catalogue' && autoAiAnalysis;
+    const submittedSceneVariation = generatorMode === 'catalogue' && sceneVariation;
     const submittedSceneVariationStrength = normalizeSceneVariationStrength(sceneVariationStrength);
-    const submittedRefs = referenceImages.map((img) => ({ base64: img.base64, mimeType: img.mimeType, fileName: img.fileName }));
+    const submittedVariantRecolor = generatorMode === 'variant';
+    const submittedVariantAutoPredict = submittedVariantRecolor && variantAutoPredict;
+    const submittedAreaChangeStrength = normalizeAreaChangeStrength(areaChangeStrength);
+    const submittedVariantExtraPrompt = variantExtraPrompt.trim();
+    const submittedScenes: ReferenceImage[] = submittedVariantRecolor
+      ? variantSceneImages.slice()
+      : [];
+    const submittedQueueImages: ReferenceImage[] = submittedVariantRecolor
+      ? variantProductImages.slice()
+      : referenceImages.slice();
+    const submittedRefs = submittedQueueImages.map((img) => ({
+      base64: img.base64,
+      mimeType: img.mimeType,
+      fileName: img.fileName
+    }));
+
+    if (submittedVariantRecolor && submittedScenes.length === 0) {
+      toast.error(t('toastVariantSceneRequired'), {
+        description: t('errorVariantSceneRequired'),
+        duration: 5000
+      });
+      return;
+    }
+
+    if (submittedVariantRecolor && variantProductImages.length === 0) {
+      toast.error(t('toastVariantProductRequired'), {
+        description: t('errorVariantProductRequired'),
+        duration: 5000
+      });
+      return;
+    }
 
     if (submittedRefs.length === 0) {
       toast.error(t('toastReferenceRequired'), {
@@ -2008,7 +2248,7 @@ export default function HomePage() {
     }
 
     const submittedConfig: GenerationConfigSnapshot = {
-      basePrompt: submittedPrompt,
+      basePrompt: submittedVariantRecolor ? submittedVariantExtraPrompt : submittedPrompt,
       ...(submittedNegativePrompt ? { negativePrompt: submittedNegativePrompt } : {}),
       model: submittedModel,
       aspectRatio,
@@ -2019,6 +2259,9 @@ export default function HomePage() {
       ...(aiUpscale > 0 ? { aiUpscale } : {}),
       ...(submittedSceneVariation
         ? { sceneVariation: true, sceneVariationStrength: submittedSceneVariationStrength }
+        : {}),
+      ...(submittedVariantRecolor
+        ? { variantRecolor: true, areaChangeStrength: submittedAreaChangeStrength }
         : {}),
       requestedCount: submittedCount,
     };
@@ -2086,7 +2329,15 @@ export default function HomePage() {
     async function callApiAndGetResults(
       refs: Array<{ base64: string; mimeType: string; fileName?: string }>,
       promptForRun = submittedPrompt,
-      onPartialResults?: (results: GenerationResult[]) => Promise<void>
+      onPartialResults?: (results: GenerationResult[]) => Promise<void>,
+      targetColors?: {
+        bodyColor?: BodyColorOption;
+        doorColor?: DoorColorOption;
+        plexiglass?: PlexiglassOption;
+        handleMetal?: HardwareMetalOption;
+        legMetal?: LegFinishOption;
+        legBodyMatch?: boolean;
+      }
     ) {
       assertNotCancelled();
       const requestSignal = createTimeoutLinkedSignal(signal, MAX_GENERATE_REQUEST_MS);
@@ -2113,6 +2364,16 @@ export default function HomePage() {
             sceneVariationStrength: submittedSceneVariation
               ? submittedSceneVariationStrength
               : undefined,
+            variantRecolor: submittedVariantRecolor || undefined,
+            areaChangeStrength: submittedVariantRecolor
+              ? submittedAreaChangeStrength
+              : undefined,
+            targetBodyColor: submittedVariantRecolor ? targetColors?.bodyColor : undefined,
+            targetDoorColor: submittedVariantRecolor ? targetColors?.doorColor : undefined,
+            targetPlexiglass: submittedVariantRecolor ? targetColors?.plexiglass : undefined,
+            targetHandleMetal: submittedVariantRecolor ? targetColors?.handleMetal : undefined,
+            targetLegMetal: submittedVariantRecolor ? targetColors?.legMetal : undefined,
+            targetLegBodyMatch: submittedVariantRecolor ? targetColors?.legBodyMatch : undefined,
             referenceImages: refs
           })
         });
@@ -2291,10 +2552,24 @@ export default function HomePage() {
       return normalizedUsedModel;
     }
 
-    // Always one generation job per reference image (queue + rate limit + retries).
-    const totalRefs = referenceImages.length;
+    // Catalogue: one job per product photo.
+    // Variant: every scene × every variant product (cartesian), then repeat count.
     const rateLimitMs = batchRateLimitSec * 1000;
-    const queue: BatchQueueItem[] = referenceImages.map((ref, refIndex) => ({ ref, refIndex, attempt: 0 }));
+    const queue: BatchQueueItem[] = [];
+    if (submittedVariantRecolor) {
+      let pairIndex = 0;
+      for (const scene of submittedScenes) {
+        for (const product of submittedQueueImages) {
+          queue.push({ ref: product, scene, refIndex: pairIndex, attempt: 0 });
+          pairIndex += 1;
+        }
+      }
+    } else {
+      for (const [refIndex, ref] of submittedQueueImages.entries()) {
+        queue.push({ ref, refIndex, attempt: 0 });
+      }
+    }
+    const totalRefs = queue.length;
     let processedAttempts = 0;
     setBatchTotalRefs(totalRefs);
 
@@ -2341,7 +2616,7 @@ export default function HomePage() {
     flushSync(() => {
       setActivePendingRefIndex(0);
       publishPendingSlots();
-      if (submittedAutoAiAnalysis) {
+      if (submittedAutoAiAnalysis || submittedVariantAutoPredict) {
         const loadingMap: Record<number, RefAnalysisState> = {};
         for (let r = 0; r < totalRefs; r++) {
           loadingMap[r] = { status: 'loading' };
@@ -2428,20 +2703,108 @@ export default function HomePage() {
       }
     }
 
+    const variantAutoTargets = new Map<string, ReturnType<typeof mapAnalysisToVariantTargets>>();
+    const variantAnalysisByProductId = new Map<string, ReferenceAnalysis>();
+    const applyVariantAnalysisState = (productId: string, state: RefAnalysisState) => {
+      const next = { ...refAnalysesRef.current };
+      for (const job of queue) {
+        if (job.ref.id === productId) {
+          next[job.refIndex] = state;
+        }
+      }
+      refAnalysesRef.current = next;
+      setRefAnalyses(next);
+    };
+    if (submittedVariantAutoPredict) {
+      try {
+        await Promise.all(
+          submittedQueueImages.map(async (product) => {
+            try {
+              assertNotCancelled();
+              const analyzeSignal = createTimeoutLinkedSignal(signal, MAX_ANALYZE_REQUEST_MS);
+              let response: Response;
+              try {
+                response = await fetch('/api/analyze-reference', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  signal: analyzeSignal,
+                  body: JSON.stringify({
+                    base64: product.base64,
+                    mimeType: product.mimeType,
+                    fileName: product.fileName
+                  })
+                });
+              } catch (analyzeFetchError) {
+                if (generationCancelledRef.current || signal.aborted) {
+                  throw Object.assign(new Error('Generation cancelled'), { name: 'AbortError' });
+                }
+                if (isAbortLikeError(analyzeFetchError)) {
+                  throw new Error(t('errorAnalysisTimeout'));
+                }
+                throw analyzeFetchError;
+              }
+              const payload = (await response.json().catch(() => ({}))) as {
+                analysis?: ReferenceAnalysis;
+                error?: string;
+              };
+              if (!response.ok || !payload.analysis) {
+                throw new Error(payload.error?.trim() || t('analysisFailed'));
+              }
+              variantAnalysisByProductId.set(product.id, payload.analysis);
+              variantAutoTargets.set(product.id, mapAnalysisToVariantTargets(payload.analysis));
+              applyVariantAnalysisState(product.id, { status: 'ready', analysis: payload.analysis });
+            } catch (analyzeError) {
+              if (
+                generationCancelledRef.current ||
+                signal.aborted ||
+                (analyzeError instanceof Error && analyzeError.name === 'AbortError')
+              ) {
+                throw analyzeError instanceof Error
+                  ? analyzeError
+                  : Object.assign(new Error('Generation cancelled'), { name: 'AbortError' });
+              }
+              const message = getUnknownErrorMessage(analyzeError, t('analysisFailed'));
+              console.warn('[variant-auto-predict] failed', {
+                product: product.fileName,
+                message
+              });
+              toast.error(t('toastAnalysisFailed', { product: product.fileName?.trim() || product.id }), {
+                description: message,
+                duration: 5000
+              });
+              applyVariantAnalysisState(product.id, { status: 'error', error: message });
+            }
+          })
+        );
+      } catch (analyzeWaveError) {
+        if (
+          generationCancelledRef.current ||
+          signal.aborted ||
+          (analyzeWaveError instanceof Error && analyzeWaveError.name === 'AbortError')
+        ) {
+          return;
+        }
+        throw analyzeWaveError;
+      }
+    }
+
     try {
       while (queue.length > 0) {
         assertNotCancelled();
         const item = queue.shift();
         if (!item) break;
 
-        const { ref, refIndex, attempt } = item;
-        const analysisPrompt = refAnalysesRef.current[refIndex]?.analysis?.prompt?.trim();
-        // Priority: AI analysis prompt → manual base prompt → product-option template → last-resort fallback.
-        const promptForRun =
-          analysisPrompt ||
-          getBatchPromptForReference(submittedPrompt, refIndex) ||
-          manualCataloguePrompt ||
-          'Create a photorealistic commercial furniture catalogue image from the reference. Preserve product identity exactly. GENERATE.';
+        const { ref, refIndex, attempt, scene } = item;
+        const jobAnalysis =
+          variantAnalysisByProductId.get(ref.id) ?? refAnalysesRef.current[refIndex]?.analysis;
+        const analysisPrompt = jobAnalysis?.prompt?.trim();
+        // Variant recolor uses optional extra notes; catalogue uses analysis / template.
+        const promptForRun = submittedVariantRecolor
+          ? submittedVariantExtraPrompt
+          : analysisPrompt ||
+            getBatchPromptForReference(submittedPrompt, refIndex) ||
+            manualCataloguePrompt ||
+            'Create a photorealistic commercial furniture catalogue image from the reference. Preserve product identity exactly. GENERATE.';
         const slotIds = slotIdsByRefIndex.get(refIndex) ?? [];
 
         if (processedAttempts > 0) {
@@ -2476,10 +2839,30 @@ export default function HomePage() {
         }
         publishPendingSlots();
 
+        if (submittedVariantRecolor && !scene) {
+          throw new Error(t('errorVariantSceneRequired'));
+        }
+        const jobReferences =
+          submittedVariantRecolor && scene
+            ? [
+                {
+                  base64: scene.base64,
+                  mimeType: scene.mimeType,
+                  fileName: scene.fileName
+                },
+                { base64: ref.base64, mimeType: ref.mimeType, fileName: ref.fileName }
+              ]
+            : [{ base64: ref.base64, mimeType: ref.mimeType, fileName: ref.fileName }];
+
         const singleRefConfig: GenerationConfigSnapshot = {
           ...submittedConfig,
           basePrompt: promptForRun,
-          referenceImages: [{ base64: ref.base64, mimeType: ref.mimeType, fileName: ref.fileName }]
+          referenceImages: jobReferences,
+          ...(submittedVariantRecolor
+            ? toVariantSnapshotTargets(
+                resolveVariantTargetColors(ref, submittedVariantAutoPredict, variantAutoTargets)
+              )
+            : {})
         };
 
         const resultKey = (entry: GenerationResult) =>
@@ -2501,7 +2884,7 @@ export default function HomePage() {
           // Fill this product's empty slots left-to-right.
           const emptySlotIds = slotIds.filter((id) => !filledItemsBySlotId.has(id));
           const toFill = newcomers.slice(0, emptySlotIds.length);
-          const refAnalysis = refAnalysesRef.current[refIndex]?.analysis;
+          const refAnalysis = jobAnalysis;
           const partialHistoryConfig = stripReferenceBase64FromConfig(singleRefConfig);
           const created = await Promise.all(
             toFill.map((entry, index) =>
@@ -2536,9 +2919,12 @@ export default function HomePage() {
 
         try {
           const { outputResults, outputFailures, usedModel } = await callApiAndGetResults(
-            [{ base64: ref.base64, mimeType: ref.mimeType }],
+            jobReferences,
             promptForRun,
-            applyPartialResults
+            applyPartialResults,
+            submittedVariantRecolor
+              ? resolveVariantTargetColors(ref, submittedVariantAutoPredict, variantAutoTargets)
+              : undefined
           );
 
           // Cancel may land after the network response but before we commit history.
@@ -2557,7 +2943,7 @@ export default function HomePage() {
             ...singleRefConfig,
             model: resolvedUsedModel
           });
-          const refAnalysis = refAnalysesRef.current[refIndex]?.analysis;
+          const refAnalysis = jobAnalysis;
 
           if (outputFailures.length > 0) {
             const productLabel = ref.fileName?.trim() || String(refIndex + 1);
@@ -2728,7 +3114,7 @@ export default function HomePage() {
               }
               throw new Error('Generation cancelled');
             }
-            queue.unshift({ ref, refIndex, attempt: nextAttempt });
+            queue.unshift({ ref, refIndex, attempt: nextAttempt, scene });
           } else {
             if (generationCancelledRef.current || signal.aborted) {
               return;
@@ -2841,6 +3227,35 @@ export default function HomePage() {
         activeCollectionIdRef.current = null;
       }
     }
+  }
+
+  function analysisModalProductLabel(target: AnalysisModalTarget): string {
+    if (target.kind === 'ref') {
+      const catalogueName = submittedRefsLabel(referenceImages, target.refIndex);
+      if (catalogueName) {
+        return catalogueName;
+      }
+      if (variantProductImages.length > 0) {
+        const product =
+          variantProductImages[target.refIndex % variantProductImages.length];
+        const name = product?.fileName?.trim();
+        if (name) {
+          return name;
+        }
+      }
+      return String(target.refIndex + 1);
+    }
+    const historyItem = historyItems.find((entry) => entry.id === target.itemId);
+    const refs = historyItem?.generationConfig?.referenceImages ?? [];
+    const variantName = refs[refs.length - 1]?.fileName?.trim();
+    if (variantName) {
+      return variantName;
+    }
+    return (
+      historyItem?.referenceAnalysis?.productTypeLabel ||
+      refs[0]?.fileName ||
+      t('historyResultAlt')
+    );
   }
 
   return (
@@ -3256,7 +3671,33 @@ export default function HomePage() {
         <p className="subtitle">{t('appSubtitle')}</p>
 
         <section className="panel generator-panel">
-          <form className="form generator-form" onSubmit={onSubmit}>
+          <div className="generator-mode-tabs" role="tablist" aria-label={t('generate')}>
+            <button
+              type="button"
+              role="tab"
+              id="generator-tab-catalogue"
+              aria-selected={generatorMode === 'catalogue'}
+              aria-controls="generator-tabpanel"
+              className={`generator-mode-tab${generatorMode === 'catalogue' ? ' is-active' : ''}`}
+              onClick={() => setGeneratorMode('catalogue')}
+              disabled={isLoading}
+            >
+              {t('generatorModeCatalogue')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="generator-tab-variant"
+              aria-selected={generatorMode === 'variant'}
+              aria-controls="generator-tabpanel"
+              className={`generator-mode-tab${generatorMode === 'variant' ? ' is-active' : ''}`}
+              onClick={() => setGeneratorMode('variant')}
+              disabled={isLoading}
+            >
+              {t('generatorModeVariant')}
+            </button>
+          </div>
+          <form className="form generator-form" onSubmit={onSubmit} id="generator-tabpanel">
             <input
               ref={fileInputRef}
               type="file"
@@ -3330,6 +3771,401 @@ export default function HomePage() {
               ) : null}
             </label>
 
+            {generatorMode === 'variant' ? (
+              <section className="variant-recolor-block">
+                <p className="reference-note">{t('generatorModeVariantHint')}</p>
+                <label
+                  className={`checkbox-row variant-auto-row${variantAutoPredict ? ' is-active' : ''}`}
+                  htmlFor="variant-auto-predict"
+                >
+                  <input
+                    id="variant-auto-predict"
+                    type="checkbox"
+                    checked={variantAutoPredict}
+                    onChange={(event) => setVariantAutoPredict(event.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span className="field-head">
+                    <span>{t('variantAutoPredict')}</span>
+                    <InfoHint text={t('fieldInfo.variantAutoPredict')} />
+                  </span>
+                </label>
+                <div className="variant-drop-grid">
+                  <section className="reference-block variant-drop-column">
+                    <div className="field-head">
+                      <GalleryIcon />
+                      <span>{t('variantSceneImage')}</span>
+                      <InfoHint text={t('fieldInfo.variantSceneImage')} />
+                    </div>
+                    <div
+                      className={[
+                        'reference-drop-surface',
+                        variantSceneImages.length === 0 ? 'is-empty' : '',
+                        isVariantSceneDragOver ? 'is-drag-over' : ''
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
+                      {...variantSceneDropHandlers}
+                      onClick={(event) => {
+                        if (
+                          event.target === event.currentTarget ||
+                          (event.target as HTMLElement).closest('.ref-empty-state')
+                        ) {
+                          if (!(event.target as HTMLElement).closest('button')) {
+                            openReferencePicker('variant-scene');
+                          }
+                        }
+                      }}
+                    >
+                      {isVariantSceneDragOver ? (
+                        <div className="reference-drop-overlay" aria-live="polite">
+                          <div className="reference-drop-overlay-ring" aria-hidden />
+                          <div className="reference-drop-overlay-copy">
+                            <span className="reference-drop-overlay-icon" aria-hidden>
+                              <PlusIcon />
+                            </span>
+                            <strong>{t('variantSceneDropActive')}</strong>
+                          </div>
+                        </div>
+                      ) : null}
+                      {variantSceneImages.length === 0 ? (
+                        <div className="ref-empty-state">
+                          <button
+                            type="button"
+                            className="ref-add-primary"
+                            onClick={() => openReferencePicker('variant-scene')}
+                            aria-label={t('addVariantSceneImage')}
+                          >
+                            <PlusIcon />
+                          </button>
+                          <div className="ref-empty-copy">
+                            <strong>{t('variantSceneDropTitle')}</strong>
+                            <span>{t('variantSceneDropSubtitle')}</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="ref-preview-row">
+                          {variantSceneImages.map((image, index) => (
+                            <article className="ref-preview-item" key={image.id}>
+                              <div className="ref-preview-circle">
+                                <img
+                                  src={image.previewDataUrl}
+                                  alt={t('variantSceneAlt', { index: index + 1 })}
+                                />
+                                <span className="ref-pair-index" aria-hidden="true">
+                                  {index + 1}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                className="ref-remove-btn"
+                                aria-label={t('removeVariantSceneImage', { index: index + 1 })}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setVariantSceneImages((previous) =>
+                                    previous.filter((item) => item.id !== image.id)
+                                  );
+                                }}
+                              >
+                                <CloseIcon />
+                              </button>
+                            </article>
+                          ))}
+                          <button
+                            type="button"
+                            className="ref-add-circle"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openReferencePicker('variant-scene');
+                            }}
+                            aria-label={t('addVariantSceneImage')}
+                          >
+                            <PlusIcon />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="reference-block variant-drop-column">
+                    <div className="field-head">
+                      <GalleryIcon />
+                      <span>{t('variantProductImages')}</span>
+                      <InfoHint text={t('fieldInfo.variantProductImages')} />
+                    </div>
+                    <div
+                      className={[
+                        'reference-drop-surface',
+                        variantProductImages.length === 0 ? 'is-empty' : '',
+                        isVariantProductDragOver ? 'is-drag-over' : ''
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
+                      {...variantProductDropHandlers}
+                      onClick={(event) => {
+                        if (
+                          event.target === event.currentTarget ||
+                          (event.target as HTMLElement).closest('.ref-empty-state')
+                        ) {
+                          if (!(event.target as HTMLElement).closest('button')) {
+                            openReferencePicker('variant-product');
+                          }
+                        }
+                      }}
+                    >
+                      {isVariantProductDragOver ? (
+                        <div className="reference-drop-overlay" aria-live="polite">
+                          <div className="reference-drop-overlay-ring" aria-hidden />
+                          <div className="reference-drop-overlay-copy">
+                            <span className="reference-drop-overlay-icon" aria-hidden>
+                              <PlusIcon />
+                            </span>
+                            <strong>{t('variantProductDropActive')}</strong>
+                          </div>
+                        </div>
+                      ) : null}
+                      {variantProductImages.length === 0 ? (
+                        <div className="ref-empty-state">
+                          <button
+                            type="button"
+                            className="ref-add-primary"
+                            onClick={() => openReferencePicker('variant-product')}
+                            aria-label={t('addVariantProductImage')}
+                          >
+                            <PlusIcon />
+                          </button>
+                          <div className="ref-empty-copy">
+                            <strong>{t('variantProductDropTitle')}</strong>
+                            <span>{t('variantProductDropSubtitle')}</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <LayoutGroup>
+                        <div className="ref-preview-row">
+                          {variantProductImages.map((image, index) => (
+                            <motion.article
+                              layout
+                              className="ref-preview-item variant-product-item"
+                              key={image.id}
+                              animate={{ width: variantAutoPredict ? 96 : 118 }}
+                              transition={
+                                reduceMotion
+                                  ? { duration: 0 }
+                                  : { type: 'spring', stiffness: 420, damping: 34 }
+                              }
+                            >
+                              <div className="ref-preview-circle">
+                                <img
+                                  src={image.previewDataUrl}
+                                  alt={t('variantProductAlt', { index: index + 1 })}
+                                />
+                                <span className="ref-pair-index" aria-hidden="true">
+                                  {index + 1}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                className="ref-remove-btn"
+                                aria-label={t('removeVariantProductImage', { index: index + 1 })}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setVariantProductImages((previous) =>
+                                    previous.filter((item) => item.id !== image.id)
+                                  );
+                                }}
+                              >
+                                <CloseIcon />
+                              </button>
+                              <AnimatePresence initial={false}>
+                                {variantAutoPredict ? null : (
+                              <motion.div
+                                className="variant-color-picks"
+                                key="variant-color-picks"
+                                initial={{ height: 0, opacity: 0, y: -10 }}
+                                animate={{ height: 'auto', opacity: 1, y: 0 }}
+                                exit={{ height: 0, opacity: 0, y: -8 }}
+                                transition={
+                                  reduceMotion
+                                    ? { duration: 0 }
+                                    : { duration: 0.34, ease: [0.22, 1, 0.36, 1] }
+                                }
+                              >
+                                <select
+                                  value={image.bodyColor ?? ''}
+                                  aria-label={t('variantProductBodyColor')}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onChange={(event) => {
+                                    const next = event.target.value as BodyColorOption | '';
+                                    setVariantProductImages((previous) =>
+                                      previous.map((item) =>
+                                        item.id === image.id ? { ...item, bodyColor: next } : item
+                                      )
+                                    );
+                                  }}
+                                >
+                                  <option value="">{t('bodyColorPlaceholder')}</option>
+                                  {BODY_COLOR_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>
+                                      {t(`bodyColorOptions.${option}`)}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={image.doorColor ?? ''}
+                                  aria-label={t('variantProductDoorColor')}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onChange={(event) => {
+                                    const next = event.target.value as DoorColorOption | '';
+                                    setVariantProductImages((previous) =>
+                                      previous.map((item) =>
+                                        item.id === image.id ? { ...item, doorColor: next } : item
+                                      )
+                                    );
+                                  }}
+                                >
+                                  <option value="">{t('doorColorPlaceholder')}</option>
+                                  {DOOR_COLOR_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>
+                                      {t(`doorColorOptions.${option}`)}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={image.plexiglass ?? 'none'}
+                                  aria-label={t('variantProductPlexiglass')}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onChange={(event) => {
+                                    const next = event.target.value as PlexiglassOption;
+                                    setVariantProductImages((previous) =>
+                                      previous.map((item) =>
+                                        item.id === image.id ? { ...item, plexiglass: next } : item
+                                      )
+                                    );
+                                  }}
+                                >
+                                  {PLEXIGLASS_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>
+                                      {t(`variantPlexiglassOptions.${option}`)}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={image.handleMetal ?? 'none'}
+                                  aria-label={t('variantProductHandleMetal')}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onChange={(event) => {
+                                    const next = event.target.value as HardwareMetalOption;
+                                    setVariantProductImages((previous) =>
+                                      previous.map((item) =>
+                                        item.id === image.id ? { ...item, handleMetal: next } : item
+                                      )
+                                    );
+                                  }}
+                                >
+                                  {HARDWARE_METAL_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>
+                                      {t(`variantHandleOptions.${option}`)}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={image.legMetal ?? 'none'}
+                                  aria-label={t('variantProductLegMetal')}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onChange={(event) => {
+                                    const next = event.target.value as LegFinishOption;
+                                    setVariantProductImages((previous) =>
+                                      previous.map((item) =>
+                                        item.id === image.id ? { ...item, legMetal: next } : item
+                                      )
+                                    );
+                                  }}
+                                >
+                                  {LEG_FINISH_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>
+                                      {t(`variantLegOptions.${option}`)}
+                                    </option>
+                                  ))}
+                                </select>
+                              </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </motion.article>
+                          ))}
+                          <button
+                            type="button"
+                            className="ref-add-circle"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openReferencePicker('variant-product');
+                            }}
+                            aria-label={t('addVariantProductImage')}
+                          >
+                            <PlusIcon />
+                          </button>
+                        </div>
+                        </LayoutGroup>
+                      )}
+                    </div>
+                  </section>
+                </div>
+                {variantSceneImages.length > 0 || variantProductImages.length > 0 ? (
+                  <p
+                    className={`reference-note${
+                      variantSceneImages.length === 0 || variantProductImages.length === 0
+                        ? ' is-warning'
+                        : ''
+                    }`}
+                  >
+                    {variantSceneImages.length === 0
+                      ? t('errorVariantSceneRequired')
+                      : variantProductImages.length === 0
+                        ? t('errorVariantProductRequired')
+                        : `${t('variantPairHint', {
+                            scenes: variantSceneImages.length,
+                            variants: variantProductImages.length,
+                            jobs: variantSceneImages.length * variantProductImages.length
+                          })}${variantAutoPredict ? '' : ` ${t('variantManualColorHint')}`}`}
+                  </p>
+                ) : null}
+
+                <label htmlFor="variant-extra-prompt">
+                  <span className="field-head">
+                    <PromptIcon />
+                    <span>{t('variantExtraPrompt')}</span>
+                    <InfoHint text={t('fieldInfo.variantExtraPrompt')} />
+                  </span>
+                  <textarea
+                    ref={variantExtraPromptTextareaRef}
+                    id="variant-extra-prompt"
+                    value={variantExtraPrompt}
+                    onChange={(event) => setVariantExtraPrompt(event.target.value)}
+                    placeholder={t('variantExtraPromptPlaceholder')}
+                  />
+                </label>
+
+                <label htmlFor="area-change-strength">
+                  <span className="field-head">
+                    <span>{t('areaChangeStrength')}</span>
+                    <InfoHint text={t('fieldInfo.areaChangeStrength')} />
+                  </span>
+                  <select
+                    id="area-change-strength"
+                    className="field-select"
+                    value={areaChangeStrength}
+                    onChange={(event) =>
+                      setAreaChangeStrength(normalizeAreaChangeStrength(event.target.value))
+                    }
+                    disabled={isLoading}
+                  >
+                    <option value="none">{t('areaChangeStrengthNone')}</option>
+                    <option value="low">{t('areaChangeStrengthLow')}</option>
+                    <option value="medium">{t('areaChangeStrengthMedium')}</option>
+                    <option value="high">{t('areaChangeStrengthHigh')}</option>
+                  </select>
+                </label>
+              </section>
+            ) : (
             <section className="reference-block">
               <div className="field-head">
                 <GalleryIcon />
@@ -3372,7 +4208,7 @@ export default function HomePage() {
 
                 {referenceImages.length === 0 ? (
                   <div className="ref-empty-state">
-                    <button type="button" className="ref-add-primary" onClick={openReferencePicker} aria-label={t('addReferenceImage')}>
+                    <button type="button" className="ref-add-primary" onClick={() => openReferencePicker('catalogue')} aria-label={t('addReferenceImage')}>
                       <PlusIcon />
                     </button>
                     <div className="ref-empty-copy">
@@ -3417,6 +4253,7 @@ export default function HomePage() {
               </div>
 
             </section>
+            )}
 
             <label htmlFor="batch-rate-limit">
               <span className="field-head">
@@ -3445,6 +4282,7 @@ export default function HomePage() {
               {batchRateLimitError ? <p className="field-error">{batchRateLimitError}</p> : null}
             </label>
 
+            {generatorMode === 'catalogue' ? (
             <label htmlFor="prompt">
               <span className="field-head">
                 <PromptIcon />
@@ -3577,6 +4415,7 @@ export default function HomePage() {
                 placeholder={t('promptPlaceholder')}
               />
             </label>
+            ) : null}
 
             {supportsNegativePrompt ? (
               <label htmlFor="negative-prompt">
@@ -3598,8 +4437,16 @@ export default function HomePage() {
             <label htmlFor="count">
               <span className="field-head">
                 <LayersIcon />
-                <span>{t('numberOfVariants')}</span>
-                <InfoHint text={t('fieldInfo.variants')} />
+                <span>
+                  {generatorMode === 'variant' ? t('variantRepeatCount') : t('numberOfVariants')}
+                </span>
+                <InfoHint
+                  text={
+                    generatorMode === 'variant'
+                      ? t('fieldInfo.variantRepeatCount')
+                      : t('fieldInfo.variants')
+                  }
+                />
               </span>
               <input
                 id="count"
@@ -3771,6 +4618,7 @@ export default function HomePage() {
               </div>
             ) : null}
 
+            {generatorMode === 'catalogue' ? (
             <label className="checkbox-row" htmlFor="auto-ai-analysis">
               <input
                 id="auto-ai-analysis"
@@ -3784,6 +4632,7 @@ export default function HomePage() {
                 <InfoHint text={t('fieldInfo.autoAiAnalysis')} />
               </span>
             </label>
+            ) : null}
 
             <label className="checkbox-row" htmlFor="ai-upscale">
               <input
@@ -3810,6 +4659,7 @@ export default function HomePage() {
               )}
             </label>
 
+            {generatorMode === 'catalogue' ? (
             <label className={`checkbox-row scene-variation-row${sceneVariation ? ' is-active' : ''}`} htmlFor="scene-variation">
               <input
                 id="scene-variation"
@@ -3840,6 +4690,7 @@ export default function HomePage() {
                 </select>
               )}
             </label>
+            ) : null}
 
             <div className={`generate-btn-bar${isLoading ? ' has-cancel' : ''}`}>
               <motion.button
@@ -3968,15 +4819,7 @@ export default function HomePage() {
                 <h2 id="analysis-modal-title">{t('analysisModalTitle')}</h2>
                 <p className="analysis-modal-sub">
                   {t('analysisModalSubtitle', {
-                    product:
-                      analysisModalTarget.kind === 'ref'
-                        ? submittedRefsLabel(referenceImages, analysisModalTarget.refIndex) ||
-                          String(analysisModalTarget.refIndex + 1)
-                        : historyItems.find((item) => item.id === analysisModalTarget.itemId)
-                            ?.referenceAnalysis?.productTypeLabel ||
-                          historyItems.find((item) => item.id === analysisModalTarget.itemId)
-                            ?.generationConfig?.referenceImages?.[0]?.fileName ||
-                          t('historyResultAlt')
+                    product: analysisModalProductLabel(analysisModalTarget)
                   })}
                 </p>
               </div>
@@ -4019,7 +4862,14 @@ export default function HomePage() {
                   ? refAnalyses[analysisModalTarget.refIndex]?.analysis
                   : undefined;
               const source = analysisModalDraft || historyAnalysis || refAnalysis;
-              const draft = source ? finalizeAnalysis(source) : null;
+              let draft: ReferenceAnalysis | null = null;
+              if (source) {
+                try {
+                  draft = finalizeAnalysis(source);
+                } catch {
+                  draft = source as ReferenceAnalysis;
+                }
+              }
               if (!draft) {
                 return <p className="analysis-modal-empty">{t('analysisEmpty')}</p>;
               }
@@ -4175,6 +5025,41 @@ export default function HomePage() {
                             {t(`handlePresenceOptions.${option}`)}
                           </option>
                         ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('analysisHandleMetal')}</span>
+                      <select
+                        value={draft.handleMetal ?? 'none'}
+                        onChange={(e) =>
+                          updateDraft({
+                            handleMetal: e.target.value as NonNullable<ReferenceAnalysis['handleMetal']>
+                          })
+                        }
+                      >
+                        {HARDWARE_METAL_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {t(`variantHandleOptions.${option}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('analysisLegFinish')}</span>
+                      <select
+                        value={draft.legFinish ?? 'none'}
+                        onChange={(e) =>
+                          updateDraft({
+                            legFinish: e.target.value as NonNullable<ReferenceAnalysis['legFinish']>
+                          })
+                        }
+                      >
+                        {LEG_FINISH_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {t(`variantLegOptions.${option}`)}
+                          </option>
+                        ))}
+                        <option value="body-match">{t('analysisLegFinishBodyMatch')}</option>
                       </select>
                     </label>
                     <label>
@@ -4360,8 +5245,15 @@ export default function HomePage() {
               onShowAnalysis={() => {
                 const item = activeHistoryItem;
                 if (!item) return;
+                const fromItem = item.referenceAnalysis;
+                const fromConfigIndex = pendingSlots.find((slot) => slot.item?.id === item.id)?.refIndex;
+                const fromLive =
+                  typeof fromConfigIndex === 'number'
+                    ? refAnalysesRef.current[fromConfigIndex]?.analysis
+                    : undefined;
+                const analysis = fromItem || fromLive;
                 setAnalysisModalTarget({ kind: 'history', itemId: item.id });
-                setAnalysisModalDraft(item.referenceAnalysis ? { ...item.referenceAnalysis } : null);
+                setAnalysisModalDraft(analysis ? { ...analysis } : null);
               }}
               isPromptCollapsed={isViewerPromptCollapsed}
               onToggleCollapsed={() => setIsViewerPromptCollapsed((v) => !v)}
@@ -4603,7 +5495,95 @@ function getCollectionFolderName(collection: HistoryCollection, multiCollections
   return sanitizeDownloadName(withoutHash) || 'collection';
 }
 
-function getHistoryImageDownloadName(item: HistoryItem, index: number, fileExt: string): string {
+type VariantTargetColors = {
+  bodyColor?: BodyColorOption;
+  doorColor?: DoorColorOption;
+  plexiglass?: PlexiglassOption;
+  handleMetal?: HardwareMetalOption;
+  legMetal?: LegFinishOption;
+  /** Wood legs that follow the carcass — not a metal hardware color. */
+  legBodyMatch?: boolean;
+};
+
+function mapAnalysisToVariantTargets(analysis: ReferenceAnalysis): VariantTargetColors {
+  const handleFromText = parseHardwareMetalOption(analysis.handleDescription);
+  const handleMetal: HardwareMetalOption | undefined =
+    analysis.handleMetal ??
+    (analysis.handlePresence === 'no-handle' ? 'none' : handleFromText);
+  let legMetal: LegFinishOption | undefined;
+  if (analysis.legFinish === 'gold' || analysis.legFinish === 'silver' || analysis.legFinish === 'black' || analysis.legFinish === 'white') {
+    legMetal = analysis.legFinish;
+  } else if (analysis.legFinish === 'none' || analysis.mounting === 'wall-mounted' || analysis.legCount === 0) {
+    legMetal = 'none';
+  } else if (analysis.legFinish === 'body-match') {
+    legMetal = undefined;
+  }
+  return {
+    bodyColor: analysis.bodyColor,
+    doorColor: analysis.doorColor,
+    plexiglass: analysis.plexiglass,
+    handleMetal,
+    legMetal,
+    legBodyMatch: analysis.legFinish === 'body-match'
+  };
+}
+
+function resolveVariantTargetColors(
+  ref: ReferenceImage,
+  autoPredict: boolean,
+  autoTargets: Map<string, VariantTargetColors>
+): VariantTargetColors {
+  if (autoPredict) {
+    return autoTargets.get(ref.id) ?? {};
+  }
+  return {
+    bodyColor: parseBodyColorOption(ref.bodyColor),
+    doorColor: parseDoorColorOption(ref.doorColor),
+    plexiglass: parsePlexiglassOption(ref.plexiglass) ?? 'none',
+    handleMetal: parseHardwareMetalOption(ref.handleMetal) ?? 'none',
+    legMetal: parseLegFinishOption(ref.legMetal) ?? 'none'
+  };
+}
+
+function toVariantSnapshotTargets(colors: VariantTargetColors): Pick<
+  GenerationConfigSnapshot,
+  | 'targetBodyColor'
+  | 'targetDoorColor'
+  | 'targetPlexiglass'
+  | 'targetHandleMetal'
+  | 'targetLegMetal'
+> {
+  return {
+    ...(colors.bodyColor ? { targetBodyColor: colors.bodyColor } : {}),
+    ...(colors.doorColor ? { targetDoorColor: colors.doorColor } : {}),
+    ...(colors.plexiglass ? { targetPlexiglass: colors.plexiglass } : {}),
+    ...(colors.handleMetal ? { targetHandleMetal: colors.handleMetal } : {}),
+    ...(colors.legMetal ? { targetLegMetal: colors.legMetal } : {})
+  };
+}
+
+function getCatalogSkuFromHistoryItem(item: HistoryItem): ReturnType<typeof parseCatalogSku> {
+  const source = pickCatalogSourceFileName(
+    (item.generationConfig?.referenceImages ?? []).map((reference) => reference.fileName)
+  );
+  return parseCatalogSku(source);
+}
+
+function getHistoryImageDownloadName(
+  item: HistoryItem,
+  index: number,
+  fileExt: string,
+  siblings: HistoryItem[] = []
+): string {
+  const sku = getCatalogSkuFromHistoryItem(item);
+  if (sku) {
+    const pool = siblings.length > 0 ? siblings : [item];
+    const sameStem = pool.filter((entry) => getCatalogSkuFromHistoryItem(entry)?.stem === sku.stem);
+    const position = sameStem.findIndex((entry) => entry.id === item.id);
+    const sequence = position >= 0 ? position + 1 : Math.max(1, index);
+    return buildCatalogOutputFileName(sku.stem, sequence, fileExt);
+  }
+
   const productCode = getItemProductCode(item) || getReferenceBaseName(item);
   const createdKey = item.createdAt.slice(0, 10);
   const suffix = String(Math.max(1, index)).padStart(2, '0');
@@ -4876,6 +5856,20 @@ function isGenerationConfigSnapshot(value: unknown): value is GenerationConfigSn
   const hasValidSceneVariation = typeof record.sceneVariation === 'undefined' || typeof record.sceneVariation === 'boolean';
   const hasValidSceneVariationStrength =
     typeof record.sceneVariationStrength === 'undefined' || isSceneVariationStrength(record.sceneVariationStrength);
+  const hasValidVariantRecolor =
+    typeof record.variantRecolor === 'undefined' || typeof record.variantRecolor === 'boolean';
+  const hasValidAreaChangeStrength =
+    typeof record.areaChangeStrength === 'undefined' || isAreaChangeStrength(record.areaChangeStrength);
+  const hasValidTargetBodyColor =
+    typeof record.targetBodyColor === 'undefined' || Boolean(parseBodyColorOption(record.targetBodyColor));
+  const hasValidTargetDoorColor =
+    typeof record.targetDoorColor === 'undefined' || Boolean(parseDoorColorOption(record.targetDoorColor));
+  const hasValidTargetPlexiglass =
+    typeof record.targetPlexiglass === 'undefined' || Boolean(parsePlexiglassOption(record.targetPlexiglass));
+  const hasValidTargetHandleMetal =
+    typeof record.targetHandleMetal === 'undefined' || Boolean(parseHardwareMetalOption(record.targetHandleMetal));
+  const hasValidTargetLegMetal =
+    typeof record.targetLegMetal === 'undefined' || Boolean(parseLegFinishOption(record.targetLegMetal));
   return (
     typeof record.basePrompt === 'string' &&
     typeof record.model === 'string' &&
@@ -4888,6 +5882,13 @@ function isGenerationConfigSnapshot(value: unknown): value is GenerationConfigSn
     hasValidAiUpscale &&
     hasValidSceneVariation &&
     hasValidSceneVariationStrength &&
+    hasValidVariantRecolor &&
+    hasValidAreaChangeStrength &&
+    hasValidTargetBodyColor &&
+    hasValidTargetDoorColor &&
+    hasValidTargetPlexiglass &&
+    hasValidTargetHandleMetal &&
+    hasValidTargetLegMetal &&
     hasValidReferences
   );
 }
